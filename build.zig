@@ -2,7 +2,8 @@ const std = @import("std");
 const microzig = @import("microzig");
 
 const MicroBuild = microzig.MicroBuild(.{
-    .rp2xxx = true,
+    // .rp2xxx = true,
+    .stm32 = true,
 });
 
 pub fn build(b: *std.Build) void {
@@ -11,7 +12,8 @@ pub fn build(b: *std.Build) void {
 
     const firmware = mb.add_firmware(.{
         .name = "blinky",
-        .target = mb.ports.rp2xxx.boards.raspberrypi.pico,
+        // .target = mb.ports.stm32
+        .target = mb.ports.stm32.chips.STM32H750IB,
         .optimize = .ReleaseSmall,
         .root_source_file = b.path("src/main.zig"),
     });
