@@ -1,89 +1,82 @@
+// TODO:
+// - test current code: play around with lower values of reload Reg
+// - Test that val reg is incrementing correctly
+// - test that COUNTFLAG is flipped at all
+
 const std = @import("std");
 const microzig = @import("microzig");
+const cpu = microzig.cpu;
+const chip = microzig.chip;
+
+const chip_peri = chip.peripherals;
+
+const daisy = @import("hal/STM32H750/daisy.zig");
+
 const hal = @import("hal/STM32H750/hal.zig");
 const stm32 = hal;
 const rcc = stm32.rcc;
+const errors = @import("hal/STM32H750/errors.zig");
+pub const panic = errors.panic;
 
 // INTERNAL_ADDRESS = 0x08000000
 // FLASH_ADDRESS ?= $(INTERNAL_ADDRESS)
-// dfu-util -a 0 -s 0x08000000:leave -D zig-out/firmware/blinky.elf -d ,0483:df11
+// dfu-util -a 0 -s 0x08000000:leave -D zig-out/firmware/blinky.bin -d ,0483:df11
+// openocd -s /usr/local/share/openocd/scripts -f interface/stlink.cfg -f target/stm32h7x.cfg -c "program ./zig-out/firmware/blinky.elf verify reset exit"
 
-fn delay() void {
-    var i: u32 = 0;
-    while (i < 800_000) {
-        asm volatile ("nop");
-        i += 1;
-    }
+const systick = cpu.peripherals.systick;
+const scb = cpu.peripherals.scb;
+
+pub fn init_systick(tick_limit: u24) void {
+    cpu.interrupt.enable_interrupts();
+    cpu.interrupt.exception.set_priority(.SysTick, .highest);
+    // Disable SysTick first
+    systick.CTRL.modify(.{
+        .ENABLE = 0,
+        .TICKINT = 0,
+        .CLKSOURCE = 0,
+    });
+    systick.LOAD.modify(.{ .RELOAD = tick_limit });
+    systick.VAL.modify(.{ .CURRENT = 0 });
+    systick.CTRL.modify(.{
+        .ENABLE = 1,
+        .TICKINT = 1,
+        .CLKSOURCE = 1,
+    });
 }
 
-const clk_config = stm32.rcc.Config{
-    .PLLSource = .RCC_PLLSOURCE_HSE,
-    .HSEDivPLL = .RCC_HSE_PREDIV_DIV2,
-    .PLLMUL = .RCC_PLL_MUL2,
-    .SysClkSource = .RCC_SYSCLKSOURCE_PLLCLK,
-    .APB1Prescaler = .RCC_HCLK_DIV1,
-    .MCOMult = .RCC_MCO1SOURCE_SYSCLK,
+pub const microzig_options: microzig.Options = .{
+    .interrupts = .{
+        .SysTick = .{ .c = sys_tick_handler },
+    },
 };
 
-// constexpr GPIOPort SEED_LED_PORT = PORTC;
-// constexpr uint8_t  SEED_LED_PIN  = 7;
+const led = hal.gpio.Pin.init("C", "7");
+var count: u32 = 1;
 
-pub fn main() !void {
-    try rcc.apply_clock(clk_config);
-
-    // rcc.enable_clock(.GPIOA);
-    // rcc.enable_clock(.AFIO);
-    // rcc.enable_clock(.USART1);
-    const pins, const all_leds = res: {
-        const pins = (stm32.pins.GlobalConfiguration{ .GPIOC = .{
-            .PC7 = .{ .name = "led", .mode = .{ .output = .push_pull } },
-        } }).apply();
-        const all_leds = .{
-            pins.led,
-        };
-        break :res .{ pins, all_leds };
-    };
-    _ = pins;
-
-    // const led_pin = stm32.parse_pin("PC7");
-    while (true) {
-        delay();
-        // stm32.gpio.write(led_pin, .high);
-        // delay();
-        // stm32.gpio.write(led_pin, .low);
-        // pub fn write(comptime pin: type, state: microzig.gpio.State) void {
-        for (0..all_leds.len) |k| {
-            switch (@as(u3, @intCast(k))) {
-                inline else => |i| {
-                    if (i >= all_leds.len) unreachable;
-                    all_leds[i].toggle();
-                },
-            }
-        }
+pub fn sys_tick_handler() callconv(.c) void {
+    count = count + 1;
+    if (count >= 1000) {
+        led.toggle();
+        count = 0;
     }
 }
 
-// const rp2xxx = microzig.hal;
-// const time = rp2xxx.time;
-//
-// // Compile-time pin configuration
-// const pin_config = rp2xxx.pins.GlobalConfiguration{
-//     // For Frood. Default iw 25
-//     .GPIO17 = .{
-//         .name = "led",
-//         .direction = .out,
-//     },
-// };
-//
-// const pins = pin_config.pins();
-//
-// pub fn main() !void {
-//     pin_config.apply();
-//
-//     while (true) {
-//         pins.led.toggle();
-//         time.sleep_ms(250);
-//     }
-// }
-//
-//
+pub fn init_vector_table() void {
+    scb.VTOR = @intCast(@intFromPtr(&cpu.startup_logic._vector_table));
+}
+
+pub fn main() !void {
+    init_vector_table();
+    rcc.apply_clock(daisy.clk_config) catch errors.error_handler();
+    // Use a more conservative clock assumption
+    // Most STM32H750 run at 64MHz by default, not 400MHz
+    const system_clock_hz = 64_000_000; // Adjust based on your clock config
+    const ticks_per_ms = system_clock_hz / 1000;
+    init_systick(ticks_per_ms - 1);
+    led.configure();
+    led.toggle();
+
+    while (true) {
+        cpu.wfi();
+    }
+}

@@ -742,6 +742,7 @@ pub const SAI4ACLockSelectionConf = enum {
         return @intFromEnum(self);
     }
 };
+
 pub const RNGCLockSelectionConf = enum {
     RCC_RNGCLKSOURCE_HSI48,
     RCC_RNGCLKSOURCE_PLL,
@@ -1583,7 +1584,7 @@ pub const ClockTree = struct {
             },
         };
         const SysCLKOutputval = ClockNodeTypes{
-            .output = .{ .max = 480000000, .min = 0 },
+            .output = .{ .max = 480_000_000, .min = 0 },
         };
         const SysCLKOutput: ClockNode = .{
             .name = "SysCLKOutput",
@@ -2979,13 +2980,13 @@ pub const ClockTree = struct {
         const HSE_Timoutval = ClockNodeTypes{
             .source = .{
                 .value = if (config.HSE_Timout) |val| val.get() else 100,
-                .limit = .{ .max = 4294967295, .min = 1 },
+                .limit = .{ .max = 4294967295.0, .min = 1 },
             },
         };
         const LSE_Timoutval = ClockNodeTypes{
             .source = .{
                 .value = if (config.LSE_Timout) |val| val.get() else 5000,
-                .limit = .{ .max = 4294967295, .min = 1 },
+                .limit = .{ .max = 4294967295.0, .min = 1 },
             },
         };
         const HSICalibrationValueval = ClockNodeTypes{

@@ -28,10 +28,6 @@
         //     .url = "git+https://github.com/ZigEmbeddedGroup/microzig/?ref=bump-eval-quota#659f4b1ce76ec1e59036f7fd2f4071d705abc8b3",
         //     .hash = "microzig-0.14.3-D20YSZrU_AAnPmbHXcMEndm_XGEKpCTjCbiVh34Yym_g",
         // },
-        .ClockHelper_zig = .{
-            .url = "git+https://github.com/RecursiveError/ClockHelper-zig#75ceb2607919f590544589ab52b69c423929599e",
-            .hash = "ClockHelper_zig-0.0.0-Cb2oib335AhPMC8jOB6gemCQhh2clRzMqB_XSXLrFN-M",
-        },
     },
     .fingerprint = 0x1d3b8cd0d48d17d2, // Changing this has security and trust implications.
     // Tracks the earliest Zig version that the package considers to be a
