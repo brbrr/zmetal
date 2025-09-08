@@ -1,8 +1,111 @@
 const std = @import("std");
 const microzig = @import("microzig");
 
-const pwd = microzig.chip.peripherals.PWR;
-const PDDS = microzig.chip.types.peripherals.pwr_f1.PDDS;
+const hal = @import("hal.zig");
+
+var pwr = microzig.chip.peripherals.PWR;
+const PWR = microzig.chip.types.peripherals.pwr_h7rm0433;
+const PDDS = PWR.PODS;
+
+const PWR_FLAG_SETTING_DELAY: u32 = 1000;
+
+pub inline fn set_volage_scalling(scale: PWR.VOS) void {
+    pwr.D3CR.modify_one("VOS", scale);
+    _ = pwr.D3CR.read();
+}
+
+pub const PwrFlag = enum {
+    PVDO, // PVD Output. Valid only if PVD is enabled by HAL_PWR_EnablePVD().
+    AVDO, // AVD Output. Valid only if AVD is enabled by HAL_PWREx_EnableAVD().
+    ACTVOSRDY, // Regulator voltage scaling output selection is ready.
+    VOSRDY, // Regulator voltage scaling output selection is ready.
+    SCUEN, // Supply configuration update is enabled.
+    BRR, // Backup regulator ready flag. Not reset by STANDBY, system reset, or power-on reset.
+    SB, // System entered STANDBY mode.
+    STOP, // System entered STOP mode.
+    SB_D1, // D1 domain entered STANDBY mode.
+    SB_D2, // D2 domain entered STANDBY mode.
+    USB33RDY, // USB supply from regulator is ready.
+    TEMPH, // Temperature equal or above high threshold level.
+    TEMPL, // Temperature equal or below low threshold level.
+    VBATH, // VBAT level equal or above high threshold level.
+    VBATL, // VBAT level equal or below low threshold level.
+};
+
+pub fn get_flag(flag: PwrFlag) bool {
+    return switch (flag) {
+        .PVDO => pwr.CSR1.read().PVDO == 1,
+        .AVDO => pwr.CSR1.read().AVDO == 1,
+        .ACTVOSRDY => pwr.CSR1.read().ACTVOSRDY == 1,
+        .SCUEN => pwr.CR3.read().SCUEN == 1,
+        .USB33RDY => pwr.CR3.read().USB33RDY == 1,
+        .VOSRDY => pwr.D3CR.read().VOSRDY == 1,
+        .SB => pwr.CPUCR.read().SBF == 1,
+        .STOP => pwr.CPUCR.read().STOPF == 1,
+        .SB_D1 => pwr.CPUCR.read().SBF_D1 == 1,
+        .SB_D2 => pwr.CPUCR.read().SBF_D2 == 1,
+        .BRR => pwr.CR2.read().BRRDY == 1,
+        .TEMPH => pwr.CR2.read().TEMPH == 1,
+        .TEMPL => pwr.CR2.read().TEMPL == 1,
+        .VBATH => pwr.CR2.read().VBATH == 1,
+        .VBATL => pwr.CR2.read().VBATL == 1,
+    };
+}
+
+pub const PwrSupplyMode = union(enum) {
+    LDO,
+    ExtSource,
+    pub fn get(self: PwrSupplyMode) [3]u1 {
+        return switch (self) {
+            .LDO => [_]u1{ 1, 0, 0 },
+            .ExtSource => [_]u1{ 0, 1, 0 },
+        };
+    }
+};
+
+fn isSupplySourceMatch(mode: PwrSupplyMode) bool {
+    const cr3 = pwr.CR3.read(); // Read register once
+    const vals = mode.get();
+    return cr3.LDOEN == vals[0] and cr3.BYPASS == vals[1] and cr3.SCUEN == vals[2];
+    // return switch (mode) {
+    //     else => |vals| ,
+    //     // .LDO => cr3.LDOEN == 1 and cr3.BYPASS == 0 and cr3.SCUEN == 0,
+    //     // .ExtSource =>  cr3.LDOEN == 0 and cr3.BYPASS == 1 and cr3.SCUEN == 0,
+    // };
+}
+
+pub fn config_ext_power_supply(mode: PwrSupplyMode) bool {
+    var tickstart: u32 = undefined;
+
+    // Check if supply source was configured
+    if (!get_flag(.SCUEN)) {
+        // Check supply configuration
+        if (!isSupplySourceMatch(mode)) {
+            return false; //  Supply configuration update locked, can't apply a new supply config
+        } else {
+            // Supply configuration update locked, but new supply configuration matches with old supply configuration : nothing to do
+            return true;
+        }
+    }
+
+    const vals = mode.get();
+    pwr.CR3.modify(.{
+        .LDOEN = vals[0],
+        .BYPASS = vals[1],
+        .SCUEN = vals[2],
+    });
+
+    tickstart = hal.clock.get_tick();
+
+    // Wait till voltage level flag is set
+    while (!get_flag(.ACTVOSRDY)) {
+        if ((hal.clock.get_tick() - tickstart) > PWR_FLAG_SETTING_DELAY) {
+            return false;
+        }
+    }
+
+    return true;
+}
 
 pub const PvdThreshold = enum(u3) {
     V2_2,
@@ -38,24 +141,24 @@ pub const PowerConfig = struct {
 };
 
 pub inline fn apply(config: PowerConfig) void {
-    pwd.CR.modify(.{
+    pwr.CR.modify(.{
         .PLS = @intFromEnum(config.pvd_threshold),
         .PDDS = @as(PDDS, @enumFromInt(@intFromEnum(config.deepsleep_mode))),
         .LPDS = @intFromEnum(config.volt_regulator_mode),
     });
-    pwd.CSR.modify(.{ .EWUP = @intFromBool(config.wakeup_pin) });
+    pwr.CSR.modify(.{ .EWUP = @intFromBool(config.wakeup_pin) });
 }
 
 ///enable/disable the power voltage detection peripheral.
 pub inline fn set_pvd(set: bool) void {
-    pwd.CR.modify(.{ .PVDE = @intFromBool(set) });
+    pwr.CR.modify(.{ .PVDE = @intFromBool(set) });
 }
 
 ///get the current power detection status.
 ///0 = VDD/VDDA is higher than the threshold.
 ///1 = VDD/VDDA is lower than the threshold.
 pub inline fn pvd_status() u1 {
-    return pwd.CSR.read().PVDO;
+    return pwr.CSR.read().PVDO;
 }
 
 ///enable/disable the backup domain write protection.
@@ -63,11 +166,11 @@ pub inline fn pvd_status() u1 {
 ///
 ///this function also exists in the `hal.backup` module.
 pub inline fn backup_domain_protection(set: bool) void {
-    pwd.CR.modify(.{ .DBP = @intFromBool(!set) });
+    pwr.CR.modify(.{ .DBP = @intFromBool(!set) });
 }
 
 pub inline fn get_events() Events {
-    const csr = pwd.CSR.read();
+    const csr = pwr.CSR.read();
     return Events{
         .Standby = csr.SBF != 0,
         .Wakeup = csr.WUF != 0,
@@ -75,5 +178,5 @@ pub inline fn get_events() Events {
 }
 
 pub inline fn clear_events() void {
-    pwd.CR.modify(.{ .CWUF = 1, .CSBF = 1 });
+    pwr.CR.modify(.{ .CWUF = 1, .CSBF = 1 });
 }

@@ -52,5 +52,8 @@ pub const Pin = struct {
 
     pub fn toggle(comptime self: @This()) void {
         @field(peripherals, "GPIO" ++ self.port_id).ODR.toggle_one("ODR[" ++ self.number_str ++ "]", .High);
+        const cpu = microzig.cpu;
+        cpu.dsb(); // Data Synchronization Barrier
+        cpu.isb(); // Instruction Synchronization Barrier
     }
 };

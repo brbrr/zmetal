@@ -3,27 +3,33 @@
 const std = @import("std");
 const microzig = @import("microzig");
 
-const find_clocktree = @import("util.zig").find_clock_tree;
-const ClockTree = find_clocktree(microzig.config.chip_name);
+// const find_clocktree = @import("util.zig").find_clock_tree;
+// const ClockTree = find_clocktree(microzig.config.chip_name);
+const H750Clock = @import("clocks/clock_stm32h750.zig");
+const ClockTree = H750Clock;
 const power = @import("power.zig");
 
 //expose only the configuration structs
 pub const Config = ClockTree.Config;
 pub const ConfigWithRef = ClockTree.ConfigWithRef;
 
-const flash_v1 = microzig.chip.types.peripherals.rcc_h7;
 const flash = microzig.chip.peripherals.FLASH;
-const PLLMUL = microzig.chip.types.peripherals.rcc_h7.PLLMUL;
-const PLLSRC = microzig.chip.types.peripherals.rcc_h7.PLLSRC;
-const PLLXTPRE = microzig.chip.types.peripherals.rcc_h7.PLLXTPRE;
-const PPRE = microzig.chip.types.peripherals.rcc_h7.PPRE;
-const HPRE = microzig.chip.types.peripherals.rcc_h7.HPRE;
-const ADCPRE = microzig.chip.types.peripherals.rcc_h7.ADCPRE;
-const USBPRE = microzig.chip.types.peripherals.rcc_h7.USBPRE;
-const RTCSEL = microzig.chip.types.peripherals.rcc_h7.RTCSEL;
-const MCOSEL = microzig.chip.types.peripherals.rcc_h7.MCOSEL;
-const SW = microzig.chip.types.peripherals.rcc_h7.SW;
 const rcc = microzig.chip.peripherals.RCC;
+const perih_types = microzig.chip.types.peripherals;
+const RCC = perih_types.rcc_h7rm0433;
+
+const flash_v1 = perih_types.flash_h7;
+const PLLMUL = RCC.PLLM;
+const PLLSRC = RCC.PLLSRC;
+const PLLXTPRE = RCC.PLLXTPRE;
+const PPRE = RCC.PPRE;
+const HPRE = RCC.HPRE;
+const ADCPRE = RCC.ADCPRE;
+const USBPRE = RCC.USBPRE;
+const RTCSEL = RCC.RTCSEL;
+const MCO1SEL = RCC.MCO1SEL;
+const MCO2SEL = RCC.MCO2SEL;
+const SW = RCC.SW;
 
 const ClockInitError = error{
     HSETimeout,
@@ -160,8 +166,70 @@ pub const Bus = enum {
     APB2,
 };
 
+pub const FlashLatency = enum(u3) {
+    Latency0 = 0, // FLASH Zero Latency cycle
+    Latency1 = 1, // FLASH One Latency cycle
+    Latency2 = 2, // FLASH Two Latency cycles
+    Latency3 = 3, // FLASH Three Latency cycles
+    Latency4 = 4, // FLASH Four Latency cycles
+    Latency5 = 5, // FLASH Five Latency cycles
+    Latency6 = 6, // FLASH Six Latency cycles
+    Latency7 = 7, // FLASH Seven Latency cycles
+    // Legacy stuff
+    // Latency8 = 8,  // FLASH Eight Latency cycle
+    // Latency9 = 9,  // FLASH Nine Latency cycle
+    // Latency10 = 10, // FLASH Ten Latency cycles
+    // Latency11 = 11, // FLASH Eleven Latency cycles
+    // Latency12 = 12, // FLASH Twelve Latency cycles
+    // Latency13 = 13, // FLASH Thirteen Latency cycles
+    // Latency14 = 14, // FLASH Fourteen Latency cycles
+    // Latency15 = 15, // FLASH Fifteen Latency cycles
+};
+
 //default clock config
 var corrent_clocks: ClockOutputs = validate_clocks(.{});
+
+pub const RccFlag = enum(u8) {
+    HSIRDY = 0x22,
+    HSIDIV = 0x25,
+    CSIRDY = 0x28,
+    HSI48RDY = 0x2D,
+    D1CKRDY = 0x2E, // or CPUCKRDY alias
+    D2CKRDY = 0x2F, // or CDCKRDY alias
+    HSERDY = 0x31,
+    PLLRDY = 0x39,
+    PLL2RDY = 0x3B,
+    PLL3RDY = 0x3D,
+    LSERDY = 0x41,
+    LSIRDY = 0x61,
+    CPURST = 0x91,
+    D1RST = 0x93, // or CDRST alias
+    D2RST = 0x94,
+    BORRST = 0x95,
+    PINRST = 0x96,
+    PORRST = 0x97,
+    SFTRST = 0x98,
+    IWDG1RST = 0x9A,
+    WWDG1RST = 0x9C,
+    LPWR1RST = 0x9E,
+    LPWR2RST = 0x9F,
+};
+
+pub fn get_flag(flag: RccFlag) u1 {
+    const int_flag: u8 = @intFromEnum(flag);
+    const reg_index = int_flag >> 5; // Which register group
+    const bit_pos = int_flag & 0x1F; // Which bit in the register
+
+    const reg_val: u32 = switch (reg_index) {
+        1 => RCC.CR.raw,
+        2 => RCC.BDCR.raw,
+        3 => RCC.CSR.raw,
+        4 => RCC.RSR.raw,
+        else => RCC.CIFR.raw,
+    };
+
+    return if ((reg_val & (1 << bit_pos)) != 0) 1 else 0;
+}
 
 //NOTE: procedural style or loop through all elements of the struct?
 ///Configures the system clocks
@@ -197,14 +265,14 @@ fn validate_clocks(comptime config: ClockTree.Config) ClockOutputs {
     outputs.AHB = @intFromFloat(tree_values.AHBOutput.get_comptime());
     outputs.APB1 = @intFromFloat(tree_values.APB1Output.get_comptime());
     outputs.APB2 = @intFromFloat(tree_values.APB2Output.get_comptime());
-    outputs.TimAPB1 = @intFromFloat(tree_values.TimPrescOut1.get_comptime());
-    outputs.TimAPB2 = @intFromFloat(tree_values.TimPrescOut2.get_comptime());
+    outputs.TimAPB1 = @intFromFloat(tree_values.Tim1Output.get_comptime());
+    outputs.TimAPB2 = @intFromFloat(tree_values.Tim1Output.get_comptime());
 
-    if (config.MCOMult) |_| {
+    if (config.MCO1Mult) |_| {
         _ = tree_values.MCOoutput.get_comptime();
     }
 
-    if (config.USBPrescaler) |_| {
+    if (config.USBMult) |_| {
         outputs.USB = @intFromFloat(tree_values.USBoutput.get_comptime());
         if (config.PLLSource) |src| {
             if (src == .RCC_PLLSOURCE_HSI_DIV2) {
@@ -213,7 +281,7 @@ fn validate_clocks(comptime config: ClockTree.Config) ClockOutputs {
         }
     }
 
-    if (config.ADCprescaler) |_| {
+    if (config.ADCMult) |_| {
         outputs.ADC = @intFromFloat(tree_values.ADCoutput.get_comptime());
     }
 
@@ -221,21 +289,23 @@ fn validate_clocks(comptime config: ClockTree.Config) ClockOutputs {
 }
 
 fn set_flash(clock: u32) void {
-    if (clock <= 24_000_000) {
-        flash.ACR.modify(.{
-            .LATENCY = flash_v1.LATENCY.WS0,
-            .PRFTBE = 0,
-        });
-    } else if (clock <= 48_000_000) {
-        flash.ACR.modify(.{
-            .LATENCY = flash_v1.LATENCY.WS1,
-            .PRFTBE = 1,
-        });
+    var latency: FlashLatency = .Latency7;
+    power.set_volage_scalling(.Scale1);
+    if (clock <= 400_000_000) {
+        power.set_volage_scalling(.Scale1);
+        latency = .Latency2;
+    } else if (clock <= 480_000_000) {
+        power.set_volage_scalling(@enumFromInt(0));
+        latency = .Latency4;
     } else {
-        flash.ACR.modify(.{
-            .LATENCY = flash_v1.LATENCY.WS2,
-            .PRFTBE = 1,
-        });
+        @breakpoint();
+        unreachable;
+        // @compileError("invalid sysclock?");
+    }
+
+    flash.ACR.modify_one("LATENCY", @intFromEnum(latency));
+    while (!power.get_flag(.VOSRDY)) {
+        microzig.cpu.nop();
     }
 }
 
@@ -284,7 +354,7 @@ fn config_LSI() void {
 fn config_HSE(comptime config: ClockTree.Config) ClockInitError!void {
     rcc.CR.modify(.{ .HSEON = 1 });
 
-    const max_wait: u32 = if (config.HSE_Timeout) |val| @intFromEnum(val) else std.math.maxInt(u32);
+    const max_wait: u32 = if (config.HSE_Timout) |val| @intFromEnum(val) else std.math.maxInt(u32);
     var ticks: usize = 0;
     while (rcc.CR.read().HSERDY == 0) {
         if (ticks == max_wait - 1) return error.HSETimeout;
@@ -306,61 +376,62 @@ fn config_LSE(comptime config: ClockTree.Config) ClockInitError!void {
 
 fn config_PLL(comptime config: ClockTree.Config) ClockInitError!void {
     if (config.PLLSource) |src| {
-        const s: u1 = @intFromEnum(src);
+        const s: u2 = @intFromEnum(src);
         const val: PLLSRC = @enumFromInt(s);
-        rcc.CFGR.modify(.{ .PLLSRC = val });
-        if (val == .HSE_Div_PREDIV) {
+        rcc.PLLCKSELR.modify(.{ .PLLSRC = val });
+        if (val == .HSE) {
             try config_HSE(config);
         }
     }
 
-    if (config.HSEDivPLL) |pre| {
-        const p: u1 = @intFromEnum(pre);
-        const val: PLLXTPRE = @enumFromInt(p);
-        rcc.CFGR.modify(.{ .PLLXTPRE = val });
-    }
-
-    if (config.PLLMUL) |pre| {
-        const p: u32 = @intFromEnum(pre);
-        const val: PLLMUL = @enumFromInt(p);
-        rcc.CFGR.modify(.{ .PLLMUL = val });
-    }
+    // if (config.HSEDivPLL) |pre| {
+    //     const p: u1 = @intFromEnum(pre);
+    //     const val: PLLXTPRE = @enumFromInt(p);
+    //     rcc.CFGR.modify(.{ .PLLXTPRE = val });
+    // }
+    //
+    // if (config.PLLMUL) |pre| {
+    //     const p: u32 = @intFromEnum(pre);
+    //     const val: PLLMUL = @enumFromInt(p);
+    //     rcc.CFGR.modify(.{ .PLLMUL = val });
+    // }
 }
 
 //TODO: Add STM32F105/7 devices peri
 fn config_peripherals(comptime config: ClockTree.Config) void {
-    if (config.APB1Prescaler) |pre| {
-        const p: u32 = @intFromEnum(pre);
-        const val: PPRE = @enumFromInt(p);
-        rcc.D2CFGR.modify(.{ .D2PPRE1 = val });
-    }
-
-    if (config.APB2Prescaler) |pre| {
-        const p: u32 = @intFromEnum(pre);
-        const val: PPRE = @enumFromInt(p);
-        rcc.D2CFGR.modify(.{ .D2PPRE2 = val });
-    }
-
-    if (config.AHBPrescaler) |pre| {
-        const p: u32 = @intFromEnum(pre);
-        const val: HPRE = @enumFromInt(p);
-        rcc.D1CFGR.modify(.{ .HPRE = val });
-    }
-
-    if (config.ADCprescaler) |pre| {
-        const p: u32 = @intFromEnum(pre);
-        const val: ADCPRE = @enumFromInt(p);
-        rcc.D3CFGR.modify(.{ .D3PPRE = val });
-    }
-
-    if (config.USBPrescaler) |pre| {
-        const p: u1 = switch (pre) {
-            .RCC_USBCLKSOURCE_PLL_DIV1_5 => 0,
-            .RCC_USBCLKSOURCE_PLL => 1,
-        };
-        const val: USBPRE = @enumFromInt(p);
-        rcc.CFGR.modify(.{ .USBPRE = val });
-    }
+    _ = config;
+    // if (config.APB1Prescaler) |pre| {
+    //     const p: u32 = @intFromEnum(pre);
+    //     const val: PPRE = @enumFromInt(p);
+    //     rcc.D2CFGR.modify(.{ .D2PPRE1 = val });
+    // }
+    //
+    // if (config.APB2Prescaler) |pre| {
+    //     const p: u32 = @intFromEnum(pre);
+    //     const val: PPRE = @enumFromInt(p);
+    //     rcc.D2CFGR.modify(.{ .D2PPRE2 = val });
+    // }
+    //
+    // if (config.AHBPrescaler) |pre| {
+    //     const p: u32 = @intFromEnum(pre);
+    //     const val: HPRE = @enumFromInt(p);
+    //     rcc.D1CFGR.modify(.{ .HPRE = val });
+    // }
+    //
+    // if (config.ADCprescaler) |pre| {
+    //     const p: u32 = @intFromEnum(pre);
+    //     const val: ADCPRE = @enumFromInt(p);
+    //     rcc.D3CFGR.modify(.{ .D3PPRE = val });
+    // }
+    //
+    // if (config.USBPrescaler) |pre| {
+    //     const p: u1 = switch (pre) {
+    //         .RCC_USBCLKSOURCE_PLL_DIV1_5 => 0,
+    //         .RCC_USBCLKSOURCE_PLL => 1,
+    //     };
+    //     const val: USBPRE = @enumFromInt(p);
+    //     rcc.CFGR.modify(.{ .USBPRE = val });
+    // }
 }
 
 fn config_system_clock(comptime config: ClockTree.Config) ClockInitError!void {
@@ -424,14 +495,27 @@ fn config_RTC(comptime config: ClockTree.Config) ClockInitError!void {
 }
 
 fn config_MCO(comptime config: ClockTree.Config) void {
-    if (config.MCOMult) |src| {
-        const mco: MCOSEL = switch (src) {
-            .RCC_MCO1SOURCE_HSE => .HSE,
+    if (config.MCO1Mult) |src| {
+        const mco: MCO1SEL = switch (src) {
             .RCC_MCO1SOURCE_HSI => .HSI,
-            .RCC_MCO1SOURCE_PLLCLK => .PLL,
-            .RCC_MCO1SOURCE_SYSCLK => .SYS,
+            .RCC_MCO1SOURCE_LSE => .LSE,
+            .RCC_MCO1SOURCE_HSE => .HSE,
+            .RCC_MCO1SOURCE_PLL1QCLK => .PLL1_Q,
+            .RCC_MCO1SOURCE_HSI48 => .HSQI48,
         };
-        rcc.CFGR.modify(.{ .MCOSEL = mco });
+        rcc.CFGR.modify(.{ .MCO1SEL = mco });
+    }
+
+    if (config.MCO2Mult) |src| {
+        const mco: MCO2SEL = switch (src) {
+            .RCC_MCO2SOURCE_SYSCLK => .SYS,
+            .RCC_MCO2SOURCE_PLL2PCLK => .PLL2_P,
+            .RCC_MCO2SOURCE_HSE => .HSE,
+            .RCC_MCO2SOURCE_PLLCLK => .PLL1_P,
+            .RCC_MCO2SOURCE_CSICLK => .CSI,
+            .RCC_MCO2SOURCE_LSICLK => .LSI,
+        };
+        rcc.CFGR.modify(.{ .MCO1SEL = mco });
     }
 }
 
