@@ -632,7 +632,7 @@ pub const peripherals = struct {
     /// DMA2D
     pub const DMA2D: *volatile types.peripherals.DMA2D = @ptrFromInt(0x52001000);
     /// Flash
-    pub const Flash: *volatile types.peripherals.Flash = @ptrFromInt(0x52002000);
+    pub const FLASH: *volatile types.peripherals.Flash = @ptrFromInt(0x52002000);
     /// JPEG
     pub const JPEG: *volatile types.peripherals.JPEG = @ptrFromInt(0x52003000);
     /// FMC
@@ -696,9 +696,9 @@ pub const peripherals = struct {
     /// GPIO
     pub const GPIOK: *volatile types.peripherals.GPIOA = @ptrFromInt(0x58022800);
     /// Reset and clock control
-    pub const RCC: *volatile types.peripherals.RCC = @ptrFromInt(0x58024400);
+    pub const RCC: *volatile types.peripherals.RCC.RCC = @ptrFromInt(0x58024400);
     /// PWR
-    pub const PWR: *volatile types.peripherals.PWR = @ptrFromInt(0x58024800);
+    pub const PWR: *volatile types.peripherals.PWR.PWR = @ptrFromInt(0x58024800);
     /// Cryptographic processor
     pub const CRC: *volatile types.peripherals.CRC = @ptrFromInt(0x58024c00);
     /// BDMA

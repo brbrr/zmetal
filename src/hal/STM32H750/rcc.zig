@@ -8,6 +8,7 @@ const microzig = @import("microzig");
 const H750Clock = @import("clocks/clock_stm32h750.zig");
 const ClockTree = H750Clock;
 const power = @import("power.zig");
+const clock = @import("clock.zig");
 
 //expose only the configuration structs
 pub const Config = ClockTree.Config;
@@ -16,20 +17,24 @@ pub const ConfigWithRef = ClockTree.ConfigWithRef;
 const flash = microzig.chip.peripherals.FLASH;
 const rcc = microzig.chip.peripherals.RCC;
 const perih_types = microzig.chip.types.peripherals;
-const RCC = perih_types.rcc_h7rm0433;
+const RCC = perih_types.RCC;
 
 const flash_v1 = perih_types.flash_h7;
-const PLLMUL = RCC.PLLM;
+const PLLM = RCC.PLLM;
+const PLLN = RCC.PLLN;
+const PLLDIV = RCC.PLLDIV;
 const PLLSRC = RCC.PLLSRC;
-const PLLXTPRE = RCC.PLLXTPRE;
+
 const PPRE = RCC.PPRE;
 const HPRE = RCC.HPRE;
-const ADCPRE = RCC.ADCPRE;
-const USBPRE = RCC.USBPRE;
 const RTCSEL = RCC.RTCSEL;
 const MCO1SEL = RCC.MCO1SEL;
 const MCO2SEL = RCC.MCO2SEL;
 const SW = RCC.SW;
+
+const PLLXTPRE = RCC.PLLXTPRE;
+const ADCPRE = RCC.ADCPRE;
+const USBPRE = RCC.USBPRE;
 
 const ClockInitError = error{
     HSETimeout,
@@ -187,7 +192,7 @@ pub const FlashLatency = enum(u3) {
 };
 
 //default clock config
-var corrent_clocks: ClockOutputs = validate_clocks(.{});
+var corrent_clocks: ClockOutputs = undefined;
 
 pub const RccFlag = enum(u8) {
     HSIRDY = 0x22,
@@ -221,14 +226,24 @@ pub fn get_flag(flag: RccFlag) u1 {
     const bit_pos = int_flag & 0x1F; // Which bit in the register
 
     const reg_val: u32 = switch (reg_index) {
-        1 => RCC.CR.raw,
-        2 => RCC.BDCR.raw,
-        3 => RCC.CSR.raw,
-        4 => RCC.RSR.raw,
-        else => RCC.CIFR.raw,
+        1 => rcc.CR.raw,
+        2 => rcc.BDCR.raw,
+        3 => rcc.CSR.raw,
+        4 => rcc.RSR.raw,
+        else => rcc.CIFR.raw,
     };
 
-    return if ((reg_val & (1 << bit_pos)) != 0) 1 else 0;
+    return if ((reg_val & (@as(u32, 1) << @as(u5, @intCast(bit_pos)))) != 0) 1 else 0;
+    // return if ((reg_val & (1 << bit_pos)) != 0) 1 else 0;
+}
+
+pub fn wait_for_flag(flag: RccFlag, expected: u1, max_wait: u32) !void {
+    var ticks: usize = clock.get_tick();
+    while (get_flag(flag) != expected) {
+        if (ticks == max_wait - 1) return error.HSETimeout;
+        ticks = clock.get_tick();
+        asm volatile ("" ::: .{ .memory = true });
+    }
 }
 
 //NOTE: procedural style or loop through all elements of the struct?
@@ -246,12 +261,97 @@ pub fn apply_clock(comptime config: ClockTree.Config) ClockInitError!void {
         config_HSI(@intFromEnum(val));
     }
 
-    try config_PLL(config);
+    try osc_config(config);
+
     config_peripherals(config);
     try config_RTC(config);
     try config_system_clock(config);
     config_MCO(config);
     corrent_clocks = clck;
+}
+
+fn osc_config(comptime config: ClockTree.Config) ClockInitError!void {
+    if (config.PLLSource) |src| {
+        // const temp_sysclksrc = rcc.CFGR.read().SWS;
+        // const temp_pllckselr = rcc.PLLCKSELR.read();
+
+        // NOTE: Not sure what to check here tbh
+        // if (temp_sysclksrc == .HSE or (temp_sysclksrc == .PLL1_P and temp_pllckselr.PLLSRC == .HSE)) {
+        //     if (get_flag(.HSERDY) and config.HSESTATE == HSE_OFF) {
+        //         @panic("OLOLO");
+        //     }
+        // }
+
+        // Set the new HSE configuration
+        try config_HSE(config);
+        try config_HSI48(config);
+
+        if (rcc.CFGR.read().SWS != .PLL1_P) {
+            try config_PLL1(config, @enumFromInt(src.get()));
+        } else {
+            @breakpoint();
+            @panic("Not supported for now!\n");
+        }
+    } else {
+        @breakpoint();
+        @panic("Not implemented!\n");
+    }
+}
+
+fn pllm_from() void {}
+
+fn config_PLL1(comptime config: ClockTree.Config, clock_src: PLLSRC) !void {
+    // Disable the main PLL. */
+    rcc.CR.modify_one("PLL1ON", 0);
+
+    try wait_for_flag(.PLLRDY, 0, @intFromEnum(config.HSE_Timout.?));
+
+    // Set PLL source and divider (assuming you have similar mmio for PLLCKSELR)
+    rcc.PLLCKSELR.modify(.{ .PLLSRC = clock_src, .DIVM1 = @as(PLLM, @enumFromInt(@intFromEnum(config.DIVM1.?))) }
+        // RCC_PLLCKSELR_PLLSRC | RCC_PLLCKSELR_DIVM1,
+        // pllSource | (pllm1 << 4),
+    );
+
+    // Set PLL1DIVR fields
+    rcc.PLL1DIVR.write(.{
+        .DIVN1 = @as(PLLN, @enumFromInt(@intFromEnum(config.DIVN1.?))),
+        .DIVP1 = @as(PLLDIV, @enumFromInt(@intFromEnum(config.DIVP1.?))),
+        .DIVQ1 = @as(PLLDIV, @enumFromInt(@intFromEnum(config.DIVQ1.?))),
+        .DIVR1 = @as(PLLDIV, @enumFromInt(@intFromEnum(config.DIVR1.?))),
+    });
+
+    // Disable PLLFRACN . */
+    rcc.PLLCFGR.modify_one("PLL1FRACEN", 0);
+
+    // /* Configure PLL PLL1FRACN */
+    rcc.PLL1FRACR.modify_one("FRACN1", @as(u13, @intCast(@intFromEnum(config.PLLFRACN.?))));
+
+    // /* Select PLL1 input reference frequency range: VCI */
+    // NOTE: Should be calculated
+    // @arg RCC_PLL1VCIRANGE_0: Range frequency is between 1 and 2 MHz
+    // @arg RCC_PLL1VCIRANGE_1: Range frequency is between 2 and 4 MHz
+    // @arg RCC_PLL1VCIRANGE_2: Range frequency is between 4 and 8 MHz
+    // @arg RCC_PLL1VCIRANGE_3: Range frequency is between 8 and 16 MHz
+    rcc.PLLCFGR.modify_one("PLL1RGE", 2);
+
+    // Select PLL1 output frequency range : VCO */
+    // NOTE: Should be calculated
+    // @arg RCC_PLL1VCOWIDE: Range frequency is between 192 and 836 MHz or between 128 to 560 MHz(*)
+    // @arg RCC_PLL1VCOMEDIUM: Range frequency is between 150 and 420 MHz
+    rcc.PLLCFGR.modify_one("PLL1VCOSEL", 0);
+
+    rcc.PLLCFGR.modify(.{
+        .DIVP1EN = 1, // Enable PLL System Clock output. */
+        .DIVQ1EN = 1, // Enable PLL1Q Clock output. */
+        .DIVR1EN = 1, // Enable PLL1R  Clock output. */
+    });
+
+    // Enable PLL1FRACN
+    rcc.PLLCFGR.modify_one("PLL1FRACEN", 1);
+    // Enable the main PLL
+    rcc.CR.modify_one("PLL1ON", 1);
+
+    try wait_for_flag(.PLLRDY, 1, @intFromEnum(config.HSE_Timout.?));
 }
 
 //check clocks and return all used outputs
@@ -288,13 +388,13 @@ fn validate_clocks(comptime config: ClockTree.Config) ClockOutputs {
     return outputs;
 }
 
-fn set_flash(clock: u32) void {
+fn set_flash(clck: u32) void {
     var latency: FlashLatency = .Latency7;
     power.set_volage_scalling(.Scale1);
-    if (clock <= 400_000_000) {
+    if (clck <= 400_000_000) {
         power.set_volage_scalling(.Scale1);
         latency = .Latency2;
-    } else if (clock <= 480_000_000) {
+    } else if (clck <= 480_000_000) {
         power.set_volage_scalling(@enumFromInt(0));
         latency = .Latency4;
     } else {
@@ -323,9 +423,9 @@ fn secure_enable() void {
     }
 
     rcc.CR.modify(.{
-        .@"PLLON[0]" = 0,
-        .@"PLLON[1]" = 0,
-        .@"PLLON[2]" = 0,
+        .PLL1ON = 0,
+        .PLL2ON = 0,
+        .PLL3ON = 0,
 
         .HSEBYP = 0,
         .HSEON = 0,
@@ -354,13 +454,13 @@ fn config_LSI() void {
 fn config_HSE(comptime config: ClockTree.Config) ClockInitError!void {
     rcc.CR.modify(.{ .HSEON = 1 });
 
-    const max_wait: u32 = if (config.HSE_Timout) |val| @intFromEnum(val) else std.math.maxInt(u32);
-    var ticks: usize = 0;
-    while (rcc.CR.read().HSERDY == 0) {
-        if (ticks == max_wait - 1) return error.HSETimeout;
-        ticks += 1;
-        asm volatile ("" ::: .{ .memory = true });
-    }
+    try wait_for_flag(.HSERDY, 1, @intFromEnum(config.HSE_Timout.?));
+}
+
+fn config_HSI48(comptime config: ClockTree.Config) ClockInitError!void {
+    rcc.CR.modify(.{ .RC48ON = 1 });
+
+    try wait_for_flag(.HSI48RDY, 1, @intFromEnum(config.HSE_Timout.?));
 }
 
 fn config_LSE(comptime config: ClockTree.Config) ClockInitError!void {

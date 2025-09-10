@@ -7,8 +7,11 @@ pub fn panic(message: []const u8, _: ?*std.builtin.StackTrace, _: ?usize) noretu
     std.log.err("panic: {s}", .{message});
     led.configure();
     led.toggle();
-    @breakpoint();
-    while (true) {}
+    // @breakpoint();
+    while (true) {
+        led.toggle();
+        delay(100_000);
+    }
 }
 
 pub fn error_handler() void {

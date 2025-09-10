@@ -26,12 +26,15 @@ pub fn build(b: *std.Build) void {
             .name = "STM32H750IB",
             .register_definition = .{ .zig = b.path("./stm32h7/STM32H750x.zig") },
             .memory_regions = &.{
-                .{ .tag = .ram, .offset = 0x0, .length = 0x10000, .access = .rwx },
-                .{ .tag = .flash, .offset = 0x8000000, .length = 0x20000, .access = .rx },
-                .{ .tag = .ram, .offset = 0x20000000, .length = 0x20000, .access = .rwx },
-                .{ .tag = .ram, .offset = 0x24000000, .length = 0x80000, .access = .rwx },
-                .{ .tag = .ram, .offset = 0x30000000, .length = 0x48000, .access = .rwx },
-                .{ .tag = .ram, .offset = 0x38000000, .length = 0x10000, .access = .rwx },
+                .{ .name = "FLASH", .tag = .flash, .offset = 0x08000000, .length = 0x20000, .access = .rx },
+                .{ .name = "DTCMRAM", .tag = .ram, .offset = 0x20000000, .length = 0x20000, .access = .rwx },
+                .{ .name = "SRAM", .tag = .ram, .offset = 0x24000000, .length = 0x80000, .access = .rwx },
+                .{ .name = "RAM_D2", .tag = .ram, .offset = 0x30000000, .length = 0x48000, .access = .rwx },
+                .{ .name = "RAM_D3", .tag = .ram, .offset = 0x38000000, .length = 0x10000, .access = .rwx },
+                .{ .name = "BACKUP_SRAM", .tag = .ram, .offset = 0x38800000, .length = 0x1000, .access = .rwx },
+                .{ .name = "ITCMRAM", .tag = .ram, .offset = 0x00000000, .length = 0x10000, .access = .rwx },
+                .{ .name = "SDRAM", .tag = .ram, .offset = 0xc0000000, .length = 0x4000000, .access = .rwx },
+                .{ .name = "QSPIFLASH", .tag = .flash, .offset = 0x90000000, .length = 0x800000, .access = .rx },
             },
         },
 
@@ -44,8 +47,8 @@ pub fn build(b: *std.Build) void {
         .name = "blinky",
         // .target = mb.ports.stm32.chips.STM32H750IB,
         .target = STM32H750IB,
-        .optimize = .ReleaseSmall,
-        // .optimize = .Debug,
+        // .optimize = .ReleaseSmall,
+        .optimize = .Debug,
         .root_source_file = b.path("src/main.zig"),
     });
 

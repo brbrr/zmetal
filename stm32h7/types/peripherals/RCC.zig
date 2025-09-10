@@ -1197,7 +1197,7 @@ pub const RCC = extern struct {
         /// CSI clock enable in Stop mode
         CSIKERON: u1,
         reserved12: u2 = 0,
-        /// RC48 clock enable
+        /// RC48 aka HSI48 clock enable
         RC48ON: u1,
         /// RC48 clock ready flag
         RC48RDY: u1,
@@ -1374,14 +1374,14 @@ pub const RCC = extern struct {
     /// offset: 0x30
     PLL1DIVR: mmio.Mmio(packed struct(u32) {
         /// Multiplication factor for PLL1 VCO
-        DIVN1: u9,
+        DIVN1: PLLN,
         /// PLL1 DIVP division factor
-        DIVP1: u7,
+        DIVP1: PLLDIV,
         /// PLL1 DIVQ division factor
-        DIVQ1: u7,
+        DIVQ1: PLLDIV,
         reserved24: u1 = 0,
         /// PLL1 DIVR division factor
-        DIVR1: u7,
+        DIVR1: PLLDIV,
         padding: u1 = 0,
     }),
     /// RCC PLL1 Fractional Divider Register

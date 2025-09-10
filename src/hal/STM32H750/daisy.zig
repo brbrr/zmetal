@@ -13,32 +13,10 @@ const stm32 = hal;
 const rcc_hal = stm32.rcc;
 
 const h7clock = @import("clocks/clock_stm32h750.zig");
-const clock_cfg = h7clock.Config{};
+// const clock_cfg = h7clock.Config{};
 const Clock = h7clock.ClockTree.init_comptime(clk_config);
 
 const plln_val = 200; //boost or 200 for default
-
-pub const clk_config = stm32.rcc.Config{
-    .HSE_Timout = @enumFromInt(5000),
-    .HSEOSC = @enumFromInt(16_000_000), // Daisy uses 16Mhz external OSC
-
-    .PLLSource = .RCC_PLLSOURCE_HSE,
-
-    // Values from libdaisy src
-    .DIVM1 = @enumFromInt(4),
-    .DIVN1 = @enumFromInt(plln_val),
-    .DIVQ1 = @enumFromInt(5),
-    .DIVR1 = @enumFromInt(2),
-    .PLLFRACN = @enumFromInt(0),
-
-    // NOTE: Below is calculated based on HSE frequency
-    // RCC_OscInitStruct.PLL.PLLRGE    = RCC_PLL1VCIRANGE_2;
-    // RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
-    // | Parameter             | Formula                      | Config Range | Datasheet Constraint |
-    // | --------------------- | ---------------------------- | ------------ | -------------------- |
-    // | **VCI (PLL1 input)**  | `PLL Source / DIVM1`         | DIVM1: 1–63  | 1–16 MHz             |
-    // | **VCO (PLL1 output)** | `VCI × (DIVN1 + FRACN/8192)` | DIVN1: 4–512 | 192–836 MHz          |
-};
 
 pub const SystemConfig = struct {
     pub const SysFreq = enum {
@@ -50,6 +28,41 @@ pub const SystemConfig = struct {
     use_icache: bool = true,
     skip_clocks: bool = false,
     freq: SysFreq = .default,
+};
+
+const SysConfig = SystemConfig{ .freq = .boost };
+
+pub const clk_config = stm32.rcc.Config{
+    .HSE_Timout = @enumFromInt(5000),
+    .HSEOSC = @enumFromInt(16_000_000), // Daisy uses 16Mhz external OSC
+
+    .PLLSource = .RCC_PLLSOURCE_HSE,
+
+    // Values from libdaisy src
+    .DIVM1 = @enumFromInt(4),
+    .DIVN1 = if (SysConfig.freq == .boost) @enumFromInt(240) else @enumFromInt(200),
+    .DIVQ1 = @enumFromInt(5),
+    .DIVR1 = @enumFromInt(2),
+    .PLLFRACN = @enumFromInt(0),
+
+    // NOTE: Below is calculated based on HSE frequency
+    // RCC_OscInitStruct.PLL.PLLRGE    = RCC_PLL1VCIRANGE_2;
+    // RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
+    // | Parameter             | Formula                      | Config Range | Datasheet Constraint |
+    // | --------------------- | ---------------------------- | ------------ | -------------------- |
+    // | **VCI (PLL1 input)**  | `PLL Source / DIVM1`         | DIVM1: 1–63  | 1–16 MHz             |
+    // | **VCO (PLL1 output)** | `VCI × (DIVN1 + FRACN/8192)` | DIVN1: 4–512 | 192–836 MHz          |
+
+    .SysClkSource = .RCC_SYSCLKSOURCE_PLLCLK,
+    // RCC_ClkInitStruct.ClockType
+    // = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1
+    //       | RCC_CLOCKTYPE_PCLK2 | RCC_CLOCKTYPE_D3PCLK1 | RCC_CLOCKTYPE_D1PCLK1;
+    .D1CPRE = .RCC_SYSCLK_DIV1,
+    .HPRE = .RCC_HCLK_DIV2,
+    .D1PPRE = .RCC_APB3_DIV2,
+    .D2PPRE1 = .RCC_APB1_DIV2,
+    .D2PPRE2 = .RCC_APB2_DIV2,
+    .D3PPRE = .RCC_APB4_DIV2,
 };
 
 const NVICPriorityGroup = enum(u3) {
@@ -92,30 +105,25 @@ pub fn hal_init() !bool {
     return true;
 }
 
-const PWR = microzig.chip.types.peripherals.pwr_h7rm0433;
+const PWR = microzig.chip.types.peripherals.PWR;
 
 pub fn configure_clocks() !void {
     const sys_cfg = SystemConfig{};
     if (!hal.power.config_ext_power_supply(.LDO)) {
         return error.PowerError;
     }
-    var clock_config = clock_cfg;
 
     var flash_latency: PWR.VOS = undefined;
     switch (sys_cfg.freq) {
         .boost => {
             flash_latency = @enumFromInt(4);
-            clock_config.DIVN1 = @enumFromInt(240);
         },
         .default => {
             flash_latency = .Scale2;
-            clock_config.DIVN1 = @enumFromInt(200);
         },
     }
 
-    // try hal.rcc.apply_clock(clock_config);
-
-    //
+    try hal.rcc.apply_clock(clk_config);
 }
 
 pub fn init() !void {

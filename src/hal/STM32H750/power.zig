@@ -4,14 +4,13 @@ const microzig = @import("microzig");
 const hal = @import("hal.zig");
 
 var pwr = microzig.chip.peripherals.PWR;
-const PWR = microzig.chip.types.peripherals.pwr_h7rm0433;
-const PDDS = PWR.PODS;
+const PWR = microzig.chip.types.peripherals.PWR;
 
 const PWR_FLAG_SETTING_DELAY: u32 = 1000;
 
 pub inline fn set_volage_scalling(scale: PWR.VOS) void {
-    pwr.D3CR.modify_one("VOS", scale);
-    _ = pwr.D3CR.read();
+    pwr.PWR_D3CR.modify_one("VOS", scale);
+    _ = pwr.PWR_D3CR.read();
 }
 
 pub const PwrFlag = enum {
@@ -34,21 +33,21 @@ pub const PwrFlag = enum {
 
 pub fn get_flag(flag: PwrFlag) bool {
     return switch (flag) {
-        .PVDO => pwr.CSR1.read().PVDO == 1,
-        .AVDO => pwr.CSR1.read().AVDO == 1,
-        .ACTVOSRDY => pwr.CSR1.read().ACTVOSRDY == 1,
-        .SCUEN => pwr.CR3.read().SCUEN == 1,
-        .USB33RDY => pwr.CR3.read().USB33RDY == 1,
-        .VOSRDY => pwr.D3CR.read().VOSRDY == 1,
-        .SB => pwr.CPUCR.read().SBF == 1,
-        .STOP => pwr.CPUCR.read().STOPF == 1,
-        .SB_D1 => pwr.CPUCR.read().SBF_D1 == 1,
-        .SB_D2 => pwr.CPUCR.read().SBF_D2 == 1,
-        .BRR => pwr.CR2.read().BRRDY == 1,
-        .TEMPH => pwr.CR2.read().TEMPH == 1,
-        .TEMPL => pwr.CR2.read().TEMPL == 1,
-        .VBATH => pwr.CR2.read().VBATH == 1,
-        .VBATL => pwr.CR2.read().VBATL == 1,
+        .PVDO => pwr.PWR_CSR1.read().PVDO == 1,
+        .AVDO => pwr.PWR_CSR1.read().AVDO == 1,
+        .ACTVOSRDY => pwr.PWR_CSR1.read().ACTVOSRDY == 1,
+        .SCUEN => pwr.PWR_CR3.read().SCUEN == 1,
+        .USB33RDY => pwr.PWR_CR3.read().USB33RDY == 1,
+        .VOSRDY => pwr.PWR_D3CR.read().VOSRDY == 1,
+        .SB => pwr.PWR_CPUCR.read().SBF == 1,
+        .STOP => pwr.PWR_CPUCR.read().STOPF == 1,
+        .SB_D1 => pwr.PWR_CPUCR.read().SBF_D1 == 1,
+        .SB_D2 => pwr.PWR_CPUCR.read().SBF_D2 == 1,
+        .BRR => pwr.PWR_CR2.read().BRRDY == 1,
+        .TEMPH => pwr.PWR_CR2.read().TEMPH == 1,
+        .TEMPL => pwr.PWR_CR2.read().TEMPL == 1,
+        .VBATH => pwr.PWR_CR2.read().VBATH == 1,
+        .VBATL => pwr.PWR_CR2.read().VBATL == 1,
     };
 }
 
@@ -64,7 +63,7 @@ pub const PwrSupplyMode = union(enum) {
 };
 
 fn isSupplySourceMatch(mode: PwrSupplyMode) bool {
-    const cr3 = pwr.CR3.read(); // Read register once
+    const cr3 = pwr.PWR_CR3.read(); // Read register once
     const vals = mode.get();
     return cr3.LDOEN == vals[0] and cr3.BYPASS == vals[1] and cr3.SCUEN == vals[2];
     // return switch (mode) {
@@ -89,7 +88,7 @@ pub fn config_ext_power_supply(mode: PwrSupplyMode) bool {
     }
 
     const vals = mode.get();
-    pwr.CR3.modify(.{
+    pwr.PWR_CR3.modify(.{
         .LDOEN = vals[0],
         .BYPASS = vals[1],
         .SCUEN = vals[2],
@@ -141,12 +140,13 @@ pub const PowerConfig = struct {
 };
 
 pub inline fn apply(config: PowerConfig) void {
-    pwr.CR.modify(.{
-        .PLS = @intFromEnum(config.pvd_threshold),
-        .PDDS = @as(PDDS, @enumFromInt(@intFromEnum(config.deepsleep_mode))),
-        .LPDS = @intFromEnum(config.volt_regulator_mode),
-    });
-    pwr.CSR.modify(.{ .EWUP = @intFromBool(config.wakeup_pin) });
+    _ = config;
+    // pwr.CR.modify(.{
+    //     .PLS = @intFromEnum(config.pvd_threshold),
+    //     .PDDS = @as(PDDS, @enumFromInt(@intFromEnum(config.deepsleep_mode))),
+    //     .LPDS = @intFromEnum(config.volt_regulator_mode),
+    // });
+    // pwr.CSR.modify(.{ .EWUP = @intFromBool(config.wakeup_pin) });
 }
 
 ///enable/disable the power voltage detection peripheral.

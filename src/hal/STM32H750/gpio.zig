@@ -39,21 +39,20 @@ pub const Pin = struct {
     }
 
     pub fn configure(comptime self: @This()) void {
+        // Enable GPIO clock first
+        peripherals.RCC.AHB4ENR.modify_one("GPIO" ++ self.port_id ++ "EN", 1);
         const port_peripheral = @field(peripherals, "GPIO" ++ self.port_id);
         // TODO: Support input
-        port_peripheral.MODER.modify_one("MODER[" ++ self.number_str ++ "]", .Output);
+        port_peripheral.GPIO_MODER.modify_one("MODE" ++ self.number_str, .Output);
         // TODO: Support different modes, for input and for output
-        port_peripheral.OTYPER.modify_one("OT[" ++ self.number_str ++ "]", .PushPull);
+        port_peripheral.GPIO_OTYPER.modify_one("OT" ++ self.number_str, .PushPull);
         // TODO: Support different speeds
-        port_peripheral.OSPEEDR.modify_one("OSPEEDR[" ++ self.number_str ++ "]", .LowSpeed);
+        port_peripheral.GPIO_OSPEEDR.modify_one("OSPEED" ++ self.number_str, .LowSpeed);
         // TODO: Support pull-up / pull-down
-        port_peripheral.PUPDR.modify_one("PUPDR[" ++ self.number_str ++ "]", .Floating);
+        port_peripheral.GPIO_PUPDR.modify_one("PUPD" ++ self.number_str, .Floating);
     }
 
     pub fn toggle(comptime self: @This()) void {
-        @field(peripherals, "GPIO" ++ self.port_id).ODR.toggle_one("ODR[" ++ self.number_str ++ "]", .High);
-        const cpu = microzig.cpu;
-        cpu.dsb(); // Data Synchronization Barrier
-        cpu.isb(); // Instruction Synchronization Barrier
+        @field(peripherals, "GPIO" ++ self.port_id).GPIO_ODR.toggle_one("OD" ++ self.number_str, .High);
     }
 };

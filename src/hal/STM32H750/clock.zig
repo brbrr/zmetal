@@ -30,6 +30,17 @@ pub fn inc_tick() callconv(.c) void {
     uwTick += uwTickFreq;
 }
 
+pub fn delay(wait: u32) void {
+    const tickstart = get_tick();
+    var _wait = wait;
+
+    _wait += uwTickFreq;
+    //* Add a freq to guarantee minimum wait */
+    // if (wait < HAL_MAX_DELAY) { }
+
+    while ((get_tick() - tickstart) < _wait) {}
+}
+
 pub fn get_sys_clock_freq() u32 {
     const sw = RCC.CFGR.read().SWS;
     const hsi_div = @intFromEnum(RCC.CR.read().HSIDIV);

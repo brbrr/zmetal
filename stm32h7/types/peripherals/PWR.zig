@@ -1,5 +1,13 @@
-const mmio = @import("mmio");
+const microzig = @import("microzig");
+const mmio = microzig.mmio;
 const types = @import("../../types.zig");
+
+pub const VOS = enum(u2) {
+    Scale3 = 0x1,
+    Scale2 = 0x2,
+    Scale1 = 0x3,
+    _,
+};
 
 /// PWR
 pub const PWR = extern struct {
@@ -71,7 +79,7 @@ pub const PWR = extern struct {
         /// Low drop-out regulator enable
         LDOEN: u1,
         /// SD converter Enable
-        SDEN: u1,
+        SCUEN: u1, // SDEN: u1,
         reserved8: u5 = 0,
         /// VBAT charging enable
         VBE: u1,
@@ -120,7 +128,7 @@ pub const PWR = extern struct {
         /// VOS Ready bit for VCORE voltage scaling output selection. This bit is set to 1 by hardware when Bypass mode is selected in PWR control register 3 (PWR_CR3).
         VOSRDY: u1,
         /// Voltage scaling selection according to performance These bits control the VCORE voltage level and allow to obtains the best trade-off between power consumption and performance: When increasing the performance, the voltage scaling shall be changed before increasing the system frequency. When decreasing performance, the system frequency shall first be decreased before changing the voltage scaling.
-        VOS: u2,
+        VOS: VOS,
         padding: u16 = 0,
     }),
     /// offset: 0x1c

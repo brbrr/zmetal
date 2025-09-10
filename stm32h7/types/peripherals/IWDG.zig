@@ -1,4 +1,5 @@
-const mmio = @import("mmio");
+const mz = @import("microzig");
+const mmio = mz.mmio;
 const types = @import("../../types.zig");
 
 /// IWDG

@@ -1,5 +1,59 @@
-const mmio = @import("mmio");
+const microzig = @import("microzig");
+const mmio = microzig.mmio;
 const types = @import("../../types.zig");
+
+pub const IDR = enum(u1) {
+    /// Input is logic low
+    Low = 0x0,
+    /// Input is logic high
+    High = 0x1,
+};
+
+pub const MODER = enum(u2) {
+    /// Input mode (reset state)
+    Input = 0x0,
+    /// General purpose output mode
+    Output = 0x1,
+    /// Alternate function mode
+    Alternate = 0x2,
+    /// Analog mode
+    Analog = 0x3,
+};
+
+pub const ODR = enum(u1) {
+    /// Set output to logic low
+    Low = 0x0,
+    /// Set output to logic high
+    High = 0x1,
+};
+
+pub const OSPEEDR = enum(u2) {
+    /// Low speed
+    LowSpeed = 0x0,
+    /// Medium speed
+    MediumSpeed = 0x1,
+    /// High speed
+    HighSpeed = 0x2,
+    /// Very high speed
+    VeryHighSpeed = 0x3,
+};
+
+pub const OT = enum(u1) {
+    /// Output push-pull (reset state)
+    PushPull = 0x0,
+    /// Output open-drain
+    OpenDrain = 0x1,
+};
+
+pub const PUPDR = enum(u2) {
+    /// No pull-up, pull-down
+    Floating = 0x0,
+    /// Pull-up
+    PullUp = 0x1,
+    /// Pull-down
+    PullDown = 0x2,
+    _,
+};
 
 /// GPIO
 pub const GPIOA = extern struct {
@@ -7,219 +61,219 @@ pub const GPIOA = extern struct {
     /// offset: 0x00
     GPIO_MODER: mmio.Mmio(packed struct(u32) {
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE0: u2,
+        MODE0: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE1: u2,
+        MODE1: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE2: u2,
+        MODE2: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE3: u2,
+        MODE3: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE4: u2,
+        MODE4: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE5: u2,
+        MODE5: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE6: u2,
+        MODE6: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE7: u2,
+        MODE7: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE8: u2,
+        MODE8: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE9: u2,
+        MODE9: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE10: u2,
+        MODE10: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE11: u2,
+        MODE11: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE12: u2,
+        MODE12: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE13: u2,
+        MODE13: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE14: u2,
+        MODE14: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
-        MODE15: u2,
+        MODE15: MODER,
     }),
     /// GPIO port output type register
     /// offset: 0x04
     GPIO_OTYPER: mmio.Mmio(packed struct(u32) {
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT0: u1,
+        OT0: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT1: u1,
+        OT1: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT2: u1,
+        OT2: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT3: u1,
+        OT3: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT4: u1,
+        OT4: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT5: u1,
+        OT5: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT6: u1,
+        OT6: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT7: u1,
+        OT7: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT8: u1,
+        OT8: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT9: u1,
+        OT9: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT10: u1,
+        OT10: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT11: u1,
+        OT11: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT12: u1,
+        OT12: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT13: u1,
+        OT13: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT14: u1,
+        OT14: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
-        OT15: u1,
+        OT15: OT,
         padding: u16 = 0,
     }),
     /// GPIO port output speed register
     /// offset: 0x08
     GPIO_OSPEEDR: mmio.Mmio(packed struct(u32) {
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED0: u2,
+        OSPEED0: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED1: u2,
+        OSPEED1: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED2: u2,
+        OSPEED2: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED3: u2,
+        OSPEED3: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED4: u2,
+        OSPEED4: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED5: u2,
+        OSPEED5: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED6: u2,
+        OSPEED6: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED7: u2,
+        OSPEED7: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED8: u2,
+        OSPEED8: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED9: u2,
+        OSPEED9: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED10: u2,
+        OSPEED10: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED11: u2,
+        OSPEED11: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED12: u2,
+        OSPEED12: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED13: u2,
+        OSPEED13: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED14: u2,
+        OSPEED14: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
-        OSPEED15: u2,
+        OSPEED15: OSPEEDR,
     }),
     /// GPIO port pull-up/pull-down register
     /// offset: 0x0c
     GPIO_PUPDR: mmio.Mmio(packed struct(u32) {
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD0: u2,
+        PUPD0: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD1: u2,
+        PUPD1: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD2: u2,
+        PUPD2: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD3: u2,
+        PUPD3: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD4: u2,
+        PUPD4: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD5: u2,
+        PUPD5: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD6: u2,
+        PUPD6: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD7: u2,
+        PUPD7: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD8: u2,
+        PUPD8: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD9: u2,
+        PUPD9: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD10: u2,
+        PUPD10: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD11: u2,
+        PUPD11: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD12: u2,
+        PUPD12: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD13: u2,
+        PUPD13: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD14: u2,
+        PUPD14: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
-        PUPD15: u2,
+        PUPD15: PUPDR,
     }),
     /// GPIO port input data register
     /// offset: 0x10
     GPIO_IDR: mmio.Mmio(packed struct(u32) {
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID0: u1,
+        ID0: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID1: u1,
+        ID1: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID2: u1,
+        ID2: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID3: u1,
+        ID3: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID4: u1,
+        ID4: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID5: u1,
+        ID5: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID6: u1,
+        ID6: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID7: u1,
+        ID7: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID8: u1,
+        ID8: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID9: u1,
+        ID9: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID10: u1,
+        ID10: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID11: u1,
+        ID11: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID12: u1,
+        ID12: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID13: u1,
+        ID13: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID14: u1,
+        ID14: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
-        ID15: u1,
+        ID15: IDR,
         padding: u16 = 0,
     }),
     /// GPIO port output data register
     /// offset: 0x14
     GPIO_ODR: mmio.Mmio(packed struct(u32) {
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD0: u1,
+        OD0: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD1: u1,
+        OD1: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD2: u1,
+        OD2: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD3: u1,
+        OD3: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD4: u1,
+        OD4: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD5: u1,
+        OD5: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD6: u1,
+        OD6: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD7: u1,
+        OD7: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD8: u1,
+        OD8: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD9: u1,
+        OD9: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD10: u1,
+        OD10: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD11: u1,
+        OD11: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD12: u1,
+        OD12: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD13: u1,
+        OD13: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD14: u1,
+        OD14: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
-        OD15: u1,
+        OD15: ODR,
         padding: u16 = 0,
     }),
     /// GPIO port bit set/reset register
