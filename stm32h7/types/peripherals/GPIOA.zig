@@ -59,7 +59,7 @@ pub const PUPDR = enum(u2) {
 pub const GPIOA = extern struct {
     /// GPIO port mode register
     /// offset: 0x00
-    GPIO_MODER: mmio.Mmio(packed struct(u32) {
+    MODER: mmio.Mmio(packed struct(u32) {
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
         MODE0: MODER,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O mode.
@@ -95,7 +95,7 @@ pub const GPIOA = extern struct {
     }),
     /// GPIO port output type register
     /// offset: 0x04
-    GPIO_OTYPER: mmio.Mmio(packed struct(u32) {
+    OTYPER: mmio.Mmio(packed struct(u32) {
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
         OT0: OT,
         /// Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output type.
@@ -132,7 +132,7 @@ pub const GPIOA = extern struct {
     }),
     /// GPIO port output speed register
     /// offset: 0x08
-    GPIO_OSPEEDR: mmio.Mmio(packed struct(u32) {
+    OSPEEDR: mmio.Mmio(packed struct(u32) {
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
         OSPEED0: OSPEEDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O output speed. Note: Refer to the device datasheet for the frequency specifications and the power supply and load conditions for each speed.
@@ -168,7 +168,7 @@ pub const GPIOA = extern struct {
     }),
     /// GPIO port pull-up/pull-down register
     /// offset: 0x0c
-    GPIO_PUPDR: mmio.Mmio(packed struct(u32) {
+    PUPDR: mmio.Mmio(packed struct(u32) {
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
         PUPD0: PUPDR,
         /// [1:0]: Port x configuration bits (y = 0..15) These bits are written by software to configure the I/O pull-up or pull-down
@@ -204,7 +204,7 @@ pub const GPIOA = extern struct {
     }),
     /// GPIO port input data register
     /// offset: 0x10
-    GPIO_IDR: mmio.Mmio(packed struct(u32) {
+    IDR: mmio.Mmio(packed struct(u32) {
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
         ID0: IDR,
         /// Port input data bit (y = 0..15) These bits are read-only. They contain the input value of the corresponding I/O port.
@@ -241,7 +241,7 @@ pub const GPIOA = extern struct {
     }),
     /// GPIO port output data register
     /// offset: 0x14
-    GPIO_ODR: mmio.Mmio(packed struct(u32) {
+    ODR: mmio.Mmio(packed struct(u32) {
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
         OD0: ODR,
         /// Port output data bit These bits can be read and written by software. Note: For atomic bit set/reset, the OD bits can be individually set and/or reset by writing to the GPIOx_BSRR or GPIOx_BRR registers (x = A..F).
@@ -278,7 +278,7 @@ pub const GPIOA = extern struct {
     }),
     /// GPIO port bit set/reset register
     /// offset: 0x18
-    GPIO_BSRR: mmio.Mmio(packed struct(u32) {
+    BSRR: mmio.Mmio(packed struct(u32) {
         /// Port x set bit y (y= 0..15) These bits are write-only. A read to these bits returns the value 0x0000.
         BS0: u1,
         /// Port x set bit y (y= 0..15) These bits are write-only. A read to these bits returns the value 0x0000.
@@ -346,7 +346,7 @@ pub const GPIOA = extern struct {
     }),
     /// This register is used to lock the configuration of the port bits when a correct write sequence is applied to bit 16 (LCKK). The value of bits [15:0] is used to lock the configuration of the GPIO. During the write sequence, the value of LCKR[15:0] must not change. When the LOCK sequence has been applied on a port bit, the value of this port bit can no longer be modified until the next MCU reset or peripheral reset.A specific write sequence is used to write to the GPIOx_LCKR register. Only word access (32-bit long) is allowed during this locking sequence.Each lock bit freezes a specific configuration register (control and alternate function registers).
     /// offset: 0x1c
-    GPIO_LCKR: mmio.Mmio(packed struct(u32) {
+    LCKR: mmio.Mmio(packed struct(u32) {
         /// Port x lock bit y (y= 0..15) These bits are read/write but can only be written when the LCKK bit is 0.
         LCK0: u1,
         /// Port x lock bit y (y= 0..15) These bits are read/write but can only be written when the LCKK bit is 0.
@@ -385,7 +385,7 @@ pub const GPIOA = extern struct {
     }),
     /// GPIO alternate function low register
     /// offset: 0x20
-    GPIO_AFRL: mmio.Mmio(packed struct(u32) {
+    AFRL: mmio.Mmio(packed struct(u32) {
         /// [3:0]: Alternate function selection for port x pin y (y = 0..7) These bits are written by software to configure alternate function I/Os AFSELy selection:
         AFSEL0: u4,
         /// [3:0]: Alternate function selection for port x pin y (y = 0..7) These bits are written by software to configure alternate function I/Os AFSELy selection:
@@ -405,7 +405,7 @@ pub const GPIOA = extern struct {
     }),
     /// GPIO alternate function high register
     /// offset: 0x24
-    GPIO_AFRH: mmio.Mmio(packed struct(u32) {
+    AFRH: mmio.Mmio(packed struct(u32) {
         /// [3:0]: Alternate function selection for port x pin y (y = 8..15) These bits are written by software to configure alternate function I/Os
         AFSEL8: u4,
         /// [3:0]: Alternate function selection for port x pin y (y = 8..15) These bits are written by software to configure alternate function I/Os

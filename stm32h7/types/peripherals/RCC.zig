@@ -1307,7 +1307,7 @@ pub const RCC = extern struct {
     D3CFGR: mmio.Mmio(packed struct(u32) {
         reserved4: u4 = 0,
         /// D3 domain APB4 prescaler
-        D3PPRE: u3,
+        D3PPRE: PPRE,
         padding: u25 = 0,
     }),
     /// offset: 0x24
@@ -1396,14 +1396,14 @@ pub const RCC = extern struct {
     /// offset: 0x38
     PLL2DIVR: mmio.Mmio(packed struct(u32) {
         /// Multiplication factor for PLL1 VCO
-        DIVN1: u9,
+        DIVN2: PLLN,
         /// PLL1 DIVP division factor
-        DIVP1: u7,
+        DIVP2: PLLDIV,
         /// PLL1 DIVQ division factor
-        DIVQ1: u7,
+        DIVQ2: PLLDIV,
         reserved24: u1 = 0,
         /// PLL1 DIVR division factor
-        DIVR1: u7,
+        DIVR2: PLLDIV,
         padding: u1 = 0,
     }),
     /// RCC PLL2 Fractional Divider Register
@@ -1418,14 +1418,14 @@ pub const RCC = extern struct {
     /// offset: 0x40
     PLL3DIVR: mmio.Mmio(packed struct(u32) {
         /// Multiplication factor for PLL1 VCO
-        DIVN3: u9,
+        DIVN3: PLLN,
         /// PLL DIVP division factor
-        DIVP3: u7,
+        DIVP3: PLLDIV,
         /// PLL DIVQ division factor
-        DIVQ3: u7,
+        DIVQ3: PLLDIV,
         reserved24: u1 = 0,
         /// PLL DIVR division factor
-        DIVR3: u7,
+        DIVR3: PLLDIV,
         padding: u1 = 0,
     }),
     /// RCC PLL3 Fractional Divider Register

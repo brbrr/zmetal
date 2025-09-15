@@ -6,7 +6,7 @@ pub const VOS = enum(u2) {
     Scale3 = 0x1,
     Scale2 = 0x2,
     Scale1 = 0x3,
-    _,
+    Scale0 = 0x0,
 };
 
 /// PWR

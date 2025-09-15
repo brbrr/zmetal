@@ -8,7 +8,7 @@ const PWR = microzig.chip.types.peripherals.PWR;
 
 const PWR_FLAG_SETTING_DELAY: u32 = 1000;
 
-pub inline fn set_volage_scalling(scale: PWR.VOS) void {
+pub inline fn set_voltage_scalling(scale: PWR.VOS) void {
     pwr.PWR_D3CR.modify_one("VOS", scale);
     _ = pwr.PWR_D3CR.read();
 }

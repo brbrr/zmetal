@@ -46,3 +46,9 @@ pub fn find_clock_tree(comptime name: []const u8) type {
     if (std.mem.indexOf(u8, name, "H750")) |_| return H750;
     @panic("Not supported cpu" ++ name ++ "\n");
 }
+
+pub fn set_reg_field(reg: anytype, comptime field_name: anytype, value: anytype) void {
+    var temp = reg.read();
+    @field(temp, field_name) = value;
+    reg.write(temp);
+}

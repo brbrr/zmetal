@@ -2,7 +2,7 @@ pub const rcc = @import("rcc.zig");
 pub const pins = @import("pins.zig");
 pub const gpio = @import("gpio.zig");
 // pub const exti = @import("exti.zig");
-// pub const uart = @import("uart.zig");
+pub const uart = @import("uart.zig");
 // pub const i2c = @import("i2c.zig");
 // pub const spi = @import("spi.zig");
 // pub const drivers = @import("drivers.zig");
@@ -15,9 +15,6 @@ pub const power = @import("power.zig");
 // pub const rtc = @import("rtc.zig");
 // pub const dma = @import("DMA.zig");
 pub const clock = @import("clock.zig");
-//
-//
-pub var RESET: rcc.ResetReason = .POR_or_PDR;
-pub fn init() void {
-    RESET = rcc.get_reset_reason();
-}
+pub const mpu = @import("mpu.zig");
+
+pub const utils = @import("util.zig");

@@ -632,7 +632,7 @@ pub const peripherals = struct {
     /// DMA2D
     pub const DMA2D: *volatile types.peripherals.DMA2D = @ptrFromInt(0x52001000);
     /// Flash
-    pub const FLASH: *volatile types.peripherals.Flash = @ptrFromInt(0x52002000);
+    pub const FLASH: *volatile types.peripherals.Flash.Flash = @ptrFromInt(0x52002000);
     /// JPEG
     pub const JPEG: *volatile types.peripherals.JPEG = @ptrFromInt(0x52003000);
     /// FMC
@@ -674,27 +674,27 @@ pub const peripherals = struct {
     /// SAI
     pub const SAI4: *volatile types.peripherals.SAI4 = @ptrFromInt(0x58005400);
     /// GPIO
-    pub const GPIOA: *volatile types.peripherals.GPIOA = @ptrFromInt(0x58020000);
+    pub const GPIOA: *volatile types.peripherals.GPIO.GPIOA = @ptrFromInt(0x58020000);
     /// GPIO
-    pub const GPIOB: *volatile types.peripherals.GPIOA = @ptrFromInt(0x58020400);
+    pub const GPIOB: *volatile types.peripherals.GPIO.GPIOA = @ptrFromInt(0x58020400);
     /// GPIO
-    pub const GPIOC: *volatile types.peripherals.GPIOA = @ptrFromInt(0x58020800);
+    pub const GPIOC: *volatile types.peripherals.GPIO.GPIOA = @ptrFromInt(0x58020800);
     /// GPIO
-    pub const GPIOD: *volatile types.peripherals.GPIOA = @ptrFromInt(0x58020c00);
+    pub const GPIOD: *volatile types.peripherals.GPIO.GPIOA = @ptrFromInt(0x58020c00);
     /// GPIO
-    pub const GPIOE: *volatile types.peripherals.GPIOA = @ptrFromInt(0x58021000);
+    pub const GPIOE: *volatile types.peripherals.GPIO.GPIOA = @ptrFromInt(0x58021000);
     /// GPIO
-    pub const GPIOF: *volatile types.peripherals.GPIOA = @ptrFromInt(0x58021400);
+    pub const GPIOF: *volatile types.peripherals.GPIO.GPIOA = @ptrFromInt(0x58021400);
     /// GPIO
-    pub const GPIOG: *volatile types.peripherals.GPIOA = @ptrFromInt(0x58021800);
+    pub const GPIOG: *volatile types.peripherals.GPIO.GPIOA = @ptrFromInt(0x58021800);
     /// GPIO
-    pub const GPIOH: *volatile types.peripherals.GPIOA = @ptrFromInt(0x58021c00);
+    pub const GPIOH: *volatile types.peripherals.GPIO.GPIOA = @ptrFromInt(0x58021c00);
     /// GPIO
-    pub const GPIOI: *volatile types.peripherals.GPIOA = @ptrFromInt(0x58022000);
+    pub const GPIOI: *volatile types.peripherals.GPIO.GPIOA = @ptrFromInt(0x58022000);
     /// GPIO
-    pub const GPIOJ: *volatile types.peripherals.GPIOA = @ptrFromInt(0x58022400);
+    pub const GPIOJ: *volatile types.peripherals.GPIO.GPIOA = @ptrFromInt(0x58022400);
     /// GPIO
-    pub const GPIOK: *volatile types.peripherals.GPIOA = @ptrFromInt(0x58022800);
+    pub const GPIOK: *volatile types.peripherals.GPIO.GPIOA = @ptrFromInt(0x58022800);
     /// Reset and clock control
     pub const RCC: *volatile types.peripherals.RCC.RCC = @ptrFromInt(0x58024400);
     /// PWR

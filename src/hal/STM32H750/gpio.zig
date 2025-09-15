@@ -3,56 +3,111 @@ const std = @import("std");
 const microzig = @import("microzig");
 const peripherals = microzig.chip.peripherals;
 
+const GPIO = microzig.chip.types.peripherals.GPIO;
+
+pub const AlternateFunction = enum(u4) {
+    af0,
+    af1,
+    af2,
+    af3,
+    af4,
+    af5,
+    af6,
+    af7,
+    af8,
+    af9,
+    af10,
+    af11,
+    af12,
+    af13,
+    af14,
+    af15,
+
+    pub fn get(self: @This()) u4 {
+        return @intFromEnum(self);
+    }
+};
+
 pub const Mode = union(enum) {
-    input: InputMode,
-    output: OutputMode,
+    /// Input mode (reset state)
+    Input,
+    /// General purpose output mode
+    Output,
+    /// Alternate function mode
+    Alternate: AlternateFunction,
+    /// Analog mode
+    Analog,
+
+    pub fn toModer(self: Mode) GPIO.MODER {
+        return switch (self) {
+            .Input => @enumFromInt(0),
+            .Output => @enumFromInt(1),
+            .Alternate => @enumFromInt(2),
+            .Analog => @enumFromInt(3),
+        };
+    }
 };
 
-pub const InputMode = enum(u2) {
-    analog,
-    floating,
-    pull_up,
-    pull_down,
-};
+pub const PinConfig = struct {
+    mode: Mode = .Output,
+    otype: GPIO.OT = .PushPull,
+    pull: GPIO.PUPDR = .Floating,
+    speed: GPIO.OSPEEDR = .LowSpeed,
 
-pub const OutputMode = enum(u2) {
-    push_pull,
-    open_drain,
+    pub fn default() PinConfig {
+        return PinConfig{};
+    }
 };
-
-// TODO: Add the following
-// pub const Speed = enum(u2) {
-//     low,
-//     medium,
-//     high,
-// };
 
 pub const Pin = struct {
     port_id: []const u8,
     number_str: []const u8,
+    config: PinConfig,
 
-    pub fn init(port_id: []const u8, number_str: []const u8) Pin {
+    pub fn init(
+        port_id: []const u8,
+        number_str: []const u8,
+        config: PinConfig,
+    ) Pin {
         return Pin{
             .port_id = port_id,
             .number_str = number_str,
+            .config = config,
         };
     }
 
     pub fn configure(comptime self: @This()) void {
-        // Enable GPIO clock first
+        // Enable GPIO clock
         peripherals.RCC.AHB4ENR.modify_one("GPIO" ++ self.port_id ++ "EN", 1);
-        const port_peripheral = @field(peripherals, "GPIO" ++ self.port_id);
-        // TODO: Support input
-        port_peripheral.GPIO_MODER.modify_one("MODE" ++ self.number_str, .Output);
-        // TODO: Support different modes, for input and for output
-        port_peripheral.GPIO_OTYPER.modify_one("OT" ++ self.number_str, .PushPull);
-        // TODO: Support different speeds
-        port_peripheral.GPIO_OSPEEDR.modify_one("OSPEED" ++ self.number_str, .LowSpeed);
-        // TODO: Support pull-up / pull-down
-        port_peripheral.GPIO_PUPDR.modify_one("PUPD" ++ self.number_str, .Floating);
+        const port = @field(peripherals, "GPIO" ++ self.port_id);
+
+        // Apply config
+        port.MODER.modify_one("MODE" ++ self.number_str, self.config.mode.toModer());
+        if (self.config.mode == .Alternate) {
+            // Set AF7 for USART1 on PA9 and PA10
+            const pin_num = std.fmt.parseInt(u8, self.number_str, 10) catch unreachable;
+            if (pin_num < 8) {
+                port.AFRL.modify_one("AFSEL" ++ self.number_str, self.config.mode.Alternate.get());
+            } else {
+                // port.AFRH.modify_one("AFSEL" ++ self.number_str, self.config.mode.Alternate.get());
+            }
+        }
+        port.OTYPER.modify_one("OT" ++ self.number_str, self.config.otype);
+        port.PUPDR.modify_one("PUPD" ++ self.number_str, self.config.pull);
+        port.OSPEEDR.modify_one("OSPEED" ++ self.number_str, self.config.speed);
+    }
+
+    pub fn write(comptime self: @This(), value: GPIO.ODR) void {
+        @field(peripherals, "GPIO" ++ self.port_id).ODR.write_one("OD" ++ self.number_str, value);
     }
 
     pub fn toggle(comptime self: @This()) void {
-        @field(peripherals, "GPIO" ++ self.port_id).GPIO_ODR.toggle_one("OD" ++ self.number_str, .High);
+        @field(peripherals, "GPIO" ++ self.port_id).ODR.toggle_one("OD" ++ self.number_str, .High);
+    }
+
+    pub fn read(comptime self: @This()) GPIO.IDR {
+        const reg = @field(peripherals, "GPIO" ++ self.port_id).IDR.read();
+
+        return @field(reg, "ID" ++ self.number_str);
     }
 };

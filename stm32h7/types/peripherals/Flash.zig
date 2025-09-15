@@ -2,13 +2,32 @@ const mz = @import("microzig");
 const mmio = mz.mmio;
 const types = @import("../../types.zig");
 
+pub const LATENCY = enum(u3) {
+    /// 0 wait states
+    WS0 = 0x0,
+    /// 1 wait states
+    WS1 = 0x1,
+    /// 2 wait states
+    WS2 = 0x2,
+    /// 3 wait states
+    WS3 = 0x3,
+    /// 4 wait states
+    WS4 = 0x4,
+    /// 5 wait states
+    WS5 = 0x5,
+    /// 6 wait states
+    WS6 = 0x6,
+    /// 7 wait states
+    WS7 = 0x7,
+};
+
 /// Flash
 pub const Flash = extern struct {
     /// Access control register
     /// offset: 0x00
     ACR: mmio.Mmio(packed struct(u32) {
         /// Read latency
-        LATENCY: u3,
+        LATENCY: LATENCY,
         reserved4: u1 = 0,
         /// Flash signal delay
         WRHIGHFREQ: u2,
