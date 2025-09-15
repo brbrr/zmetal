@@ -11,6 +11,7 @@ const chip = microzig.chip;
 
 const chip_peri = chip.peripherals;
 const RCC = chip_peri.RCC;
+const time = microzig.drivers.time;
 
 const daisy = @import("hal/STM32H750/daisy.zig");
 
@@ -38,6 +39,8 @@ pub const microzig_options: microzig.Options = .{
         .SVCall = .{ .c = sv_call_handler },
         .PendSV = .{ .c = hw_handler },
     },
+
+    .logFn = hal.uart.log,
 };
 
 fn hw_handler() callconv(.c) void {
@@ -156,14 +159,13 @@ const rx = hal.gpio.Pin.init("B", "7", .{
     .speed = .VeryHighSpeed,
     .pull = .PullUp,
 });
-const uart1 = hal.uart.Uart.init(.USART1, .{
-    .baudrate = 115_200,
-    // .baudrate = 9600,
-});
+
+const uart = hal.uart.instance.num(0);
+
+var data: [1]u8 = .{0};
 pub fn main() !void {
     init_vector_table();
 
-    // errors.delay(5_000_000);
     daisy.init() catch {
         errors.error_handler();
     };
@@ -174,7 +176,10 @@ pub fn main() !void {
     tx.configure();
     rx.configure();
 
-    uart1.configure();
+    uart.apply(.{});
+
+    stm32.uart.init_logger(uart);
+    std.log.debug("Test logger", .{});
 
     while (true) {
         cpu.wfi();
@@ -182,9 +187,21 @@ pub fn main() !void {
             led.toggle();
         }
 
-        const c = uart1.readByte();
-        uart1.writeByte(c); // echo
-        // uart1.writeByte('H');
-        // uart1.writeByte('i');
+        // Read one byte, timeout disabled
+        uart.read_blocking(&data, null) catch {
+            // You need to clear UART errors before making a new transaction
+            uart.clear_errors();
+            std.log.debug("Got some errors :[", .{});
+            continue;
+        };
+
+        //tries to write one byte with 100ms timeout
+        uart.write_blocking(&data, time.Duration.from_ms(100)) catch {
+            std.log.debug("Got some errors :[", .{});
+            uart.clear_errors();
+        };
+        // Toggle the led every time we think we've received a character so we
+        // know something is going on.
+        led.toggle();
     }
 }
