@@ -217,28 +217,28 @@ fn dma_init() !void {
 
     // DMA interrupt init
     // DMA1_Stream0_IRQn interrupt configuration
-    cpu.interrupt.set_priority(.DMA_STR0, .highest);
-    cpu.interrupt.enable(.DMA_STR0);
+    cpu.interrupt.set_priority(.DMA1_STR0, .highest);
+    cpu.interrupt.enable(.DMA1_STR0);
     // DMA1_Stream1_IRQn interrupt configuration
-    cpu.interrupt.set_priority(.DMA_STR1, .highest);
-    cpu.interrupt.enable(.DMA_STR1);
+    cpu.interrupt.set_priority(.DMA1_STR1, .highest);
+    cpu.interrupt.enable(.DMA1_STR1);
     // DMA1_Stream2_IRQn interrupt configuration
-    cpu.interrupt.set_priority(.DMA_STR2, .highest);
-    cpu.interrupt.enable(.DMA_STR2);
+    cpu.interrupt.set_priority(.DMA1_STR2, .highest);
+    cpu.interrupt.enable(.DMA1_STR2);
     // DMA1_Stream3_IRQn interrupt configuration
-    cpu.interrupt.set_priority(.DMA_STR3, .highest);
-    cpu.interrupt.enable(.DMA_STR3);
+    cpu.interrupt.set_priority(.DMA1_STR3, .highest);
+    cpu.interrupt.enable(.DMA1_STR3);
     // DMA1_Stream4_IRQn interrupt configuration
-    cpu.interrupt.set_priority(.DMA_STR4, .highest);
-    cpu.interrupt.enable(.DMA_STR4);
+    cpu.interrupt.set_priority(.DMA1_STR4, .highest);
+    cpu.interrupt.enable(.DMA1_STR4);
     // DMA1_Stream5_IRQn and DMA2_Stream4_IRQn interrupt configuration for uart rx and tx
-    cpu.interrupt.set_priority(.DMA_STR5, .highest);
-    cpu.interrupt.enable(.DMA_STR5);
+    cpu.interrupt.set_priority(.DMA1_STR5, .highest);
+    cpu.interrupt.enable(.DMA1_STR5);
     cpu.interrupt.set_priority(.DMA2_STR4, .highest);
     cpu.interrupt.enable(.DMA2_STR4);
     // DMA1_Stream6_IRQn interrupt configuration for I2C
-    cpu.interrupt.set_priority(.DMA_STR6, .highest);
-    cpu.interrupt.enable(.DMA_STR6);
+    cpu.interrupt.set_priority(.DMA1_STR6, .highest);
+    cpu.interrupt.enable(.DMA1_STR6);
     // DMA2_Stream0_IRQn, interrupt configuration for DAC Ch1
     cpu.interrupt.set_priority(.DMA2_STR0, .highest);
     cpu.interrupt.enable(.DMA2_STR0);

@@ -16,9 +16,11 @@ const time = microzig.drivers.time;
 const daisy = @import("hal/STM32H750/daisy.zig");
 
 pub const hal = @import("hal/STM32H750/hal.zig");
-const stm32 = hal;
 const errors = @import("hal/STM32H750/errors.zig");
 pub const panic = errors.panic;
+const ssai = @import("hal/STM32H750/sai.zig");
+const SaiDriver = ssai.SaiDriver;
+const osc = @import("dsp/osc.zig");
 
 // INTERNAL_ADDRESS = 0x08000000
 // FLASH_ADDRESS ?= $(INTERNAL_ADDRESS)
@@ -38,6 +40,14 @@ pub const microzig_options: microzig.Options = .{
         .UsageFault = .{ .c = usage_fault_handler },
         .SVCall = .{ .c = sv_call_handler },
         .PendSV = .{ .c = hw_handler },
+
+        .DMA1_STR0 = .{ .c = ssai.dma1_0_handler },
+        .DMA1_STR1 = .{ .c = ssai.dma1_1_handler },
+        // .DMA1_STR2 = .{ .c = ssai.dma1_1_handler },
+        // .DMA1_STR3 = .{ .c = ssai.dma1_1_handler },
+        // .DMA1_STR4 = .{ .c = ssai.dma1_1_handler },
+        // .DMA1_STR5 = .{ .c = ssai.dma1_1_handler },
+        // .DMA1_STR6 = .{ .c = ssai.dma1_1_handler },
     },
 
     .logFn = hal.uart.log,
@@ -68,11 +78,12 @@ fn sv_call_handler() callconv(.c) void {
     @panic("SVCall");
 }
 
+var count: u32 = 1;
 fn sys_tick_handler() callconv(.c) void {
     hal.clock.inc_tick();
     count += 1;
     if (count == 1_000) {
-        //     led.toggle();
+        led.toggle();
         // } else if (count == 1100) {
         //     led.toggle();
         // } else if (count == 1200) {
@@ -82,8 +93,6 @@ fn sys_tick_handler() callconv(.c) void {
         count = 0;
     }
 }
-
-var count: u32 = 1;
 
 pub fn init_vector_table() void {
     // SCB base address (System Control Block)
@@ -144,25 +153,25 @@ pub fn init() void {
 }
 
 const led = hal.gpio.Pin.init("C", "7", .{});
-const btn = hal.gpio.Pin.init("G", "9", .{
-    .mode = .Input,
-});
-const tx = hal.gpio.Pin.init("B", "6", .{
-    .mode = .{ .Alternate = .af7 },
+
+const sai_p_cfg = hal.gpio.PinConfig{
+    .mode = .{ .Alternate = .af6 },
     .otype = .PushPull,
-    .speed = .VeryHighSpeed,
-    .pull = .Floating,
-});
-const rx = hal.gpio.Pin.init("B", "7", .{
-    .mode = .{ .Alternate = .af7 },
-    .otype = .PushPull,
-    .speed = .VeryHighSpeed,
+    .speed = .HighSpeed,
     .pull = .PullUp,
-});
+};
+const mclk = hal.gpio.Pin.init("E", "2", sai_p_cfg);
+const sb = hal.gpio.Pin.init("E", "3", sai_p_cfg);
+const fs = hal.gpio.Pin.init("E", "4", sai_p_cfg);
+const sck = hal.gpio.Pin.init("E", "5", sai_p_cfg);
+const sa = hal.gpio.Pin.init("E", "6", sai_p_cfg);
+const codec_reset = hal.gpio.Pin.init("B", "11", .{ .mode = .Output, .pull = .Floating });
 
-const uart = hal.uart.instance.num(0);
+var sine = osc.SineOsc.init(220.0, 48000, 0.9);
+var square = osc.SquareOsc.init(220.0, 48000, 0.9);
 
-var data: [1]u8 = .{0};
+var buff: [6000]u32 = undefined;
+
 pub fn main() !void {
     init_vector_table();
 
@@ -170,38 +179,66 @@ pub fn main() !void {
         errors.error_handler();
     };
     led.configure();
-    btn.configure();
     led.toggle();
 
-    tx.configure();
-    rx.configure();
+    fs.configure();
+    mclk.configure();
+    sck.configure();
+    sa.configure();
+    sb.configure();
+    codec_reset.configure();
 
-    uart.apply(.{});
+    var sai = SaiDriver.init(.{
+        .sample_rate = .@"48khz",
+        .bit_depth = .@"24bit",
+        .a_sync = .master,
+        .b_sync = .slave,
+        .a_dir = .transmit,
+        .b_dir = .receive,
+    });
 
-    stm32.uart.init_logger(uart);
-    std.log.debug("Test logger", .{});
+    try sai.setup();
 
+    // try sai.startAudio(myAudioCallback);
+
+    try sai.enable();
+    const samps = generateFreq(220, 48000);
+    // try sai.transmitSquareForever(220.0);
     while (true) {
-        cpu.wfi();
-        if (btn.read() == .Low) {
-            led.toggle();
+        var i: u32 = 0;
+        while (i < samps) {
+            const v = buff[i];
+            while (chip_peri.SAI1.SAI_ASR.read().FLVL > 5) {} // Keep at least 2 slots free
+            chip_peri.SAI1.SAI_ADR.raw = v;
+            chip_peri.SAI1.SAI_ADR.raw = v;
+            i += 1;
         }
+    }
+}
 
-        // Read one byte, timeout disabled
-        uart.read_blocking(&data, null) catch {
-            // You need to clear UART errors before making a new transaction
-            uart.clear_errors();
-            std.log.debug("Got some errors :[", .{});
-            continue;
-        };
+fn generateFreq(freq: f32, sr: f32) u32 {
+    const samples: u32 = @intFromFloat(sr / freq);
 
-        //tries to write one byte with 100ms timeout
-        uart.write_blocking(&data, time.Duration.from_ms(100)) catch {
-            std.log.debug("Got some errors :[", .{});
-            uart.clear_errors();
-        };
-        // Toggle the led every time we think we've received a character so we
-        // know something is going on.
-        led.toggle();
+    var sq = osc.SquareOsc.init(freq, sr, 0.9);
+    for (0..samples) |i| {
+        buff[i] = ssai.fto24(sq.nextSample());
+    }
+
+    return samples;
+}
+
+var c: u32 = 0;
+fn myAudioCallback(input: []const u32, output: []u32) void {
+    _ = input;
+    var i: u32 = 0;
+    while (i < output.len) : (i += 2) {
+        // output[i] = (c & 0xFFFFFF) << 8;
+        // c += 100;
+        // if (c > 4800) {
+        //     c = 0;
+        // }
+        output[i] = ssai.fto24(sine.nextSample());
+        // output[i] = ssai.fto24(square.nextSample());
+        output[i + 1] = output[i];
     }
 }

@@ -17,5 +17,6 @@ pub const power = @import("power.zig");
 pub const clock = @import("clock.zig");
 pub const mpu = @import("mpu.zig");
 pub const time = @import("time.zig");
+pub const dma = @import("dma.zig");
 
 pub const utils = @import("util.zig");

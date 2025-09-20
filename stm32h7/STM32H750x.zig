@@ -39,13 +39,13 @@ pub const interrupts: []const Interrupt = &.{
     .{ .name = "EXTI2", .index = 8, .description = "EXTI Line 2 interrupt" },
     .{ .name = "EXTI3", .index = 9, .description = "EXTI Line 3interrupt" },
     .{ .name = "EXTI4", .index = 10, .description = "EXTI Line 4interrupt" },
-    .{ .name = "DMA_STR0", .index = 11, .description = "DMA1 Stream0" },
-    .{ .name = "DMA_STR1", .index = 12, .description = "DMA1 Stream1" },
-    .{ .name = "DMA_STR2", .index = 13, .description = "DMA1 Stream2" },
-    .{ .name = "DMA_STR3", .index = 14, .description = "DMA1 Stream3" },
-    .{ .name = "DMA_STR4", .index = 15, .description = "DMA1 Stream4" },
-    .{ .name = "DMA_STR5", .index = 16, .description = "DMA1 Stream5" },
-    .{ .name = "DMA_STR6", .index = 17, .description = "DMA1 Stream6" },
+    .{ .name = "DMA1_STR0", .index = 11, .description = "DMA1 Stream0" },
+    .{ .name = "DMA1_STR1", .index = 12, .description = "DMA1 Stream1" },
+    .{ .name = "DMA1_STR2", .index = 13, .description = "DMA1 Stream2" },
+    .{ .name = "DMA1_STR3", .index = 14, .description = "DMA1 Stream3" },
+    .{ .name = "DMA1_STR4", .index = 15, .description = "DMA1 Stream4" },
+    .{ .name = "DMA1_STR5", .index = 16, .description = "DMA1 Stream5" },
+    .{ .name = "DMA1_STR6", .index = 17, .description = "DMA1 Stream6" },
     .{ .name = "ADC1_2", .index = 18, .description = "ADC1 and ADC2" },
     .{ .name = "FDCAN1_IT0", .index = 19, .description = "FDCAN1 Interrupt 0" },
     .{ .name = "FDCAN2_IT0", .index = 20, .description = "FDCAN2 Interrupt 0" },
@@ -211,19 +211,21 @@ pub const VectorTable = extern struct {
     /// EXTI Line 4interrupt
     EXTI4: Handler = unhandled,
     /// DMA1 Stream0
-    DMA_STR0: Handler = unhandled,
+    DMA1_STR0: Handler = unhandled,
     /// DMA1 Stream1
-    DMA_STR1: Handler = unhandled,
+    DMA1_STR1: Handler = unhandled,
     /// DMA1 Stream2
-    DMA_STR2: Handler = unhandled,
+    DMA1_STR2: Handler = unhandled,
     /// DMA1 Stream3
-    DMA_STR3: Handler = unhandled,
+    DMA1_STR3: Handler = unhandled,
     /// DMA1 Stream4
-    DMA_STR4: Handler = unhandled,
+    DMA1_STR4: Handler = unhandled,
     /// DMA1 Stream5
-    DMA_STR5: Handler = unhandled,
+    DMA1_STR5: Handler = unhandled,
     /// DMA1 Stream6
-    DMA_STR6: Handler = unhandled,
+    DMA1_STR6: Handler = unhandled,
+    /// DMA1 Stream7
+    DMA1_STR7: Handler = unhandled,
     /// ADC1 and ADC2
     ADC1_2: Handler = unhandled,
     /// FDCAN1 Interrupt 0
@@ -281,8 +283,6 @@ pub const VectorTable = extern struct {
     TIM8_TRG_COM_TIM14: Handler = unhandled,
     /// TIM8 capture / compare
     TIM8_CC: Handler = unhandled,
-    /// DMA1 Stream7
-    DMA1_STR7: Handler = unhandled,
     /// FMC global interrupt
     FMC: Handler = unhandled,
     /// SDMMC global interrupt
@@ -580,9 +580,9 @@ pub const peripherals = struct {
     /// High Resolution Timer: Common functions
     pub const HRTIM_Common: *volatile types.peripherals.HRTIM_Common = @ptrFromInt(0x40017780);
     /// DMA controller
-    pub const DMA1: *volatile types.peripherals.DMA1 = @ptrFromInt(0x40020000);
+    pub const DMA1: *volatile types.peripherals.DMA.DMA1 = @ptrFromInt(0x40020000);
     /// DMA controller
-    pub const DMA2: *volatile types.peripherals.DMA1 = @ptrFromInt(0x40020400);
+    pub const DMA2: *volatile types.peripherals.DMA.DMA1 = @ptrFromInt(0x40020400);
     /// DMAMUX
     pub const DMAMUX1: *volatile types.peripherals.DMAMUX1 = @ptrFromInt(0x40020800);
     /// Analog to Digital Converter

@@ -63,15 +63,18 @@ pub const Pin = struct {
     port_id: []const u8,
     number_str: []const u8,
     config: PinConfig,
+    pin_num: u8,
 
     pub fn init(
         port_id: []const u8,
         number_str: []const u8,
         config: PinConfig,
     ) Pin {
+        const pin_num = std.fmt.parseInt(u8, number_str, 10) catch unreachable;
         return Pin{
             .port_id = port_id,
             .number_str = number_str,
+            .pin_num = pin_num,
             .config = config,
         };
     }
@@ -84,12 +87,10 @@ pub const Pin = struct {
         // Apply config
         port.MODER.modify_one("MODE" ++ self.number_str, self.config.mode.toModer());
         if (self.config.mode == .Alternate) {
-            // Set AF7 for USART1 on PA9 and PA10
-            const pin_num = std.fmt.parseInt(u8, self.number_str, 10) catch unreachable;
-            if (pin_num < 8) {
+            if (self.pin_num < 8) {
                 port.AFRL.modify_one("AFSEL" ++ self.number_str, self.config.mode.Alternate.get());
             } else {
-                // port.AFRH.modify_one("AFSEL" ++ self.number_str, self.config.mode.Alternate.get());
+                port.AFRH.modify_one("AFSEL" ++ self.number_str, self.config.mode.Alternate.get());
             }
         }
         port.OTYPER.modify_one("OT" ++ self.number_str, self.config.otype);
@@ -98,7 +99,7 @@ pub const Pin = struct {
     }
 
     pub fn write(comptime self: @This(), value: GPIO.ODR) void {
-        @field(peripherals, "GPIO" ++ self.port_id).ODR.write_one("OD" ++ self.number_str, value);
+        @field(peripherals, "GPIO" ++ self.port_id).ODR.modify_one("OD" ++ self.number_str, value);
     }
 
     pub fn toggle(comptime self: @This()) void {

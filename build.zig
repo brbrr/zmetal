@@ -37,6 +37,13 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "QSPIFLASH", .tag = .flash, .offset = 0x90000000, .length = 0x800000, .access = .rx },
             },
         },
+        .linker_script = .{
+            // The `generate` field defaults to `.memory_regions_and_sections`.
+
+            // This will be appended at the end of the auto-generated linker
+            // script.
+            .file = b.path("src/ld/sections.ld"),
+        },
 
         // .hal = .{
         //     .root_source_file = b.path("src/hals/STM32H750/hal.zig"),

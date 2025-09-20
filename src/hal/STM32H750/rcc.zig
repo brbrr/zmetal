@@ -187,6 +187,8 @@ pub const ClockOutputs = struct {
 
     USART234578: u32 = 0,
     USART16: u32 = 0,
+
+    SAI1: u32 = 0,
 };
 
 pub const Bus = enum {
@@ -547,33 +549,18 @@ fn pllm_from() void {}
 fn config_PLL1(comptime config: ClockTree.Config, clock_src: PLLSRC) !void {
     // Disable the main PLL. */
     rcc.CR.modify_one("PLL1ON", 0);
-
     try wait_for_flag(.PLLRDY, 0, @intFromEnum(config.HSE_Timout.?));
 
-    const p1: u32 = @intFromFloat(config.DIVP1.?.get());
-    const pp1: PLLDIV = @enumFromInt(p1 - 1);
-
-    const divn1 = @as(PLLN, @enumFromInt(@intFromEnum(config.DIVN1.?) - 1));
-    const divm1 = @as(PLLM, @enumFromInt(@intFromEnum(config.DIVM1.?)));
-    const divp1 = pp1;
-    const divr1 = @as(PLLDIV, @enumFromInt(@intFromEnum(config.DIVR1.?) - 1));
-    const divq1 = @as(PLLDIV, @enumFromInt(@intFromEnum(config.DIVQ1.?) - 1));
-
     // Set PLL source and divider (assuming you have similar mmio for PLLCKSELR)
-    rcc.PLLCKSELR.modify(.{ .PLLSRC = clock_src, .DIVM1 = divm1 });
+    rcc.PLLCKSELR.modify(.{ .PLLSRC = clock_src, .DIVM1 = @as(PLLM, @enumFromInt(@intFromEnum(config.DIVM1.?))) });
 
     // Set PLL1DIVR fields
     rcc.PLL1DIVR.modify(.{
-        .DIVN1 = divn1,
-        .DIVP1 = divp1,
-        .DIVQ1 = divq1,
-        .DIVR1 = divr1,
+        .DIVN1 = @as(PLLN, @enumFromInt(@intFromEnum(config.DIVN1.?) - 1)),
+        .DIVP1 = @as(PLLDIV, @enumFromInt(@as(u32, @intFromFloat(config.DIVP1.?.get())) - 1)),
+        .DIVQ1 = @as(PLLDIV, @enumFromInt(@intFromEnum(config.DIVR1.?) - 1)),
+        .DIVR1 = @as(PLLDIV, @enumFromInt(@intFromEnum(config.DIVQ1.?) - 1)),
     });
-
-    // rcc.PLL1DIVR.modify_one("DIVN1", @as(PLLN, @enumFromInt(@intFromEnum(config.DIVN1.?))));
-    // rcc.PLL1DIVR.modify_one("DIVP1", @as(PLLDIV, @enumFromInt(@intFromEnum(config.DIVP1.?))));
-    // rcc.PLL1DIVR.modify_one("DIVQ1", @as(PLLDIV, @enumFromInt(@intFromEnum(config.DIVQ1.?))));
-    // rcc.PLL1DIVR.modify_one("DIVR1", @as(PLLDIV, @enumFromInt(@intFromEnum(config.DIVR1.?))));
 
     // Disable PLLFRACN . */
     rcc.PLLCFGR.modify_one("PLL1FRACEN", 0);
@@ -610,6 +597,110 @@ fn config_PLL1(comptime config: ClockTree.Config, clock_src: PLLSRC) !void {
     try wait_for_flag(.PLLRDY, 1, @intFromEnum(config.HSE_Timout.?));
 }
 
+fn pll2_config(comptime config: ClockTree.Config, comptime divider: DivUpdate) !void {
+    if (rcc.PLLCKSELR.read().PLLSRC == .DISABLE) {
+        return error.PllError;
+    }
+
+    // Disable  PLL2. */
+    rcc.CR.modify_one("PLL2ON", 0);
+    try wait_for_flag(.PLL2RDY, 0, PLLTimeout);
+
+    // Configure the PLL3  multiplication and division factors. */
+    const divm2: RCC.PLLM = @enumFromInt(@as(u32, @intFromEnum(config.DIVM2.?)));
+    rcc.PLLCKSELR.modify_one("DIVM2", divm2);
+
+    rcc.PLL2DIVR.modify(.{
+        .DIVN2 = @as(RCC.PLLN, @enumFromInt(@as(u32, @intFromEnum(config.DIVN2.?) - 1))),
+        .DIVP2 = @as(RCC.PLLDIV, @enumFromInt(@as(u7, @intFromEnum(config.DIVP2.?) - 1))),
+        .DIVQ2 = @as(RCC.PLLDIV, @enumFromInt(@as(u7, @intFromEnum(config.DIVQ2.?) - 1))),
+        .DIVR2 = @as(RCC.PLLDIV, @enumFromInt(@as(u7, @intFromEnum(config.DIVR2.?) - 1))),
+    });
+
+    // FIXME: Extract these into a config
+    rcc.PLLCFGR.modify(.{
+        .PLL2RGE = 2, // RCC_PLL2VCIRANGE_2
+        .PLL2VCOSEL = 0, //RCC_PLL22COWIDE
+    });
+
+    // Disable PLL2FRACN.
+    rcc.PLLCFGR.modify_one("PLL2FRACEN", 0);
+
+    // Configures PLL2 clock Fractional Part Of The Multiplication Factor */
+    rcc.PLL2FRACR.modify_one("FRACN2", @as(u13, @intCast(@intFromEnum(config.PLL2FRACN.?))));
+    //
+    // Enable PLL2FRACN . */
+    rcc.PLLCFGR.modify_one("PLL2FRACEN", 1);
+    // Enable the PLL2 clock output */
+
+    const div_name = switch (divider) {
+        .DivP => "DIVP2EN",
+        .DivQ => "DIVQ2EN",
+        .DivR => "DIVR2EN",
+    };
+
+    rcc.PLLCFGR.modify_one(div_name, 1);
+    // Enable  PLL2. */
+    rcc.CR.modify_one("PLL2ON", 1);
+
+    // Wait till PLL2 is ready */
+    try wait_for_flag(.PLL2RDY, 1, PLLTimeout);
+}
+
+fn pll3_config(comptime config: ClockTree.Config, comptime divider: DivUpdate) !void {
+    if (rcc.PLLCKSELR.read().PLLSRC == .DISABLE) {
+        return error.PllError;
+    }
+
+    // Disable  PLL3. */
+    rcc.CR.modify_one("PLL3ON", 0);
+    try wait_for_flag(.PLL3RDY, 0, PLLTimeout);
+
+    // Configure the PLL3  multiplication and division factors. */
+    const divm3: RCC.PLLM = @enumFromInt(@as(u32, @intFromEnum(config.DIVM3.?)));
+    rcc.PLLCKSELR.modify_one("DIVM3", divm3);
+    rcc.PLL3DIVR.modify(.{
+        .DIVN3 = @as(RCC.PLLN, @enumFromInt(@as(u32, @intFromEnum(config.DIVN3.?) - 1))),
+        .DIVP3 = @as(RCC.PLLDIV, @enumFromInt(@as(u32, @intFromEnum(config.DIVP3.?) - 1))),
+        .DIVQ3 = @as(RCC.PLLDIV, @enumFromInt(@as(u32, @intFromEnum(config.DIVQ3.?) - 1))),
+        .DIVR3 = @as(RCC.PLLDIV, @enumFromInt(@as(u32, @intFromEnum(config.DIVR3.?) - 1))),
+    });
+
+    // FIXME: Extract these into a config
+    rcc.PLLCFGR.modify(.{
+        .PLL3RGE = 1, //RCC_PLL3VCIRANGE_1
+        .PLL3VCOSEL = 0, //RCC_PLL3VCOWIDE
+    });
+
+    // Disable PLL3FRACN.
+    rcc.PLLCFGR.modify_one("PLL3FRACEN", 0);
+
+    // Configures PLL3 clock Fractional Part Of The Multiplication Factor */
+    rcc.PLL3FRACR.modify_one("FRACN3", @as(u13, @intCast(@intFromEnum(config.PLL3FRACN.?))));
+    // Enable PLL3FRACN
+    rcc.PLLCFGR.modify_one("PLL3FRACEN", 1);
+    // Enable the PLL3 clock output */
+
+    const div_name = switch (divider) {
+        .DivP => "DIVP3EN",
+        .DivQ => "DIVQ3EN",
+        .DivR => "DIVR3EN",
+    };
+
+    rcc.PLLCFGR.modify_one(div_name, 1);
+
+    rcc.PLLCFGR.modify(.{
+        .DIVP3EN = 1, // Enable PLL System Clock output. */
+        .DIVQ3EN = 1, // Enable PLL1Q Clock output. */
+        .DIVR3EN = 1, // Enable PLL1R  Clock output. */
+    });
+    // Enable  PLL3. */
+    rcc.CR.modify_one("PLL3ON", 1);
+
+    // Wait till PLL3 is ready */
+    try wait_for_flag(.PLL3RDY, 1, PLLTimeout);
+}
+
 //check clocks and return all used outputs
 pub fn validate_clocks(comptime config: ClockTree.Config) ClockOutputs {
     const tree_values = ClockTree.ClockTree.init_comptime(config);
@@ -627,6 +718,7 @@ pub fn validate_clocks(comptime config: ClockTree.Config) ClockOutputs {
     outputs.TimAPB2 = @intFromFloat(tree_values.Tim1Output.get_comptime());
     outputs.USART234578 = @intFromFloat(tree_values.USART234578output.get_comptime());
     outputs.USART16 = @intFromFloat(tree_values.USART16output.get_comptime());
+    outputs.SAI1 = @intFromFloat(tree_values.SAI1output.get_comptime());
 
     if (config.MCO1Mult) |_| {
         _ = tree_values.MCOoutput.get_comptime();
@@ -731,36 +823,51 @@ fn config_LSE(comptime config: ClockTree.Config) ClockInitError!void {
     }
 }
 
-fn config_PLL(comptime config: ClockTree.Config) ClockInitError!void {
-    if (config.PLLSource) |src| {
-        const s: u2 = @intFromEnum(src);
-        const val: PLLSRC = @enumFromInt(s);
-        rcc.PLLCKSELR.modify(.{ .PLLSRC = val });
-        if (val == .HSE) {
-            try config_HSE(config);
-        }
+pub const PLL3Clocks = struct {
+    p: u32,
+    q: u32,
+    r: u32,
+};
+
+pub fn getPLL3Clocks() PLL3Clocks {
+    const pllsource = @intFromEnum(rcc.PLLCKSELR.read().PLLSRC);
+    const pll3m_raw: f32 = @floatFromInt(@intFromEnum(rcc.PLLCKSELR.read().DIVM3));
+    const pll3m: f32 = if (pll3m_raw != 0) pll3m_raw else 1.0; // avoid div0
+
+    const pll3fracen = rcc.PLLCFGR.read().PLL3FRACEN;
+    const fracn3_raw = (rcc.PLL3FRACR.read().FRACN3) >> 3;
+    const fracn3: f32 = if (pll3fracen == 1) @floatFromInt(fracn3_raw) else 0.0;
+
+    // Base clock source
+    const hse: f32 = 16_000_000.0;
+    const hsi: f32 = 64_000_000.0;
+    const csi: f32 = 4_000_000.0;
+
+    var pll_input: f32 = 0.0;
+    switch (pllsource) {
+        0 => pll_input = hsi, // HSI
+        1 => pll_input = csi, // CSI
+        2 => pll_input = hse, // HSE
+        else => pll_input = csi,
     }
 
-    // if (config.HSEDivPLL) |pre| {
-    //     const p: u1 = @intFromEnum(pre);
-    //     const val: PLLXTPRE = @enumFromInt(p);
-    //     rcc.CFGR.modify(.{ .PLLXTPRE = val });
-    // }
-    //
-    // if (config.PLLMUL) |pre| {
-    //     const p: u32 = @intFromEnum(pre);
-    //     const val: PLLMUL = @enumFromInt(p);
-    //     rcc.CFGR.modify(.{ .PLLMUL = val });
-    // }
+    const n: f32 = @floatFromInt(@intFromEnum(rcc.PLL3DIVR.read().DIVN3));
+    const nfloat: f32 = n + 1.0 + fracn3 / 8192.0;
+
+    const pll3vco: f32 = (pll_input / pll3m) * nfloat;
+
+    // divisors
+    const pdiv: f32 = @floatFromInt(@intFromEnum(rcc.PLL3DIVR.read().DIVP3) + 1);
+    const qdiv: f32 = @floatFromInt(@intFromEnum(rcc.PLL3DIVR.read().DIVQ3) + 1);
+    const rdiv: f32 = @floatFromInt(@intFromEnum(rcc.PLL3DIVR.read().DIVR3) + 1);
+
+    return PLL3Clocks{
+        .p = @intFromFloat(pll3vco / pdiv),
+        .q = @intFromFloat(pll3vco / qdiv),
+        .r = @intFromFloat(pll3vco / rdiv),
+    };
 }
 
-/// NOTE:
-/// Current Implementation assumes the following:
-///  RCC_PERIPHCLK_USART1 | RCC_PERIPHCLK_USART6 | RCC_PERIPHCLK_USART234578
-///  | RCC_PERIPHCLK_LPUART1 | RCC_PERIPHCLK_RNG | RCC_PERIPHCLK_SPI1
-///  | RCC_PERIPHCLK_SAI2 | RCC_PERIPHCLK_SAI1 | RCC_PERIPHCLK_SDMMC
-///  | RCC_PERIPHCLK_I2C2 | RCC_PERIPHCLK_ADC | RCC_PERIPHCLK_I2C1
-///  | RCC_PERIPHCLK_USB | RCC_PERIPHCLK_QSPI | RCC_PERIPHCLK_FMC;
 fn config_peripherals(comptime config: ClockTree.Config) !void {
     //---------------------------- SPDIFRX configuration -------------------------------
     if (config.SPDIFMult) |val| {
@@ -774,11 +881,10 @@ fn config_peripherals(comptime config: ClockTree.Config) !void {
             .RCC_SAI1CLKSOURCE_PLL3 => try pll3_config(config, .DivP),
             else => @panic("Not implemented!"),
         }
-        rcc.D2CCIP1R.modify_one("SAI1SRC", @as(u3, @intCast(@intFromEnum(clk))));
+        rcc.D2CCIP1R.modify_one("SAI1SRC", @as(u3, @intCast(clk.get())));
     }
 
     //---------------------------- SAI2/3 configuration -------------------------------*/
-
     if (config.SAI23Mult) |clk| {
         switch (clk) {
             .RCC_SAI23CLKSOURCE_PLL3 => try pll3_config(config, .DivP),
@@ -924,105 +1030,6 @@ fn config_peripherals(comptime config: ClockTree.Config) !void {
         }
         rcc.D2CCIP2R.modify_one("RNGSRC", @as(u2, @intCast(@intFromEnum(clk))));
     }
-}
-
-fn pll2_config(comptime config: ClockTree.Config, comptime divider: DivUpdate) !void {
-    if (rcc.PLLCKSELR.read().PLLSRC == .DISABLE) {
-        return error.PllError;
-    }
-
-    // Disable  PLL2. */
-    rcc.CR.modify_one("PLL2ON", 0);
-    try wait_for_flag(.PLL2RDY, 0, PLLTimeout);
-
-    // Configure the PLL3  multiplication and division factors. */
-    const divm2: RCC.PLLM = @enumFromInt(@as(u32, @intFromEnum(config.DIVM2.?)));
-    rcc.PLLCKSELR.modify_one("DIVM2", divm2);
-
-    rcc.PLL2DIVR.modify(.{
-        .DIVN2 = @as(RCC.PLLN, @enumFromInt(@as(u32, @intFromEnum(config.DIVN2.?) - 1))),
-        .DIVP2 = @as(RCC.PLLDIV, @enumFromInt(@as(u7, @intFromEnum(config.DIVP2.?) - 1))),
-        .DIVQ2 = @as(RCC.PLLDIV, @enumFromInt(@as(u7, @intFromEnum(config.DIVQ2.?) - 1))),
-        .DIVR2 = @as(RCC.PLLDIV, @enumFromInt(@as(u7, @intFromEnum(config.DIVR2.?) - 1))),
-    });
-
-    // FIXME: Extract these into a config
-    rcc.PLLCFGR.modify(.{
-        .PLL2RGE = 2, // RCC_PLL2VCIRANGE_2
-        .PLL2VCOSEL = 0, //RCC_PLL22COWIDE
-    });
-
-    // Disable PLL2FRACN.
-    rcc.PLLCFGR.modify_one("PLL2FRACEN", 0);
-
-    // Configures PLL2 clock Fractional Part Of The Multiplication Factor */
-    rcc.PLL2FRACR.modify_one("FRACN2", @as(u13, @intCast(@intFromEnum(config.PLL2FRACN.?))));
-    //
-    // Enable PLL2FRACN . */
-    rcc.PLLCFGR.modify_one("PLL2FRACEN", 1);
-    // Enable the PLL2 clock output */
-
-    const div_name = switch (divider) {
-        .DivP => "DIVP2EN",
-        .DivQ => "DIVQ2EN",
-        .DivR => "DIVR2EN",
-    };
-
-    rcc.PLLCFGR.modify_one(div_name, 1);
-    // Enable  PLL2. */
-    rcc.CR.modify_one("PLL2ON", 1);
-
-    // Wait till PLL2 is ready */
-    try wait_for_flag(.PLL2RDY, 1, PLLTimeout);
-}
-
-fn pll3_config(comptime config: ClockTree.Config, comptime divider: DivUpdate) !void {
-    if (rcc.PLLCKSELR.read().PLLSRC == .DISABLE) {
-        return error.PllError;
-    }
-
-    // Disable  PLL3. */
-    rcc.CR.modify_one("PLL3ON", 0);
-    try wait_for_flag(.PLL3RDY, 0, PLLTimeout);
-
-    // Configure the PLL3  multiplication and division factors. */
-    const divm3: RCC.PLLM = @enumFromInt(@as(u32, @intFromEnum(config.DIVM3.?)));
-    rcc.PLLCKSELR.modify_one("DIVM3", divm3);
-    rcc.PLL3DIVR.modify(.{
-        .DIVN3 = @as(RCC.PLLN, @enumFromInt(@as(u32, @intFromEnum(config.DIVN3.?)))),
-        .DIVP3 = @as(RCC.PLLDIV, @enumFromInt(@as(u32, @intFromEnum(config.DIVP3.?)))),
-        .DIVQ3 = @as(RCC.PLLDIV, @enumFromInt(@as(u32, @intFromEnum(config.DIVQ3.?)))),
-        .DIVR3 = @as(RCC.PLLDIV, @enumFromInt(@as(u32, @intFromEnum(config.DIVR3.?)))),
-    });
-
-    // FIXME: Extract these into a config
-    rcc.PLLCFGR.modify(.{
-        .PLL3RGE = 1, //RCC_PLL3VCIRANGE_1
-        .PLL3VCOSEL = 0, //RCC_PLL3VCOWIDE
-    });
-
-    // Disable PLL3FRACN.
-    rcc.PLLCFGR.modify_one("PLL3FRACEN", 0);
-
-    // Configures PLL3 clock Fractional Part Of The Multiplication Factor */
-    rcc.PLL3FRACR.modify_one("FRACN3", @as(u13, @intCast(@intFromEnum(config.PLL3FRACN.?))));
-    //
-    // Enable PLL3FRACN . */
-    rcc.PLLCFGR.modify_one("PLL3FRACEN", 1);
-    // Enable the PLL3 clock output */
-
-    const div_name = switch (divider) {
-        .DivP => "DIVP3EN",
-        .DivQ => "DIVQ3EN",
-        .DivR => "DIVR3EN",
-    };
-
-    rcc.PLLCFGR.modify_one(div_name, 1);
-    // Enable  PLL3. */
-    rcc.CR.modify_one("PLL3ON", 1);
-
-    // Wait till PLL3 is ready */
-    try wait_for_flag(.PLL3RDY, 1, PLLTimeout);
 }
 
 fn config_system_clock(comptime config: ClockTree.Config) ClockInitError!void {
