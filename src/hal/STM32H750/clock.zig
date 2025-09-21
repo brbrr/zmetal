@@ -38,6 +38,8 @@ pub fn get_tick() u32 {
 
 pub fn inc_tick() callconv(.c) void {
     uwTick += uwTickFreq;
+    const zz = uwTick;
+    _ = zz;
 }
 
 pub fn delay(wait: u32) void {
@@ -46,8 +48,6 @@ pub fn delay(wait: u32) void {
 
     _wait += uwTickFreq;
     //* Add a freq to guarantee minimum wait */
-    // if (wait < HAL_MAX_DELAY) { }
-
     while ((get_tick() - tickstart) < _wait) {}
 }
 

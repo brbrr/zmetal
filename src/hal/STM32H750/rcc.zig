@@ -284,7 +284,7 @@ pub fn apply_clock(comptime config: ClockTree.Config, flash_latency: FLASH.LATEN
     try osc_config(config);
 
     // NOTE: this is needed to propagate the changes?
-    clock.delay(500);
+    clock.delay(100);
 
     try config_clocks(config, flash_latency);
 

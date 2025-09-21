@@ -56,6 +56,19 @@ const BufferSize: u32 = 1024;
 var tx_buffer: [BufferSize]u32 align(4) linksection(".sram1_bss") = undefined;
 var rx_buffer: [BufferSize]u32 align(4) linksection(".sram1_bss") = undefined;
 
+const sai_p_cfg = hal.gpio.PinConfig{
+    .mode = .{ .Alternate = .af6 },
+    .otype = .PushPull,
+    .speed = .HighSpeed,
+    .pull = .Floating,
+};
+const mclk = hal.gpio.Pin.init("E", "2", sai_p_cfg);
+const sb = hal.gpio.Pin.init("E", "3", sai_p_cfg);
+const fs = hal.gpio.Pin.init("E", "4", sai_p_cfg);
+const sck = hal.gpio.Pin.init("E", "5", sai_p_cfg);
+const sa = hal.gpio.Pin.init("E", "6", sai_p_cfg);
+const codec_reset = hal.gpio.Pin.init("B", "11", .{ .mode = .Output, .pull = .Floating, .otype = .PushPull, .speed = .LowSpeed });
+
 pub const SaiDriver = struct {
     config: SaiConfig,
     initialized: bool = false,
@@ -74,11 +87,22 @@ pub const SaiDriver = struct {
 
     pub fn setup(self: *Self) !void {
         // Enable clocks
+        self.initPins();
         self.disable();
-        regs.RCC.APB2ENR.modify(.{ .SAI1EN = 1 });
         try self.initCodec();
+        regs.RCC.APB2ENR.modify(.{ .SAI1EN = 1 });
         try self.initSaiBlocks();
         self.initialized = true;
+    }
+
+    pub fn initPins(self: *Self) void {
+        _ = self;
+        fs.configure();
+        mclk.configure();
+        sck.configure();
+        sa.configure();
+        sb.configure();
+        codec_reset.configure();
     }
 
     pub fn tx(self: Self) hal.dma.DMA_WriteTarget {
@@ -145,7 +169,8 @@ pub const SaiDriver = struct {
 
         // regs.SAI1.SAI_ACR2.raw = 0;
         regs.SAI1.SAI_ACR2.modify(.{
-            .FTH = 1, // FIFO threshold = 1/4
+            .FTH = 0, // FIFO threshold = 1/4
+            .FFLUSH = 1, // Flush FIFO
             .TRIS = 0, // No high-Z state
             .MUTE = 0, // No mute
             .MUTEVAL = 0,
@@ -186,8 +211,8 @@ pub const SaiDriver = struct {
         });
 
         regs.SAI1.SAI_BCR2.modify(.{
-            .FTH = 1, // FIFO threshold = 1/4
-            // .FFLUSH = 1, // Flush FIFO
+            .FTH = 0, // FIFO threshold = 1/4
+            .FFLUSH = 1, // Flush FIFO
             .TRIS = 0, // No high-Z state
             .MUTE = 0, // No mute
             .MUTEVAL = 0,
@@ -213,9 +238,6 @@ pub const SaiDriver = struct {
             // .SLOTEN = 2, // Enable all
         });
 
-        const zz = regs.SAI1;
-        _ = zz;
-
         regs.SAI1.SAI_PDMCR.raw = 0;
     }
 
@@ -230,8 +252,8 @@ pub const SaiDriver = struct {
         regs.GPIOB.BSRR.write_raw(1 << (11 + 16));
         hal.clock.delay(1);
         regs.GPIOB.BSRR.write_raw(1 << 11);
-
-        hal.clock.delay(100);
+        //
+        // hal.clock.delay(100);
     }
 
     pub fn enable(self: *Self) !void {
@@ -383,52 +405,6 @@ pub const SaiDriver = struct {
 
             // Write sample to data register
             regs.SAI1.SAI_ADR.write_raw(sample);
-        }
-    }
-
-    const osc = @import("../../dsp/osc.zig");
-    pub fn transmitSquareForever(self: *Self, freq: f32) !void {
-        if (!self.initialized) return error.NotInitialized;
-
-        // var o = osc.SquareOsc.init(freq, 48000, 0.9);
-        var o = osc.SineOsc.init(freq, 48000, 0.7);
-        // _ = freq;
-        // const samp = fto24(0.5); // Half-scale positive DC
-        while (true) {
-            // const sample = o.nextSample();
-            // const samp = fto24(sample);
-
-            // while (regs.SAI1.SAI_ASR.read().FLVL == 0b111) {}
-            // while (regs.SAI1.SAI_ASR.read().FLVL >= 0b110) {} // Wait for at least 2 free slots
-            // while (regs.SAI1.SAI_ASR.read().FLVL > 0b101) {} // Wait for at least 2 free slots
-            // regs.SAI1.SAI_ADR.modify_one("DATA", samp);
-            // // while (regs.SAI1.SAI_ASR.read().FLVL == 0b111) {}
-            // regs.SAI1.SAI_ADR.modify_one("DATA", samp);
-
-            // 2 seconds of silence (DC)
-            const dc_val = fto24(0.0);
-            var count: u32 = 0;
-            while (count < 48000 * 2) {
-                monitorSaiErrors();
-
-                while (regs.SAI1.SAI_ASR.read().FLVL == 7) {} // Wait if FIFO full
-                regs.SAI1.SAI_ADR.raw = dc_val;
-                regs.SAI1.SAI_ADR.raw = dc_val;
-                count += 1;
-            }
-
-            // 2 seconds of square wave
-            count = 0;
-            while (count < 48000 * 2) {
-                // while (count < 48000 * 2) {
-                monitorSaiErrors();
-                const sample = o.nextSample();
-                const samp = fto24(sample);
-                while (regs.SAI1.SAI_ASR.read().FLVL == 5) {} // Wait if FIFO full
-                regs.SAI1.SAI_ADR.modify_one("DATA", samp);
-                regs.SAI1.SAI_ADR.modify_one("DATA", samp);
-                count += 1;
-            }
         }
     }
 

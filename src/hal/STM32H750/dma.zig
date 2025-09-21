@@ -193,22 +193,22 @@ pub const Channel = enum(u4) {
             .perih_to_mem, .mem_to_mem => {
                 ch_regs.PAR = read_addr;
                 ch_regs.M0AR = write_addr;
-                ch_regs.CR.modify(.{
-                    .PINC = config.src.inc,
-                    .PSIZE = config.src.alignment,
-                    .MINC = config.dest.inc,
-                    .MSIZE = config.dest.alignment,
-                });
+                // ch_regs.CR.modify(.{
+                //     .PINC = 0, // config.src.inc,
+                //     .PSIZE = config.src.alignment,
+                //     .MINC = 1, //config.dest.inc,
+                //     .MSIZE = config.dest.alignment,
+                // });
             },
             .mem_to_perih => {
                 ch_regs.M0AR = read_addr;
                 ch_regs.PAR = write_addr;
-                ch_regs.CR.modify(.{
-                    .PINC = config.dest.inc,
-                    .PSIZE = config.dest.alignment,
-                    .MINC = config.src.inc,
-                    .MSIZE = config.src.alignment,
-                });
+                // ch_regs.CR.modify(.{
+                //     // .PINC = config.dest.inc,
+                //     .PSIZE = config.dest.alignment,
+                //     // .MINC = config.src.inc,
+                //     .MSIZE = config.src.alignment,
+                // });
             },
         }
 
@@ -223,6 +223,11 @@ pub const Channel = enum(u4) {
         _ = zms;
 
         ch_regs.CR.modify(.{
+            .PINC = 0, // config.src.inc,
+            .MINC = 1, //config.dest.inc,
+            .PSIZE = .Bits32,
+            .MSIZE = .Bits32,
+            //
             .DIR = @as(dmat.DIR, @enumFromInt(@intFromEnum(config.dir))),
             .CIRC = @as(u1, if (config.mode == .circular) 1 else 0),
             .PFCTRL = @as(dmat.PFCTRL, if (config.mode == .pfctrl) .Peripheral else .DMA),
