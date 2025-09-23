@@ -722,7 +722,7 @@ pub const peripherals = struct {
     /// System control block
     pub const SCB: *volatile types.peripherals.SCB = @ptrFromInt(0xe000ed00);
     /// Processor features
-    pub const PF: *volatile types.peripherals.PF = @ptrFromInt(0xe000ed78);
+    pub const PF: *volatile types.peripherals.PF.PF = @ptrFromInt(0xe000ed78);
     /// Floating point unit CPACR
     pub const FPU_CPACR: *volatile types.peripherals.FPU_CPACR = @ptrFromInt(0xe000ed88);
     /// Memory protection unit
@@ -731,6 +731,8 @@ pub const peripherals = struct {
     pub const NVIC_STIR: *volatile types.peripherals.NVIC_STIR = @ptrFromInt(0xe000ef00);
     /// Floting point unit
     pub const FPU: *volatile types.peripherals.FPU = @ptrFromInt(0xe000ef34);
+    /// CacheMaintenance
+    pub const CACHE: *volatile types.peripherals.PF.CacheMaintenance = @ptrFromInt(0xe000ef50);
     /// Access control
     pub const AC: *volatile types.peripherals.AC = @ptrFromInt(0xe000ef90);
 };

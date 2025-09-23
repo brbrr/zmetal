@@ -3,6 +3,7 @@ const microzig = @import("microzig");
 const hal = @import("hal.zig");
 const daisy = @import("daisy.zig");
 const regs = microzig.chip.peripherals;
+const cpu = microzig.cpu;
 const Channel = hal.dma.Channel;
 
 // SAI Configuration Types
@@ -53,8 +54,8 @@ pub fn dma1_1_handler() callconv(.c) void {
 pub const AudioCallback = fn (input: []const u32, output: []u32) void;
 
 const BufferSize: u32 = 1024;
-var tx_buffer: [BufferSize]u32 align(4) linksection(".sram1_bss") = undefined;
-var rx_buffer: [BufferSize]u32 align(4) linksection(".sram1_bss") = undefined;
+var tx_buffer: [BufferSize]u32 align(32) linksection(".sram1_bss") = undefined;
+var rx_buffer: [BufferSize]u32 align(32) linksection(".sram1_bss") = undefined;
 
 const sai_p_cfg = hal.gpio.PinConfig{
     .mode = .{ .Alternate = .af6 },
@@ -239,6 +240,9 @@ pub const SaiDriver = struct {
         });
 
         regs.SAI1.SAI_PDMCR.raw = 0;
+
+        cpu.dsb();
+        cpu.isb();
     }
 
     fn initCodec(self: *Self) !void {
@@ -289,35 +293,14 @@ pub const SaiDriver = struct {
         self.fillTxBuffer(0); // Fill first half
         self.fillTxBuffer(self.transfer_size / 2); // Fill second half
 
-        {
-            // Configure DMA for RX (peripheral -> memory)
-            try rx_chan.setup_transfer(
-                rx_buffer[0..self.transfer_size], // memory
-                self.rx(), // peripheral
-                .{ .enable = true, .mode = .circular, .priority = .High, .fifo_mode = 1 },
-            );
-
-            // var rx_handlers = rx_chan.handlers();
-            // rx_handlers.complete = SaiDriver.rx_dma_complete;
-            // rx_handlers.half_complete = SaiDriver.rx_dma_complete;
-            // rx_handlers.ctx = self;
-
-            regs.SAI1.SAI_BCR1.modify_one("DMAEN", 1);
-
-            hal.clock.delay(100);
-            // Enable SAI blocks (B first for slave, then A for master)
-
-            regs.SAI1.SAI_BCR1.modify(.{ .SAIXEN = 1 });
-            hal.clock.delay(100);
-        }
-
         // TX
         {
             // Configure DMA for TX (memory -> peripheral)
             try tx_chan.setup_transfer(
                 self.tx(), // peripheral
-                tx_buffer[0..self.transfer_size], // memory
-                .{ .enable = true, .mode = .circular, .priority = .High, .fifo_mode = 1 },
+                &tx_buffer, // memory
+                // tx_buffer[0..self.transfer_size], // memory
+                .{ .enable = true, .mode = .circular, .priority = .High, .fifo_mode = 1, .size = self.transfer_size },
             );
             regs.SAI1.SAI_ACR1.modify_one("DMAEN", 1);
             hal.clock.delay(100);
@@ -335,23 +318,32 @@ pub const SaiDriver = struct {
             hal.clock.delay(100);
         }
 
+        {
+            // Configure DMA for RX (peripheral -> memory)
+            try rx_chan.setup_transfer(
+                &rx_buffer, // memory
+                // rx_buffer[0..self.transfer_size], // memory
+                self.rx(), // peripheral
+                .{ .enable = true, .mode = .circular, .priority = .High, .fifo_mode = 1, .size = self.transfer_size },
+            );
+
+            regs.SAI1.SAI_BCR1.modify_one("DMAEN", 1);
+            hal.clock.delay(100);
+
+            // var rx_handlers = rx_chan.handlers();
+            // rx_handlers.complete = SaiDriver.rx_dma_complete;
+            // rx_handlers.half_complete = SaiDriver.rx_dma_complete;
+            // rx_handlers.ctx = self;
+
+            regs.SAI1.SAI_BCR1.modify(.{ .SAIXEN = 1 });
+            hal.clock.delay(100);
+        }
+
         // Enable SAI blocks
         // try self.enable();
+        cpu.dsb();
+        cpu.isb();
     }
-
-    // fn tx_dma_complete(ch: hal.dma.Channel, ctx: *anyopaque) void {
-    //     _ = ch;
-    //     _ = ctx;
-    //     // const sai: *SaiDriver = @ptrCast(@alignCast(ctx));
-    //     // sai.internal_callback(ch);
-    // }
-    //
-    // fn rx_dma_complete(ch: hal.dma.Channel, ctx: *anyopaque) void {
-    //     const sai: *SaiDriver = @ptrCast(@alignCast(ctx));
-    //     sai.internal_callback(ch);
-    //     // We don’t really need this if we’re only driving callback from TX side
-    //     // but you can add input-handling logic here if needed.
-    // }
 
     // DMA complete handlers (second half of buffer)
     pub fn tx_dma_complete(chan: Channel, ctx: *anyopaque) void {
@@ -371,17 +363,10 @@ pub const SaiDriver = struct {
 
     fn fillTxBuffer(self: *Self, offset: u32) void {
         const half_size = self.transfer_size / 2;
-        var temp_buffer: [120]u32 = undefined;
+        var temp_buffer: [200]u32 = undefined;
 
-        // Call user callback to get audio data
         self.user_callback.?(rx_buffer[offset .. offset + half_size], temp_buffer[0..half_size]);
-
-        for (temp_buffer[0..half_size], 0..) |v, i| {
-            tx_buffer[offset + i] = v;
-        }
-
-        // Copy to TX buffer
-        // @memcpy(tx_buffer[offset .. offset + half_size], temp_buffer[0..half_size]);
+        @memcpy(tx_buffer[offset .. offset + half_size], temp_buffer[0..half_size]);
     }
 
     fn internal_callback(self: *SaiDriver, ch: hal.dma.Channel) void {

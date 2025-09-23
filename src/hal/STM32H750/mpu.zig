@@ -116,7 +116,8 @@ pub fn enable() void {
 fn set_MPU_control(value: MPUControl) void {
     const bits = @intFromEnum(value);
     mpu.CTRL.modify(.{
-        .ENABLE = @as(u1, @intCast((bits >> 0) & 1)),
+        .ENABLE = 1,
+        // .ENABLE = @as(u1, @intCast((bits >> 0) & 1)),
         .HFNMIENA = @as(u1, @intCast((bits >> 1) & 1)),
         .PRIVDEFENA = @as(u1, @intCast((bits >> 2) & 1)),
     });

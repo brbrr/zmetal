@@ -80,14 +80,14 @@ fn sys_tick_handler() callconv(.c) void {
     hal.clock.inc_tick();
     count += 1;
     if (count == 1_000) {
-        led.toggle();
+        // led.toggle();
         // } else if (count == 1100) {
         //     led.toggle();
         // } else if (count == 1200) {
         //     led.toggle();
         // } else if (count == 1300) {
         //     led.toggle();
-        count = 0;
+        // count = 0;
     }
 }
 
@@ -121,12 +121,12 @@ pub fn main() !void {
     try sai.setup();
 
     // samps = generateFreq(220, 48000);
-    // try sai.startAudio(myAudioCallback);
+    try sai.startAudio(myAudioCallback);
 
-    try sai.enable();
-    try transmitSquareForever(220.0);
+    // try sai.enable();
+    // try transmitSquareForever(220.0);
     while (true) {
-        cpu.nop();
+        cpu.wfi();
     }
 }
 
@@ -147,10 +147,11 @@ fn myAudioCallback(input: []const u32, output: []u32) void {
     _ = input;
     var i: u32 = 0;
     while (i < output.len) : (i += 2) {
+        const samp = ssai.fto24(sine.nextSample());
         // output[i] = buff[c];
-        output[i] = ssai.fto24(sine.nextSample());
         // output[i] = ssai.fto24(square.nextSample());
-        output[i + 1] = output[i];
+        output[i] = samp;
+        output[i + 1] = samp;
     }
 }
 

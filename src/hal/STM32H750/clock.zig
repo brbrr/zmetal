@@ -33,13 +33,11 @@ pub var SystemD2Clock: u32 = 0;
 const D1CorePrescTable: [16]u8 = [_]u8{ 0, 0, 0, 0, 1, 2, 3, 4, 1, 2, 3, 4, 6, 7, 8, 9 };
 
 pub fn get_tick() u32 {
-    return uwTick;
+    return cpu.atomic.load(u32, &uwTick, .acquire);
 }
 
-pub fn inc_tick() callconv(.c) void {
-    uwTick += uwTickFreq;
-    const zz = uwTick;
-    _ = zz;
+pub inline fn inc_tick() void {
+    _ = cpu.atomic.add(u32, &uwTick, uwTickFreq);
 }
 
 pub fn delay(wait: u32) void {
@@ -48,7 +46,9 @@ pub fn delay(wait: u32) void {
 
     _wait += uwTickFreq;
     //* Add a freq to guarantee minimum wait */
-    while ((get_tick() - tickstart) < _wait) {}
+    while ((get_tick() - tickstart) < _wait) {
+        // asm volatile ("" ::: .{ .memory = true });
+    }
 }
 
 pub fn get_sys_clock_freq() u32 {

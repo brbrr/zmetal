@@ -22,8 +22,8 @@ const num_channels = 14;
 var claimed_channels = microzig.concurrency.AtomicStaticBitSet(num_channels){};
 const MaskType = std.meta.Int(.unsigned, num_channels);
 
-pub const Direction = enum {
-    perih_to_mem,
+pub const Direction = enum(u2) {
+    perih_to_mem = 0,
     mem_to_perih,
     mem_to_mem,
 };
@@ -54,22 +54,57 @@ pub const TransferConfig = struct {
 
 var chan_handlers: [num_channels]ChHandlers = [_]ChHandlers{ChHandlers{}} ** num_channels;
 
+const FEIF_OFFSET = 0;
+const DMEIF_OFFSET = 2;
+const TEIF_OFFSET = 3;
+const HTIF_OFFSET = 4;
+const TCIF_OFFSET = 5;
+const STREAM_BITS = 6; // number of bits per stream block in LISR/LIFCR
+
+fn stream_mask(stream: u8, offset: u32) u32 {
+    const shift: u32 = @as(u32, @intCast(stream)) * STREAM_BITS + offset;
+    return @as(u32, 1) << @as(u5, @intCast(shift));
+}
 pub fn dma_irq_handler(chan: Channel) void {
-    // const id: u8 = @intFromEnum(chan);
-    const status = DMA1.LISR.read(); // if (id < 4) DMA1.LISR.read() else DMA1.HISR.read();
-    //
+    const stream: u4 = @intFromEnum(chan);
 
-    const tcif = (status.TCIF0) != 0; // Stream x transfer complete interrupt flag (x = 3..0)
-    const htif = (status.HTIF0) != 0; // Stream x half transfer interrupt flag (x=3..0)
-    const teif = (status.TEIF0) != 0; // Stream x transfer error interrupt flag (x=3..0)
-    const feif = (status.FEIF0) != 0; // Stream x FIFO error interrupt flag (x=3..0)
+    // choose the right register (LISR/LIFCR or HISR/HIFCR)
+    const is_high = stream >= 4;
+    const status: u32 = if (is_high) DMA1.HISR.raw else DMA1.LISR.raw;
+    const clear_reg: *volatile u32 = if (is_high) &DMA1.HIFCR.raw else &DMA1.LIFCR.raw;
+    const local_stream = if (is_high) stream - 4 else stream;
 
-    DMA1.LIFCR.modify(.{
-        .CTCIF0 = 1,
-        .CHTIF0 = 1,
-        .CTEIF0 = 1,
-        .CFEIF0 = 1,
-    });
+    const tcif = (status & stream_mask(local_stream, TCIF_OFFSET)) != 0;
+    const htif = (status & stream_mask(local_stream, HTIF_OFFSET)) != 0;
+    const teif = (status & stream_mask(local_stream, TEIF_OFFSET)) != 0;
+    const feif = (status & stream_mask(local_stream, FEIF_OFFSET)) != 0;
+
+    // Clear all flags for this stream
+    clear_reg.* = stream_mask(local_stream, TCIF_OFFSET) |
+        stream_mask(local_stream, HTIF_OFFSET) |
+        stream_mask(local_stream, TEIF_OFFSET) |
+        stream_mask(local_stream, FEIF_OFFSET);
+
+    // Not sure if the above clear_reg works as expected :)
+    if (stream == 0) {
+        DMA1.LIFCR.modify(.{
+            .CTCIF0 = 1,
+            .CHTIF0 = 1,
+            .CTEIF0 = 1,
+            .CFEIF0 = 1,
+        });
+        DMA1.LIFCR.raw = std.math.maxInt(u32);
+    } else if (stream == 1) {
+        DMA1.LIFCR.modify(.{
+            .CTCIF1 = 1,
+            .CHTIF1 = 1,
+            .CTEIF1 = 1,
+            .CFEIF1 = 1,
+        });
+        DMA1.LIFCR.raw = std.math.maxInt(u32);
+    } else {
+        unreachable;
+    }
 
     if (teif or feif) {
         std.log.err("DMA error on channel {} (TEIF={}, FEIF={})", .{ chan, teif, feif });
@@ -78,10 +113,11 @@ pub fn dma_irq_handler(chan: Channel) void {
     }
 
     const handlers = chan.handlers();
+    if (htif and handlers.half_complete != null) {
+        handlers.half_complete.?(chan, handlers.ctx.?);
+    }
     if (tcif and handlers.complete != null) {
         handlers.complete.?(chan, handlers.ctx.?);
-    } else if (htif and handlers.complete != null) {
-        handlers.half_complete.?(chan, handlers.ctx.?);
     }
 }
 
@@ -212,16 +248,6 @@ pub const Channel = enum(u4) {
             },
         }
 
-        const z = ch_regs.CR.read();
-        const zp = z.PINC;
-        const zm = z.MINC;
-        const zps = z.PSIZE;
-        const zms = z.MSIZE;
-        _ = zp;
-        _ = zm;
-        _ = zps;
-        _ = zms;
-
         ch_regs.CR.modify(.{
             .PINC = 0, // config.src.inc,
             .MINC = 1, //config.dest.inc,
@@ -245,10 +271,20 @@ pub const Channel = enum(u4) {
         ch_regs.FCR.raw = 0;
 
         switch (@intFromEnum(chan)) {
-            0 => regs.DMAMUX1.DMAMUX1_C0CR.modify_one("DMAREQ_ID", @intFromEnum(config.req)),
-            1 => regs.DMAMUX1.DMAMUX1_C1CR.modify_one("DMAREQ_ID", @intFromEnum(config.req)),
+            // hdma->DMAmuxChannel->CCR = (hdma->Init.Request & DMAMUX_CxCR_DMAREQ_ID);
+            0 => {
+                regs.DMAMUX1.DMAMUX1_C0CR.modify(.{ .DMAREQ_ID = @intFromEnum(config.req) });
+                regs.DMAMUX1.DMAMUX1_RG0CR.raw = 0;
+            },
+            1 => {
+                regs.DMAMUX1.DMAMUX1_C1CR.modify(.{ .DMAREQ_ID = @intFromEnum(config.req) });
+                regs.DMAMUX1.DMAMUX1_RG1CR.raw = 0;
+            },
             else => @panic("!!!!"),
         }
+
+        regs.DMAMUX1.DMAMUX1_CSR.raw = 0;
+        regs.DMAMUX1.DMAMUX1_RGSR.raw = 0;
 
         // Number of transfers (in words)
         ch_regs.NDTR.raw = count;
@@ -260,6 +296,7 @@ pub const Channel = enum(u4) {
         mode: Mode,
         priority: dmat.PL,
         fifo_mode: u8,
+        size: ?u32,
     };
 
     pub fn setup_transfer(
@@ -400,7 +437,9 @@ pub const Channel = enum(u4) {
         const dreq = if (comptime H.is_peripheral(WriteType)) H.get_dreq(write) else H.get_dreq(read);
 
         const count = blk: {
-            if (comptime H.is_peripheral(WriteType))
+            if (config.size) |size| {
+                break :blk size;
+            } else if (comptime H.is_peripheral(WriteType))
                 break :blk H.get_count(read)
             else if (comptime H.is_peripheral(ReadType))
                 break :blk H.get_count(write)

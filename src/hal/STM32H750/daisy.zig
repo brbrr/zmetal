@@ -16,6 +16,8 @@ const hal = @import("hal.zig");
 const stm32 = hal;
 const rcc_hal = stm32.rcc;
 
+const cache = @import("cache.zig");
+
 const h7clock = @import("clocks/clock_stm32h750.zig");
 const Clock = h7clock.ClockTree.init_comptime(clk_config);
 
@@ -274,4 +276,7 @@ pub fn init() !void {
     try i2c_init();
     try spi_init();
     try uart_init();
+
+    cache.enableDCache();
+    cache.enableICache();
 }
