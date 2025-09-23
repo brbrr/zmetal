@@ -80,14 +80,14 @@ fn sys_tick_handler() callconv(.c) void {
     hal.clock.inc_tick();
     count += 1;
     if (count == 1_000) {
-        // led.toggle();
-        // } else if (count == 1100) {
-        //     led.toggle();
-        // } else if (count == 1200) {
-        //     led.toggle();
-        // } else if (count == 1300) {
-        //     led.toggle();
-        // count = 0;
+        led.toggle();
+    } else if (count == 1100) {
+        led.toggle();
+    } else if (count == 1200) {
+        led.toggle();
+    } else if (count == 1300) {
+        led.toggle();
+        count = 0;
     }
 }
 
@@ -97,7 +97,7 @@ pub fn init() void {
 
 const led = hal.gpio.Pin.init("C", "7", .{});
 
-var sine = osc.SineOsc.init(220.0, 48000, 0.9);
+var sine = osc.SineOsc.init(110.0, 48000, 0.9);
 var square = osc.SquareOsc.init(220.0, 48000, 0.9);
 
 var buff: [600]u32 = undefined;
@@ -119,14 +119,29 @@ pub fn main() !void {
     });
 
     try sai.setup();
-
-    // samps = generateFreq(220, 48000);
     try sai.startAudio(myAudioCallback);
 
-    // try sai.enable();
-    // try transmitSquareForever(220.0);
+    var freq: f32 = 110.0;
     while (true) {
         cpu.wfi();
+        hal.clock.delay(2000);
+        freq *= 2;
+        if (freq > 1500) {
+            freq = 110.0;
+        }
+        sine.setFreq(freq);
+    }
+}
+
+var samps: u32 = 0;
+var c: u32 = 0;
+fn myAudioCallback(input: []const u32, output: []u32) void {
+    _ = input;
+    var i: u32 = 0;
+    while (i < output.len) : (i += 2) {
+        const samp = ssai.fto24(sine.nextSample());
+        output[i] = samp;
+        output[i + 1] = samp;
     }
 }
 
@@ -140,21 +155,6 @@ fn generateFreq(freq: f32, sr: f32) u32 {
 
     return samples;
 }
-
-var samps: u32 = 0;
-var c: u32 = 0;
-fn myAudioCallback(input: []const u32, output: []u32) void {
-    _ = input;
-    var i: u32 = 0;
-    while (i < output.len) : (i += 2) {
-        const samp = ssai.fto24(sine.nextSample());
-        // output[i] = buff[c];
-        // output[i] = ssai.fto24(square.nextSample());
-        output[i] = samp;
-        output[i + 1] = samp;
-    }
-}
-
 fn transmitSquareForever(freq: f32) !void {
     // var o = osc.SquareOsc.init(freq, 48000, 0.9);
     const regs = chip_peri;

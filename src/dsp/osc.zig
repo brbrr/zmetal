@@ -49,6 +49,14 @@ pub const SineOsc = struct {
         };
     }
 
+    pub fn setFreq(self: *SineOsc, freq: f32) void {
+        self.freq = freq;
+        const two_pi: f32 = 2.0 * std.math.pi;
+        const delta: f32 = two_pi * freq / self.sample_rate;
+        self.phase_inc = delta;
+        self.phase = 0;
+    }
+
     pub fn nextSample(self: *SineOsc) f32 {
         const two_pi: f32 = 2.0 * std.math.pi;
 
