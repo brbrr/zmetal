@@ -57,8 +57,8 @@ const BufferSize: u32 = 1024;
 var tx_buffer: [BufferSize]u32 align(32) linksection(".sram1_bss") = undefined;
 var rx_buffer: [BufferSize]u32 align(32) linksection(".sram1_bss") = undefined;
 
-const sai_p_cfg = hal.gpio.PinConfig{
-    .mode = .{ .Alternate = .af6 },
+const sai_p_cfg: hal.gpio.PinConfig = .{
+    .mode = .{ .alternate = .af6 },
     .otype = .PushPull,
     .speed = .HighSpeed,
     .pull = .Floating,
@@ -68,7 +68,7 @@ const sb = hal.gpio.Pin.init("E", "3", sai_p_cfg);
 const fs = hal.gpio.Pin.init("E", "4", sai_p_cfg);
 const sck = hal.gpio.Pin.init("E", "5", sai_p_cfg);
 const sa = hal.gpio.Pin.init("E", "6", sai_p_cfg);
-const codec_reset = hal.gpio.Pin.init("B", "11", .{ .mode = .Output, .pull = .Floating, .otype = .PushPull, .speed = .LowSpeed });
+const codec_reset = hal.gpio.Pin.init("B", "11", .{ .mode = .output, .pull = .Floating, .otype = .PushPull, .speed = .LowSpeed });
 
 pub const SaiDriver = struct {
     config: SaiConfig,
@@ -442,25 +442,22 @@ pub const SaiDriver = struct {
 const math = std.math;
 /// Converts a float sample to a 24-bit signed integer packed in a u32
 /// Input float should be in range [-1.0, 1.0]
-/// Returns the 24-bit value in the lower 24 bits of the u32
 pub fn fto24(sample: f32) u32 {
-    // Clamp input to valid range [-1.0, 1.0]
-    const clamped = math.clamp(sample, -1.0, 1.0);
-
+    const FBIPMAX: f32 = 0.999985; // close to 1.0 - LSB at 24-bit
+    const FBIPMIN: f32 = -FBIPMAX;
+    const F2S24_SCALE: f32 = 8388608.0; // 2^23
+    
+    // Clamp to prevent overflow
+    const clamped = math.clamp(sample, FBIPMIN, FBIPMAX);
+    
     // Scale to 24-bit signed range
-    const scaled = clamped * 8388607.0; // 2^23 - 1
-
-    // Round to nearest integer
-    const rounded = @round(scaled);
-
-    // Convert to i32 first
-    const as_i32 = @as(i32, @intFromFloat(rounded));
-
-    // Cast to u32 and mask to 24 bits to ensure clean result
-    const as_u32 = @as(u32, @bitCast(as_i32));
-
-    // Mask to 24 bits (0xFFFFFF)
-    return as_u32 & 0xFFFFFF;
+    const scaled = clamped * F2S24_SCALE;
+    
+    // Convert to i32
+    const as_i32 = @as(i32, @intFromFloat(scaled));
+    
+    // Bitcast to u32 to preserve two's complement representation
+    return @as(u32, @bitCast(as_i32));
 }
 
 pub fn monitorSaiErrors() void {

@@ -1,0 +1,88 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Cortex Debug",
+      "configFiles": [
+        "interface/stlink.cfg",
+        "target/stm32h7x.cfg"
+      ],
+      "cwd": "${workspaceFolder}",
+      "debuggerArgs": [
+        "-d",
+        "${workspaceRoot}"
+      ],
+      "executable": "${workspaceRoot}/zig-out/firmware/blinky.elf",
+      "interface": "swd",
+      "showDevDebugOutput": "raw",
+      "openOCDLaunchCommands": [
+        "init",
+        "reset init",
+        "gdb_breakpoint_override hard"
+      ],
+      // "preLaunchTask": "build_all_debug",
+      "preRestartCommands": [
+        "load",
+        "enable breakpoint",
+        "monitor reset"
+      ],
+      "request": "launch",
+      // "runToEntryPoint": "main",
+      "servertype": "openocd",
+      "svdFile": "${workspaceRoot}/.vscode/STM32H750x.svd",
+      "type": "cortex-debug",
+      "liveWatch": {
+        "enabled": true,
+        "samplesPerSecond": 4
+      }
+    },
+    {
+      "name": "STlinkdebug",
+      "cwd": "${workspaceRoot}",
+      "executable": "${workspaceRoot}/zig-out/firmware/blinky.elf",
+      "request": "launch",
+      "type": "cortex-debug",
+      "servertype": "stlink",
+      "showDevDebugOutput": "both",
+      "device": "STM32H750x",
+      "interface": "jtag",
+      "svdFile": "${workspaceRoot}/.vscode/STM32H750x.svd",
+      //   "runToMain": true,
+      // "swoConfig": {
+      //   "enabled": true,
+      //   "cpuFrequency": 480000000,
+      //   "swoFrequency": 1000000,
+      //   "source": "probe",
+      //   "decoders": [
+      //     {
+      //       "label": "ITM port 0 output",
+      //       "type": "console",
+      //       "port": 0,
+      //       "showOnStartup": true,
+      //       "encoding": "ascii"
+      //     }
+      //   ]
+      // }
+    },
+    {
+      "name": "Cortex JLink",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceRoot}/build/WoopyOne.elf",
+      "request": "launch",
+      "type": "cortex-debug",
+      // "runToEntryPoint": "main",
+      "servertype": "jlink",
+      // "serverpath": "/Applications/SEGGER/JLink/JLinkGDBServer",
+      "serverArgs": [],
+      "device": "STM32H750IB",
+      "interface": "jtag",
+      "serialNumber": "", //If you have more than one J-Link probe, add the serial number here.
+      // "jlinkscript": "${workspaceFolder}/BSP/SEGGER/K66FN2M0_emPower/Setup/Kinetis_K66_Target.js",
+      "svdFile": "${workspaceRoot}/.vscode/STM32H750x.svd",
+      // "armToolchainPath": "C:/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/12.3 rel1/bin"
+    }
+  ]
+}

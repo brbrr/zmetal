@@ -1,0 +1,29 @@
+{
+  "tasks": [
+    {
+      "label": "build",
+      "command": "zig build",
+      "type": "shell",
+      "group": {
+        "isDefault": true,
+        "kind": "build"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "program-dfu",
+      "command": "dfu-util -a 0 -s 0x08000000:leave -D zig-out/firmware/blinky.bin -d ,0483:df11",
+      "type": "shell",
+      "dependsOn": ["build"]
+    },
+    {
+      "label": "program",
+      "command": "openocd -s /usr/local/share/openocd/scripts -f interface/stlink.cfg -f target/stm32h7x.cfg -c 'program ./zig-out/firmware/blinky.elf verify reset exit' && echo success!",
+      "problemMatcher": [],
+      "type": "shell",
+      "dependsOn": ["build"]
+    }
+  ],
+  "version": "2.0.0"
+}
+

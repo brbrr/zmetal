@@ -424,3 +424,6 @@ pub const GPIOA = extern struct {
         AFSEL15: u4,
     }),
 };
+
+// Alias for microzig common GPIO compatibility
+pub const GPIO = GPIOA;

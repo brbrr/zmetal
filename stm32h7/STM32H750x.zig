@@ -11,8 +11,8 @@ pub const Interrupt = struct {
 
 pub const properties = struct {
     pub const @"cpu.endian" = "little";
-    pub const @"cpu.fpuPresent" = "true";
-    pub const @"cpu.mpuPresent" = "true";
+    pub const has_fpu: ?bool = true;
+    pub const has_mpu: ?bool = true;
     pub const @"cpu.name" = "CM7";
     pub const @"cpu.nvicPrioBits" = "4";
     pub const @"cpu.revision" = "r0p1";

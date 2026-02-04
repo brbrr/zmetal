@@ -26,6 +26,8 @@ pub const FPU = @import("peripherals/FPU.zig").FPU;
 pub const FPU_CPACR = @import("peripherals/FPU_CPACR.zig").FPU_CPACR;
 pub const Flash = @import("peripherals/Flash.zig");
 pub const GPIO = @import("peripherals/GPIOA.zig");
+// Alias for microzig common GPIO v2 compatibility
+pub const gpio_v2 = @import("peripherals/GPIOA.zig");
 pub const HASH = @import("peripherals/HASH.zig").HASH;
 pub const HRTIM_Common = @import("peripherals/HRTIM_Common.zig").HRTIM_Common;
 pub const HRTIM_Master = @import("peripherals/HRTIM_Master.zig").HRTIM_Master;

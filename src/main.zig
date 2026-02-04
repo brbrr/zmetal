@@ -13,13 +13,16 @@ const chip_peri = chip.peripherals;
 const RCC = chip_peri.RCC;
 const time = microzig.drivers.time;
 
-const daisy = @import("hal/STM32H750/daisy.zig");
-
-pub const hal = @import("hal/STM32H750/hal.zig");
+// Import the HAL from microzig.hal (now provided by build system)
+pub const hal = microzig.hal;
 const errors = hal.errors;
 pub const panic = errors.panic;
-const ssai = @import("hal/STM32H750/sai.zig");
+
+// Daisy board support
+const daisy = hal.daisy;
+const ssai = hal.sai;
 const SaiDriver = ssai.SaiDriver;
+
 const osc = @import("dsp/osc.zig");
 
 // INTERNAL_ADDRESS = 0x08000000
@@ -76,6 +79,8 @@ fn sv_call_handler() callconv(.c) void {
 }
 
 var count: u32 = 1;
+const led = hal.gpio.OutputGPIO(led_pin);
+
 fn sys_tick_handler() callconv(.c) void {
     hal.clock.inc_tick();
     count += 1;
@@ -95,9 +100,15 @@ pub fn init() void {
     hal.init_vector_table();
 }
 
-const led = hal.gpio.Pin.init("C", "7", .{});
+// Configure LED on PC7 using custom GPIO API
+const led_pin = hal.gpio.Pin.init("C", "7", .{
+    .mode = .output,
+    .pull = .Floating,
+    .otype = .PushPull,
+    .speed = .LowSpeed,
+});
 
-var sine = osc.SineOsc.init(110.0, 48000, 0.9);
+var sine = osc.SineOsc.init(110.0, 48000, 0.7);
 var square = osc.SquareOsc.init(220.0, 48000, 0.9);
 
 var buff: [600]u32 = undefined;
@@ -106,7 +117,13 @@ pub fn main() !void {
     daisy.init() catch {
         errors.error_handler();
     };
-    led.configure();
+
+    // Configure LED pin as output
+    const RCC_peri = chip.peripherals.RCC;
+    RCC_peri.AHB4ENR.modify(.{ .GPIOCEN = 1 }); // Enable GPIOC clock
+    led_pin.configure();
+
+    // Test toggle
     led.toggle();
 
     var sai = SaiDriver.init(.{
@@ -121,16 +138,20 @@ pub fn main() !void {
     try sai.setup();
     try sai.startAudio(myAudioCallback);
 
-    var freq: f32 = 110.0;
-    while (true) {
-        cpu.wfi();
-        hal.clock.delay(2000);
-        freq *= 2;
-        if (freq > 1500) {
-            freq = 110.0;
-        }
-        sine.setFreq(freq);
-    }
+    // var freq: f32 = 32.7;
+    // sine.setFreq(freq);
+    // while (true) {
+    //     cpu.wfi();
+    //     hal.clock.delay(4000);
+    //     freq *= 2;
+    //     if (freq > 1800) {
+    //         freq = 110.0;
+    //     }
+    //     sine.setFreq(freq);
+    // }
+
+    sine.setFreq(440.0);
+    while (true) {}
 }
 
 var samps: u32 = 0;

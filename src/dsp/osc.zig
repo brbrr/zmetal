@@ -61,7 +61,7 @@ pub const SineOsc = struct {
         const two_pi: f32 = 2.0 * std.math.pi;
 
         self.phase += self.phase_inc;
-        if (self.phase >= two_pi) self.phase -= two_pi;
+        self.phase = @mod(self.phase, two_pi);
 
         return self.amplitude * @sin(self.phase);
     }

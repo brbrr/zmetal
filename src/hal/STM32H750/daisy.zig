@@ -144,15 +144,11 @@ pub fn configure_clocks() !void {
         return error.PowerError;
     }
 
-    var flash_latency: FLASH.LATENCY = undefined;
-    switch (SysConfig.freq) {
-        .boost => {
-            flash_latency = .WS4;
-        },
-        .default => {
-            flash_latency = .WS2;
-        },
-    }
+    const flash_latency: FLASH.LATENCY =
+        switch (SysConfig.freq) {
+            .boost => .WS4, // Four wait states
+            .default => .WS2, // Two wait states
+        };
 
     try hal.rcc.apply_clock(clk_config, flash_latency);
 }

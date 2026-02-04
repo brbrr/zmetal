@@ -10,6 +10,19 @@ pub fn build(b: *std.Build) void {
     const mz_dep = b.dependency("microzig", .{});
     const mb = MicroBuild.init(b, mz_dep) orelse return;
 
+    // Create stm32_common module - it will get microzig through the HAL context
+    const stm32_common_mod = b.createModule(.{
+        .root_source_file = b.path("lib/microzig/port/stmicro/stm32/src/hals/common.zig"),
+    });
+
+    // root_module.addImport("zaudio", zaudio.module("root"));
+
+    var it = mb.dep.builder.modules.iterator();
+    // var it = mz_dep.builder.modules.iterator();
+    while (it.next()) |z| {
+        std.log.info("module: {}", .{z});
+    }
+
     const STM32H750IB = b.allocator.create(microzig.Target) catch @panic("out of memory");
 
     STM32H750IB.* = .{
@@ -45,9 +58,13 @@ pub fn build(b: *std.Build) void {
             .file = b.path("src/ld/sections.ld"),
         },
 
-        // .hal = .{
-        //     .root_source_file = b.path("src/hals/STM32H750/hal.zig"),
-        // },
+        // Enable HAL with stm32_common as import (shares microzig dependency)
+        .hal = .{
+            .root_source_file = b.path("src/hal/STM32H750/hal.zig"),
+            .imports = &.{
+                .{ .name = "stm32_common", .module = stm32_common_mod },
+            },
+        },
     };
 
     const firmware = mb.add_firmware(.{
@@ -57,7 +74,12 @@ pub fn build(b: *std.Build) void {
         // .optimize = .ReleaseSmall,
         .optimize = .Debug,
         .root_source_file = b.path("src/main.zig"),
+        .linker_script = .{
+            .file = b.path("src/ld/sections.ld"),
+        },
     });
 
     mb.install_firmware(firmware, .{ .format = .elf });
+
+    stm32_common_mod.addImport("microzig", firmware.core_mod);
 }

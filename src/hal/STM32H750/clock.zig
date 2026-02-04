@@ -51,6 +51,11 @@ pub fn delay(wait: u32) void {
     }
 }
 
+/// Get the current system clock frequency
+pub fn get_sys_clock() u32 {
+    return get_sys_clock_freq();
+}
+
 pub fn get_sys_clock_freq() u32 {
     const sw = rcc.CFGR.read().SWS;
     const hsi_div = @intFromEnum(rcc.CR.read().HSIDIV);

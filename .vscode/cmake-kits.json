@@ -1,0 +1,20 @@
+[
+  {
+    "name": "Daisy10.3",
+    "compilers": {
+      "C": "/Applications/ARM/bin/arm-none-eabi-gcc",
+      "CXX": "/Applications/ARM/bin/arm-none-eabi-g++"
+    },
+    "isTrusted": true,
+    "toolchainFile": "/Users/brbrr/Developer/Woop/WoopyOne/lib/libdaisy/cmake/toolchains/stm32h750xx.cmake"
+  },
+  {
+    "name": "Daisy",
+    "compilers": {
+      "C": "/Applications/ArmGNUToolchain/13.2.Rel1/arm-none-eabi/bin/arm-none-eabi-gcc",
+      "CXX": "/Applications/ArmGNUToolchain/13.2.Rel1/arm-none-eabi/bin/arm-none-eabi-g++"
+    },
+    "isTrusted": true,
+    "toolchainFile": "/Users/brbrr/Developer/Woop/WoopyOne/lib/libdaisy/cmake/toolchains/autodetect.cmake"
+  }
+]
