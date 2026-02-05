@@ -1,8 +1,8 @@
 {
   "tasks": [
     {
-      "label": "build",
-      "command": "zig build",
+      "label": "build-sram",
+      "command": "zig build sram",
       "type": "shell",
       "group": {
         "isDefault": true,
@@ -11,19 +11,57 @@
       "problemMatcher": []
     },
     {
-      "label": "program-dfu",
-      "command": "dfu-util -a 0 -s 0x08000000:leave -D zig-out/firmware/blinky.bin -d ,0483:df11",
+      "label": "build-flash",
+      "command": "zig build flash",
       "type": "shell",
-      "dependsOn": ["build"]
+      "group": {
+        "kind": "build"
+      },
+      "problemMatcher": []
     },
+
     {
-      "label": "program",
-      "command": "openocd -s /usr/local/share/openocd/scripts -f interface/stlink.cfg -f target/stm32h7x.cfg -c 'program ./zig-out/firmware/blinky.elf verify reset exit' && echo success!",
+      "label": "create-bin-sram",
+      "command": "llvm-objcopy -O binary zig-out/firmware/blinky-sram.elf zig-out/firmware/blinky-sram.bin && echo 'Created blinky-sram.bin'",
+      "type": "shell",
+      "dependsOn": ["build-sram"]
+    },
+
+    {
+      "label": "create-bin-flash",
+      "command": "llvm-objcopy -O binary zig-out/firmware/blinky-flash.elf zig-out/firmware/blinky-flash.bin && echo 'Created blinky-flash.bin'",
+      "type": "shell",
+      "dependsOn": ["build-flash"]
+    },
+
+    {
+      "label": "program-sram-dfu",
+      "command": "dfu-util -a 0 -s 0x90040000:leave -D zig-out/firmware/blinky-sram.bin -d ,0483:df11",
+      "type": "shell",
+      "dependsOn": ["create-bin-sram"]
+    },
+
+    {
+      "label": "program-flash-dfu",
+      "command": "dfu-util -a 0 -s 0x08000000:leave -D zig-out/firmware/blinky-flash.bin -d ,0483:df11",
+      "type": "shell",
+      "dependsOn": ["create-bin-flash"]
+    },
+
+    {
+      "label": "program-flash-openocd",
+      "command": "openocd -s /usr/local/share/openocd/scripts -f interface/stlink.cfg -f target/stm32h7x.cfg -c 'program ./zig-out/firmware/blinky-flash.elf verify reset exit' && echo success!",
       "problemMatcher": [],
       "type": "shell",
-      "dependsOn": ["build"]
+      "dependsOn": ["build-flash"]
+    },
+
+    {
+      "label": "program-sram-openocd",
+      "command": "zig build sram && openocd -s /usr/local/share/openocd/scripts -f interface/stlink.cfg -f target/stm32h7x.cfg -c 'program ./zig-out/firmware/blinky.elf verify reset exit' && echo success!",
+      "problemMatcher": [],
+      "type": "shell"
     }
   ],
   "version": "2.0.0"
 }
-

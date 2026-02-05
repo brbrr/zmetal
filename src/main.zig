@@ -97,7 +97,8 @@ fn sys_tick_handler() callconv(.c) void {
 }
 
 pub fn init() void {
-    hal.init_vector_table();
+    // FIXME: For SRAM build, no need to call below
+    // hal.init_vector_table();
 }
 
 // Configure LED on PC7 using custom GPIO API
