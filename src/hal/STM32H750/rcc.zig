@@ -4,17 +4,14 @@ const std = @import("std");
 const microzig = @import("microzig");
 const comptimePrint = std.fmt.comptimePrint;
 
-// const find_clocktree = @import("util.zig").find_clock_tree;
-// const ClockTree = find_clocktree(microzig.config.chip_name);
-const H750Clock = @import("clocks/clock_stm32h750.zig");
-const ClockTree = H750Clock;
+const daisy = @import("daisy.zig");
 const hal = @import("hal.zig");
 const hal_power = @import("power.zig");
 const clock = @import("clock.zig");
 
-//expose only the configuration structs
+pub const ClockTree = @import("ClockTree").get_mcu_tree(microzig.config.chip_name);
 pub const Config = ClockTree.Config;
-pub const ConfigWithRef = ClockTree.ConfigWithRef;
+pub var clock_outputs = daisy.clock_outputs;
 
 const flash = microzig.chip.peripherals.FLASH;
 const rcc = microzig.chip.peripherals.RCC;
@@ -197,10 +194,6 @@ pub const Bus = enum {
     APB2,
 };
 
-//default clock config
-const daisy = @import("daisy.zig");
-pub var clock_outputs: ClockOutputs = daisy.clock_outputs;
-
 pub const RccFlag = enum(u8) {
     HSIRDY = 0x22,
     HSIDIV = 0x25,
@@ -257,11 +250,11 @@ pub fn wait_for_flag(flag: RccFlag, expected: u1, max_wait: u32) !void {
 ///Configures the system clocks
 /// NOTE: to configure the backup domain clocks (RTC) it is necessary to enable it through the power
 ///register before configuring the clocks
-pub fn apply_clock(comptime config: ClockTree.Config, flash_latency: FLASH.LATENCY) ClockInitError!void {
+pub fn apply_clock(comptime tree_out: ClockTree.Tree_Output, flash_latency: FLASH.LATENCY) ClockInitError!void {
     hal_power.set_voltage_scalling(.Scale1);
-    if (clock_outputs.SYS == 400_000_000) {
+    if (clock_outputs.SysCLKOutput == 400_000_000) {
         hal_power.set_voltage_scalling(.Scale1);
-    } else if (clock_outputs.SYS == 480_000_000) {
+    } else if (clock_outputs.SysCLKOutput == 480_000_000) {
         hal_power.set_voltage_scalling(.Scale1);
     } else {
         @panic("invalid sysclock?");
@@ -273,7 +266,7 @@ pub fn apply_clock(comptime config: ClockTree.Config, flash_latency: FLASH.LATEN
 
     // #define __HAL_RCC_PLL_PLLSOURCE_CONFIG(__PLLSOURCE__) MODIFY_REG(RCC->PLLCKSELR, RCC_PLLCKSELR_PLLSRC, (__PLLSOURCE__))
 
-    rcc.PLLCKSELR.modify_one("PLLSRC", @as(PLLSRC, @enumFromInt(config.PLLSource.?.get())));
+    rcc.PLLCKSELR.modify_one("PLLSRC", @as(PLLSRC, @enumFromInt(tree_out.config.PLLSource.?.get())));
 
     //rest all clock configs
     // secure_enable();
@@ -281,14 +274,14 @@ pub fn apply_clock(comptime config: ClockTree.Config, flash_latency: FLASH.LATEN
     //     config_HSI(@intFromEnum(val));
     // }
 
-    try osc_config(config);
+    try osc_config(tree_out);
 
     // NOTE: this is needed to propagate the changes?
     clock.delay(100);
 
-    try config_clocks(config, flash_latency);
+    try config_clocks(tree_out, flash_latency);
 
-    try config_peripherals(config);
+    try config_peripherals(tree_out);
     config_usb();
     // config_MCO(config);
 
@@ -357,13 +350,11 @@ fn toHPRE(div: u32) HPRE {
 
 /// NOTE:
 /// Current implementation assumes that below clock types are desired:
-///   RCC_CLOCKTYPE_D1PCLK1
-///   RCC_CLOCKTYPE_HCLK
-///   RCC_CLOCKTYPE_SYSCLK
-///   RCC_CLOCKTYPE_PCLK1
-///   RCC_CLOCKTYPE_PCLK2
-///   RCC_CLOCKTYPE_D3PCLK1
-pub fn config_clocks(comptime config: ClockTree.Config, flash_latency: FLASH.LATENCY) ClockInitError!void {
+/// RCC_CLOCKTYPE_D1PCLK1, RCC_CLOCKTYPE_HCLK, RCC_CLOCKTYPE_SYSCLK,
+/// RCC_CLOCKTYPE_PCLK1, RCC_CLOCKTYPE_PCLK2 ,RCC_CLOCKTYPE_D3PCLK1
+pub fn config_clocks(comptime tree_out: ClockTree.Tree_Output, flash_latency: FLASH.LATENCY) ClockInitError!void {
+    const cfg_out = tree_out.config; // configuration selections
+
     // To correctly read data from FLASH memory, the number of wait states (LATENCY)
     // must be correctly programmed according to the frequency of the CPU clock
     // (HCLK) and the supply voltage of the device.
@@ -381,66 +372,65 @@ pub fn config_clocks(comptime config: ClockTree.Config, flash_latency: FLASH.LAT
 
     // Increasing the BUS frequency divider */
     //-------------------------- D1PCLK1/CDPCLK1 Configuration ---------------------------*/
-    if (config.D1PPRE) |val| {
-        const cval: RCC.PPRE = toPPRE(@intFromFloat(val.get()));
+    {
+        const cval: RCC.PPRE = toPPRE(@intFromFloat(cfg_out.D1PPRE.?.get()));
         if (@intFromEnum(cval) > @intFromEnum(rcc.D1CFGR.read().D1PPRE)) {
             rcc.D1CFGR.modify_one("D1PPRE", cval);
         }
     }
 
     //-------------------------- PCLK1 Configuration ---------------------------*/
-    if (config.D2PPRE1) |val| {
-        // const cval: RCC.PPRE = @enumFromInt(@as(u32, @intFromFloat(val.get())));
-        const cval: RCC.PPRE = toPPRE(@intFromFloat(val.get()));
+    {
+        const cval: RCC.PPRE = toPPRE(@intFromFloat(cfg_out.D2PPRE1.?.get()));
         if (@intFromEnum(cval) > @intFromEnum(rcc.D2CFGR.read().D2PPRE1)) {
             rcc.D2CFGR.modify_one("D2PPRE1", cval);
         }
     }
 
     //-------------------------- PCLK2 Configuration ---------------------------*/
-    if (config.D2PPRE2) |val| {
-        const cval: RCC.PPRE = toPPRE(@intFromFloat(val.get()));
+    // if (config.D2PPRE2) |val| {
+    {
+        const cval: RCC.PPRE = toPPRE(@intFromFloat(cfg_out.D2PPRE2.?.get()));
         if (@intFromEnum(cval) > @intFromEnum(rcc.D2CFGR.read().D2PPRE2)) {
             rcc.D2CFGR.modify_one("D2PPRE2", cval);
         }
     }
 
     //-------------------------- D3PCLK1 Configuration ---------------------------*/
-    if (config.D3PPRE) |val| {
-        // const cval: RCC.PPRE = @enumFromInt(@as(u32, @intFromFloat(val.get())));
-        const cval: RCC.PPRE = toPPRE(@intFromFloat(val.get()));
+    // config.D3PPRE is f32 in Clock_Output, not optional
+    {
+        const cval: RCC.PPRE = toPPRE(@intFromFloat(cfg_out.D3PPRE.?.get()));
         if (@intFromEnum(cval) > @intFromEnum(rcc.D3CFGR.read().D3PPRE)) {
             rcc.D3CFGR.modify_one("D3PPRE", cval);
         }
     }
 
     //-------------------------- HCLK Configuration --------------------------*/
-    if (config.HPRE) |val| {
-        // const cval: RCC.HPRE = @enumFromInt(@as(u32, @intFromFloat(val.get())));
-        const cval = toHPRE(@intFromFloat(val.get()));
+    // config.HPRE is f32 in Clock_Output, not optional
+    {
+        const cval = toHPRE(@intFromFloat(cfg_out.HPRE.?.get()));
         if (@intFromEnum(cval) > @intFromEnum(rcc.D1CFGR.read().HPRE)) {
             rcc.D1CFGR.modify_one("HPRE", cval);
         }
     }
 
     //------------------------- SYSCLK Configuration -------------------------*/
-    if (config.D1CPRE) |val| if (config.SysClkSource) |clk_src| {
-        // const cval: RCC.HPRE = @enumFromInt(@as(u32, @intFromFloat(val.get())));
-        // .D1CPRE = .RCC_SYSCLK_DIV1,
-        // .RCC_SYSCLK_DIV1 => 1,
-        const cval = toHPRE(@intFromFloat(val.get()));
+    // cfg_out.SYSCLKSource is the enum selection, config.SysClkSource is the frequency
+    if (cfg_out.SYSCLKSource) |sysclk_source| {
+        const cval = toHPRE(@intFromFloat(cfg_out.D1CPRE.?.get()));
         rcc.D1CFGR.modify_one("D1CPRE", cval);
-        const flag_name = switch (clk_src) {
+
+        const flag_name = switch (sysclk_source) {
+            .RCC_SYSCLKSOURCE_HSI => RccFlag.HSIRDY,
             .RCC_SYSCLKSOURCE_CSI => RccFlag.CSIRDY,
             .RCC_SYSCLKSOURCE_HSE => RccFlag.HSERDY,
-            .RCC_SYSCLKSOURCE_HSI => RccFlag.HSIRDY,
             .RCC_SYSCLKSOURCE_PLLCLK => RccFlag.PLLRDY,
         };
         if (get_flag(flag_name) == 0) {
             return error.ClockNotReady;
         }
 
-        const sw_src: RCC.SW = @enumFromInt(clk_src.get());
+        const sw_src: RCC.SW = @enumFromInt(sysclk_source.get());
         rcc.CFGR.modify_one("SW", sw_src);
         const tick_start = clock.get_tick();
         // #define __HAL_RCC_GET_SYSCLK_SOURCE() ((uint32_t)(RCC->CFGR & RCC_CFGR_SWS))
@@ -451,16 +441,6 @@ pub fn config_clocks(comptime config: ClockTree.Config, flash_latency: FLASH.LAT
         }
     } else {
         return error.ClockConfigError;
-    };
-
-    // Decreasing the BUS frequency divider
-    //-------------------------- HCLK Configuration --------------------------*/
-    if (config.HPRE) |val| {
-        // const cval: RCC.HPRE = @enumFromInt(@as(u32, @intFromFloat(val.get())));
-        const cval: RCC.HPRE = toHPRE(@intFromFloat(val.get()));
-        if (@intFromEnum(cval) > @intFromEnum(rcc.D1CFGR.read().HPRE)) {
-            rcc.D1CFGR.modify_one("HPRE", cval);
-        }
     }
 
     // Decreasing the number of wait states because of lower CPU frequency */
@@ -474,50 +454,14 @@ pub fn config_clocks(comptime config: ClockTree.Config, flash_latency: FLASH.LAT
         }
     }
 
-    //-------------------------- D1PCLK1/CDPCLK1 Configuration ---------------------------*/
-    if (config.D1PPRE) |val| {
-        // const cval: RCC.PPRE = @enumFromInt(@as(u32, @intFromFloat(val.get())));
-        const cval: RCC.PPRE = toPPRE(@intFromFloat(val.get()));
-        if (@intFromEnum(cval) > @intFromEnum(rcc.D1CFGR.read().D1PPRE)) {
-            rcc.D1CFGR.modify_one("D1PPRE", cval);
-        }
-    }
-
-    //-------------------------- PCLK1 Configuration ---------------------------*/
-    if (config.D2PPRE1) |val| {
-        // const cval: RCC.PPRE = @enumFromInt(@as(u32, @intFromFloat(val.get())));
-        const cval: RCC.PPRE = toPPRE(@intFromFloat(val.get()));
-        if (@intFromEnum(cval) > @intFromEnum(rcc.D2CFGR.read().D2PPRE1)) {
-            rcc.D2CFGR.modify_one("D2PPRE1", cval);
-        }
-    }
-
-    //-------------------------- PCLK2 Configuration ---------------------------*/
-    if (config.D2PPRE2) |val| {
-        // const cval: RCC.PPRE = @enumFromInt(@as(u32, @intFromFloat(val.get())));
-        const cval: RCC.PPRE = toPPRE(@intFromFloat(val.get()));
-        if (@intFromEnum(cval) > @intFromEnum(rcc.D2CFGR.read().D2PPRE2)) {
-            rcc.D2CFGR.modify_one("D2PPRE2", cval);
-        }
-    }
-
-    //-------------------------- D3PCLK1 Configuration ---------------------------*/
-    if (config.D3PPRE) |val| {
-        // const cval: RCC.PPRE = @enumFromInt(@as(u32, @intFromFloat(val.get())));
-        const cval: RCC.PPRE = toPPRE(@intFromFloat(val.get()));
-        if (@intFromEnum(cval) > @intFromEnum(rcc.D3CFGR.read().D3PPRE)) {
-            rcc.D3CFGR.modify_one("D3PPRE", cval);
-        }
-    }
-
     clock.update_system_core_clock();
     clock.hal_init_tick(clock.uwTickPrio) catch {
         return error.ClockSetupError;
     };
 }
 
-fn osc_config(comptime config: ClockTree.Config) ClockInitError!void {
-    if (config.PLLSource) |src| {
+fn osc_config(comptime tree_out: ClockTree.Tree_Output) ClockInitError!void {
+    if (tree_out.config.PLLSource) |src| {
         // const temp_sysclksrc = rcc.CFGR.read().SWS;
         // const temp_pllckselr = rcc.PLLCKSELR.read();
 
@@ -529,11 +473,11 @@ fn osc_config(comptime config: ClockTree.Config) ClockInitError!void {
         // }
 
         // Set the new HSE configuration
-        try config_HSE(config);
-        try config_HSI48(config);
+        try config_HSE(tree_out.config);
+        try config_HSI48(tree_out.config);
 
         if (rcc.CFGR.read().SWS != .PLL1_P) {
-            try config_PLL1(config, @enumFromInt(src.get()));
+            try config_PLL1(tree_out, @enumFromInt(src.get()));
         } else {
             const sws = rcc.CFGR.read().SWS;
             _ = sws;
@@ -544,44 +488,42 @@ fn osc_config(comptime config: ClockTree.Config) ClockInitError!void {
     }
 }
 
-fn pllm_from() void {}
-
-fn config_PLL1(comptime config: ClockTree.Config, clock_src: PLLSRC) !void {
+fn config_PLL1(comptime tree_out: ClockTree.Tree_Output, clock_src: PLLSRC) !void {
+    const config = tree_out.config; // Use config, not clock
     // Disable the main PLL. */
     rcc.CR.modify_one("PLL1ON", 0);
-    try wait_for_flag(.PLLRDY, 0, @intFromEnum(config.HSE_Timout.?));
+    try wait_for_flag(.PLLRDY, 0, @intFromFloat(config.HSE_Timout.?));
 
     // Set PLL source and divider (assuming you have similar mmio for PLLCKSELR)
-    rcc.PLLCKSELR.modify(.{ .PLLSRC = clock_src, .DIVM1 = @as(PLLM, @enumFromInt(@intFromEnum(config.DIVM1.?))) });
+    // config.DIVM1 is now ?f32 in Config_Output
+    const divm1_val = @as(u6, @intCast(@as(u32, @intFromFloat(config.DIVM1.?))));
+    rcc.PLLCKSELR.modify(.{ .PLLSRC = clock_src, .DIVM1 = @as(PLLM, @enumFromInt(divm1_val)) });
 
     // Set PLL1DIVR fields
+    // In Config_Output: DIVN1, DIVQ1, DIVR1 are ?f32; DIVP1 is ?DIVP1List
     rcc.PLL1DIVR.modify(.{
-        .DIVN1 = @as(PLLN, @enumFromInt(@intFromEnum(config.DIVN1.?) - 1)),
+        .DIVN1 = @as(PLLN, @enumFromInt(@as(u32, @intFromFloat(config.DIVN1.?)) - 1)),
         .DIVP1 = @as(PLLDIV, @enumFromInt(@as(u32, @intFromFloat(config.DIVP1.?.get())) - 1)),
-        .DIVQ1 = @as(PLLDIV, @enumFromInt(@intFromEnum(config.DIVR1.?) - 1)),
-        .DIVR1 = @as(PLLDIV, @enumFromInt(@intFromEnum(config.DIVQ1.?) - 1)),
+        .DIVQ1 = @as(PLLDIV, @enumFromInt(@as(u32, @intFromFloat(config.DIVQ1.?)) - 1)),
+        .DIVR1 = @as(PLLDIV, @enumFromInt(@as(u32, @intFromFloat(config.DIVR1.?)) - 1)),
     });
 
     // Disable PLLFRACN . */
     rcc.PLLCFGR.modify_one("PLL1FRACEN", 0);
 
     // /* Configure PLL PLL1FRACN */
-    rcc.PLL1FRACR.modify_one("FRACN1", @as(u13, @intCast(@intFromEnum(config.PLLFRACN.?))));
+    rcc.PLL1FRACR.modify_one("FRACN1", @as(u13, @intCast(@as(u32, @intFromFloat(config.PLLFRACN.?)))));
 
-    // FIXME: Extract these two values into a config
-    // /* Select PLL1 input reference frequency range: VCI */
-    // NOTE: Should be calculated
-    // @arg RCC_PLL1VCIRANGE_0: Range frequency is between 1 and 2 MHz
-    // @arg RCC_PLL1VCIRANGE_1: Range frequency is between 2 and 4 MHz
-    // @arg RCC_PLL1VCIRANGE_2: Range frequency is between 4 and 8 MHz
-    // @arg RCC_PLL1VCIRANGE_3: Range frequency is between 8 and 16 MHz
-    rcc.PLLCFGR.modify_one("PLL1RGE", 2);
+    rcc.PLLCFGR.modify(.{
+        // .PLL1RGE = @intFromEnum(config.PLL1_VCI_Range.?), // 2, // RCC_PLL1VCIRANGE_2
+        // .PLL1VCOSEL = @intFromEnum(config.PLL1_VCO_SEL.?), // 0, //RCC_PLL1VCOWIDE
 
-    // Select PLL1 output frequency range : VCO */
-    // NOTE: Should be calculated
-    // @arg RCC_PLL1VCOWIDE: Range frequency is between 192 and 836 MHz or between 128 to 560 MHz(*)
-    // @arg RCC_PLL1VCOMEDIUM: Range frequency is between 150 and 420 MHz
-    rcc.PLLCFGR.modify_one("PLL1VCOSEL", 0);
+        .PLL1RGE = 2, // 2, // RCC_PLL1VCIRANGE_2
+        .PLL1VCOSEL = 0, // 0, //RCC_PLL1VCOWIDE
+    });
+
+    // rcc.PLLCFGR.modify_one("PLL1RGE", 2);
+    // rcc.PLLCFGR.modify_one("PLL1VCOSEL", 0);
 
     rcc.PLLCFGR.modify(.{
         .DIVP1EN = 1, // Enable PLL System Clock output. */
@@ -594,10 +536,12 @@ fn config_PLL1(comptime config: ClockTree.Config, clock_src: PLLSRC) !void {
     // Enable the main PLL
     rcc.CR.modify_one("PLL1ON", 1);
 
-    try wait_for_flag(.PLLRDY, 1, @intFromEnum(config.HSE_Timout.?));
+    try wait_for_flag(.PLLRDY, 1, @intFromFloat(config.HSE_Timout.?));
 }
 
-fn pll2_config(comptime config: ClockTree.Config, comptime divider: DivUpdate) !void {
+fn pll2_config(comptime tree_out: ClockTree.Tree_Output, comptime divider: DivUpdate) !void {
+    const config = tree_out.config;
+
     if (rcc.PLLCKSELR.read().PLLSRC == .DISABLE) {
         return error.PllError;
     }
@@ -606,28 +550,30 @@ fn pll2_config(comptime config: ClockTree.Config, comptime divider: DivUpdate) !
     rcc.CR.modify_one("PLL2ON", 0);
     try wait_for_flag(.PLL2RDY, 0, PLLTimeout);
 
-    // Configure the PLL3  multiplication and division factors. */
-    const divm2: RCC.PLLM = @enumFromInt(@as(u32, @intFromEnum(config.DIVM2.?)));
+    // Configure the PLL2 multiplication and division factors. */
+    const divm2: RCC.PLLM = @enumFromInt(@as(u32, @intFromFloat(config.DIVM2.?)));
     rcc.PLLCKSELR.modify_one("DIVM2", divm2);
 
     rcc.PLL2DIVR.modify(.{
-        .DIVN2 = @as(RCC.PLLN, @enumFromInt(@as(u32, @intFromEnum(config.DIVN2.?) - 1))),
-        .DIVP2 = @as(RCC.PLLDIV, @enumFromInt(@as(u7, @intFromEnum(config.DIVP2.?) - 1))),
-        .DIVQ2 = @as(RCC.PLLDIV, @enumFromInt(@as(u7, @intFromEnum(config.DIVQ2.?) - 1))),
-        .DIVR2 = @as(RCC.PLLDIV, @enumFromInt(@as(u7, @intFromEnum(config.DIVR2.?) - 1))),
+        .DIVN2 = @as(RCC.PLLN, @enumFromInt(@as(u32, @intFromFloat(config.DIVN2.?)) - 1)),
+        .DIVP2 = @as(RCC.PLLDIV, @enumFromInt(@as(u7, @intFromFloat(config.DIVP2.?)) - 1)),
+        .DIVQ2 = @as(RCC.PLLDIV, @enumFromInt(@as(u7, @intFromFloat(config.DIVQ2.?)) - 1)),
+        .DIVR2 = @as(RCC.PLLDIV, @enumFromInt(@as(u7, @intFromFloat(config.DIVR2.?)) - 1)),
     });
 
-    // FIXME: Extract these into a config
+    // PLL2 VCI range: 16MHz/1 = 16MHz → Range 3 (8-16MHz) = RCC_PLL2VCIRANGE_3
     rcc.PLLCFGR.modify(.{
-        .PLL2RGE = 2, // RCC_PLL2VCIRANGE_2
-        .PLL2VCOSEL = 0, //RCC_PLL22COWIDE
+        .PLL2RGE = @intFromEnum(config.PLL2_VCI_Range.?),
+        .PLL2VCOSEL = @intFromEnum(config.PLL2_VCO_SEL.?),
+        // .PLL2RGE = config.PLL2_VCI_Range, // RCC_PLL2VCIRANGE_3 for 16MHz VCI
+        // .PLL2VCOSEL = config.PLL2_VCO_SEL, // RCC_PLL2VCOWIDE
     });
 
     // Disable PLL2FRACN.
     rcc.PLLCFGR.modify_one("PLL2FRACEN", 0);
 
     // Configures PLL2 clock Fractional Part Of The Multiplication Factor */
-    rcc.PLL2FRACR.modify_one("FRACN2", @as(u13, @intCast(@intFromEnum(config.PLL2FRACN.?))));
+    rcc.PLL2FRACR.modify_one("FRACN2", @as(u13, @intCast(@as(u32, @intFromFloat(config.PLL2FRACN.?)))));
     //
     // Enable PLL2FRACN . */
     rcc.PLLCFGR.modify_one("PLL2FRACEN", 1);
@@ -647,7 +593,9 @@ fn pll2_config(comptime config: ClockTree.Config, comptime divider: DivUpdate) !
     try wait_for_flag(.PLL2RDY, 1, PLLTimeout);
 }
 
-fn pll3_config(comptime config: ClockTree.Config, comptime divider: DivUpdate) !void {
+fn pll3_config(comptime tree_out: ClockTree.Tree_Output, comptime divider: DivUpdate) !void {
+    const config = tree_out.config;
+
     if (rcc.PLLCKSELR.read().PLLSRC == .DISABLE) {
         return error.PllError;
     }
@@ -656,27 +604,30 @@ fn pll3_config(comptime config: ClockTree.Config, comptime divider: DivUpdate) !
     rcc.CR.modify_one("PLL3ON", 0);
     try wait_for_flag(.PLL3RDY, 0, PLLTimeout);
 
-    // Configure the PLL3  multiplication and division factors. */
-    const divm3: RCC.PLLM = @enumFromInt(@as(u32, @intFromEnum(config.DIVM3.?)));
+    // Configure the PLL3 multiplication and division factors. */
+    const divm3: RCC.PLLM = @enumFromInt(@as(u32, @intFromFloat(config.DIVM3.?)));
     rcc.PLLCKSELR.modify_one("DIVM3", divm3);
     rcc.PLL3DIVR.modify(.{
-        .DIVN3 = @as(RCC.PLLN, @enumFromInt(@as(u32, @intFromEnum(config.DIVN3.?) - 1))),
-        .DIVP3 = @as(RCC.PLLDIV, @enumFromInt(@as(u32, @intFromEnum(config.DIVP3.?) - 1))),
-        .DIVQ3 = @as(RCC.PLLDIV, @enumFromInt(@as(u32, @intFromEnum(config.DIVQ3.?) - 1))),
-        .DIVR3 = @as(RCC.PLLDIV, @enumFromInt(@as(u32, @intFromEnum(config.DIVR3.?) - 1))),
+        .DIVN3 = @as(RCC.PLLN, @enumFromInt(@as(u32, @intFromFloat(config.DIVN3.?)) - 1)),
+        .DIVP3 = @as(RCC.PLLDIV, @enumFromInt(@as(u32, @intFromFloat(config.DIVP3.?)) - 1)),
+        .DIVQ3 = @as(RCC.PLLDIV, @enumFromInt(@as(u32, @intFromFloat(config.DIVQ3.?)) - 1)),
+        .DIVR3 = @as(RCC.PLLDIV, @enumFromInt(@as(u32, @intFromFloat(config.DIVR3.?)) - 1)),
     });
 
-    // FIXME: Extract these into a config
+    // PLL3 VCI range: 16MHz/6 = 2.67MHz → Range 1 (2-4MHz) = RCC_PLL3VCIRANGE_1
     rcc.PLLCFGR.modify(.{
-        .PLL3RGE = 1, //RCC_PLL3VCIRANGE_1
-        .PLL3VCOSEL = 0, //RCC_PLL3VCOWIDE
+        // .PLL3RGE = config.PLL3_VCI_Range, // RCC_PLL2VCIRANGE_3 for 16MHz VCI
+        // .PLL3VCOSEL = config.PLL3_VCO_SEL, // RCC_PLL2VCOWIDE
+
+        .PLL3RGE = @intFromEnum(config.PLL3_VCI_Range.?),
+        .PLL3VCOSEL = @intFromEnum(config.PLL3_VCO_SEL.?),
     });
 
     // Disable PLL3FRACN.
     rcc.PLLCFGR.modify_one("PLL3FRACEN", 0);
 
     // Configures PLL3 clock Fractional Part Of The Multiplication Factor */
-    rcc.PLL3FRACR.modify_one("FRACN3", @as(u13, @intCast(@intFromEnum(config.PLL3FRACN.?))));
+    rcc.PLL3FRACR.modify_one("FRACN3", @as(u13, @intCast(@as(u32, @intFromFloat(config.PLL3FRACN.?)))));
     // Enable PLL3FRACN
     rcc.PLLCFGR.modify_one("PLL3FRACEN", 1);
     // Enable the PLL3 clock output */
@@ -731,8 +682,6 @@ pub fn validate_clocks(comptime config: ClockTree.Config) ClockOutputs {
     if (config.ADCMult) |_| {
         outputs.ADC = @intFromFloat(tree_values.ADCoutput.get_comptime());
     }
-
-    // @compileLog(comptimePrint("Calcuated clocks: \n\n {}\n\n", .{outputs}));
 
     return outputs;
 }
@@ -800,20 +749,23 @@ fn config_LSI() void {
     }
 }
 
-fn config_HSE(comptime config: ClockTree.Config) ClockInitError!void {
+fn config_HSE(comptime config: ClockTree.Config_Output) ClockInitError!void {
     rcc.CR.modify(.{ .HSEON = 1 });
 
-    try wait_for_flag(.HSERDY, 1, @intFromEnum(config.HSE_Timout.?));
+    // config.HSE_Timout is now ?f32
+    try wait_for_flag(.HSERDY, 1, @intFromFloat(config.HSE_Timout.?));
 }
 
-fn config_HSI48(comptime config: ClockTree.Config) ClockInitError!void {
+fn config_HSI48(comptime config: ClockTree.Config_Output) ClockInitError!void {
     rcc.CR.modify(.{ .RC48ON = 1 });
 
-    try wait_for_flag(.HSI48RDY, 1, @intFromEnum(config.HSE_Timout.?));
+    // config.HSE_Timout is now ?f32
+    try wait_for_flag(.HSI48RDY, 1, @intFromFloat(config.HSE_Timout.?));
 }
 
-fn config_LSE(comptime config: ClockTree.Config) ClockInitError!void {
-    const max_wait: u32 = if (config.LSE_Timeout) |val| @intFromEnum(val) else std.math.maxInt(u32);
+fn config_LSE(comptime config: ClockTree.Config_Output) ClockInitError!void {
+    // config.LSE_Timeout is now ?f32
+    const max_wait: u32 = if (config.LSE_Timeout) |val| @intFromFloat(val) else std.math.maxInt(u32);
     var ticks: usize = 0;
     rcc.BDCR.modify(.{ .LSEON = 1 });
     while (rcc.BDCR.read().LSERDY == 0) {
@@ -868,49 +820,29 @@ pub fn getPLL3Clocks() PLL3Clocks {
     };
 }
 
-fn config_peripherals(comptime config: ClockTree.Config) !void {
-    //---------------------------- SPDIFRX configuration -------------------------------
-    if (config.SPDIFMult) |val| {
-        _ = val;
-        @panic("not supported");
-    }
+fn config_peripherals(comptime tree_out: ClockTree.Tree_Output) !void {
+    const config = tree_out.config;
 
     //---------------------------- SAI1 configuration -------------------------------*/
-    if (config.SAI1Mult) |clk| {
+    if (config.SAI1CLockSelection) |clk| {
         switch (clk) {
-            .RCC_SAI1CLKSOURCE_PLL3 => try pll3_config(config, .DivP),
+            .RCC_SAI1CLKSOURCE_PLL3 => try pll3_config(tree_out, .DivP),
             else => @panic("Not implemented!"),
         }
         rcc.D2CCIP1R.modify_one("SAI1SRC", @as(u3, @intCast(clk.get())));
     }
 
     //---------------------------- SAI2/3 configuration -------------------------------*/
-    if (config.SAI23Mult) |clk| {
+    if (config.SAI23CLockSelection) |clk| {
         switch (clk) {
-            .RCC_SAI23CLKSOURCE_PLL3 => try pll3_config(config, .DivP),
+            .RCC_SAI23CLKSOURCE_PLL3 => try pll3_config(tree_out, .DivP),
             else => @panic("Not implemented!"),
         }
         rcc.D2CCIP1R.modify_one("SAI23SRC", @as(u3, @intCast(@intFromEnum(clk))));
-        //
-    }
-
-    //---------------------------- SAI4A configuration -------------------------------*/
-    if (config.SAI4AMult) |clk| {
-        switch (clk) {
-            else => @panic("Not implemented!"),
-        }
-        rcc.D3CCIPR.modify_one("SAI4ASRC", @as(u3, @intCast(@intFromEnum(clk))));
-    }
-    //---------------------------- SAI4B configuration -------------------------------*/
-    if (config.SAI4BMult) |clk| {
-        switch (clk) {
-            else => @panic("Not implemented!"),
-        }
-        rcc.D3CCIPR.modify_one("SAI4BSRC", @as(u3, @intCast(@intFromEnum(clk))));
     }
 
     //---------------------------- QSPI configuration -------------------------------*/
-    if (config.QSPIMult) |clk| {
+    if (config.QSPICLockSelection) |clk| {
         switch (clk) {
             .RCC_QSPICLKSOURCE_D1HCLK => {},
             else => @panic("Not implemented!"),
@@ -919,48 +851,25 @@ fn config_peripherals(comptime config: ClockTree.Config) !void {
     }
 
     //---------------------------- SPI1/2/3 configuration -------------------------------*/
-    if (config.SPI123Mult) |clk| {
+    if (config.SPI123CLockSelection) |clk| {
         switch (clk) {
-            .RCC_SPI123CLKSOURCE_PLL2 => try pll2_config(config, .DivP),
+            .RCC_SPI123CLKSOURCE_PLL2 => try pll2_config(tree_out, .DivP),
             else => @panic("Not implemented!"),
         }
         rcc.D2CCIP1R.modify_one("SPI123SRC", @as(u3, @intCast(@intFromEnum(clk))));
     }
 
-    //---------------------------- SPI4/5 configuration -------------------------------*/
-    if (config.SPI45Mult) |clk| {
-        switch (clk) {
-            else => @panic("Not implemented!"),
-        }
-        rcc.D2CCIP1R.modify_one("SPI45SRC", @as(u3, @intCast(@intFromEnum(clk))));
-    }
-
-    //---------------------------- SPI6 configuration -------------------------------*/
-    if (config.SPI6Mult) |clk| {
-        switch (clk) {
-            else => @panic("Not implemented!"),
-        }
-        rcc.D3CCIPR.modify_one("SPI6SRC", @as(u3, @intCast(@intFromEnum(clk))));
-    }
-
     //---------------------------- FMC configuration -------------------------------*/
-    if (config.FMCMult) |clk| {
+    if (config.FMCCLockSelection) |clk| {
         switch (clk) {
-            .RCC_FMCCLKSOURCE_PLL2 => try pll2_config(config, .DivR),
+            .RCC_FMCCLKSOURCE_PLL2 => try pll2_config(tree_out, .DivR),
             else => @panic("Not implemented!"),
         }
         rcc.D1CCIPR.modify_one("FMCSRC", @as(u2, @intCast(@intFromEnum(clk))));
     }
 
-    //---------------------------- RTC configuration -------------------------------*/
-    if (config.RTCClkSource) |clk| {
-        switch (clk) {
-            else => @panic("Not implemented!"),
-        }
-    }
-
     //-------------------------- USART1/6 configuration --------------------------*/
-    if (config.USART16Mult) |clk| {
+    if (config.USART16CLockSelection) |clk| {
         switch (clk) {
             .RCC_USART16CLKSOURCE_D2PCLK2 => {},
             else => @panic("Not implemented!"),
@@ -969,7 +878,7 @@ fn config_peripherals(comptime config: ClockTree.Config) !void {
     }
 
     //-------------------------- USART2/3/4/5/7/8 Configuration --------------------------*/
-    if (config.USART234578Mult) |clk| {
+    if (config.USART234578CLockSelection) |clk| {
         switch (clk) {
             .RCC_USART234578CLKSOURCE_D2PCLK1 => {},
             else => @panic("Not implemented!"),
@@ -978,7 +887,7 @@ fn config_peripherals(comptime config: ClockTree.Config) !void {
     }
 
     //------------------------------ I2C1/2/3/5* Configuration ------------------------*/
-    if (config.I2C123Mult) |clk| {
+    if (config.I2C123CLockSelection) |clk| {
         switch (clk) {
             .RCC_I2C123CLKSOURCE_D2PCLK1 => {},
             else => @panic("Not implemented!"),
@@ -987,25 +896,25 @@ fn config_peripherals(comptime config: ClockTree.Config) !void {
     }
 
     //------------------------------ I2C4 Configuration ------------------------*/
-    if (config.I2C4Mult) |clk| {
+    if (config.I2C4CLockSelection) |clk| {
         switch (clk) {
-            .RCC_I2C4CLKSOURCE_PLL3 => try pll3_config(config, .DivR),
+            .RCC_I2C4CLKSOURCE_PLL3 => try pll3_config(tree_out, .DivR),
             else => @panic("Not implemented!"),
         }
         rcc.D3CCIPR.modify_one("I2C4SRC", @as(u2, @intCast(@intFromEnum(clk))));
     }
 
     //---------------------------- ADC configuration -------------------------------*/
-    if (config.ADCMult) |clk| {
+    if (config.ADCCLockSelection) |clk| {
         switch (clk) {
-            .RCC_ADCCLKSOURCE_PLL3 => try pll3_config(config, .DivR),
+            .RCC_ADCCLKSOURCE_PLL3 => try pll3_config(tree_out, .DivR),
             else => @panic("Not implemented!"),
         }
         rcc.D3CCIPR.modify_one("ADCSRC", @as(u2, @intCast(@intFromEnum(clk))));
     }
 
     //------------------------------ USB Configuration -------------------------*/
-    if (config.USBMult) |clk| {
+    if (config.USBCLockSelection) |clk| {
         switch (clk) {
             .RCC_USBCLKSOURCE_HSI48 => {},
             else => @panic("Not implemented!"),
@@ -1014,22 +923,67 @@ fn config_peripherals(comptime config: ClockTree.Config) !void {
     }
 
     //------------------------------------- SDMMC Configuration ------------------------------------*/
-    if (config.SDMMCMult) |clk| {
+    if (config.SDMMC1CLockSelection) |clk| {
         switch (clk) {
-            .RCC_SDMMCCLKSOURCE_PLL2 => try pll2_config(config, .DivR),
+            .RCC_SDMMCCLKSOURCE_PLL2 => try pll2_config(tree_out, .DivR),
             else => @panic("Not implemented!"),
         }
         rcc.D1CCIPR.modify_one("SDMMCSRC", @as(u1, @intCast(@intFromEnum(clk))));
     }
 
     //------------------------------ RNG Configuration -------------------------*/
-    if (config.RNGMult) |clk| {
-        switch (clk) {
-            .RCC_RNGCLKSOURCE_PLL => {}, // __HAL_RCC_PLLCLKOUT_ENABLE(RCC_PLL1_DIVQ);
-            else => @panic("Not implemented!"),
-        }
-        rcc.D2CCIP2R.modify_one("RNGSRC", @as(u2, @intCast(@intFromEnum(clk))));
-    }
+    // if (config.RNGCLockSelection) |clk| {
+    //     switch (clk) {
+    //         .RCC_RNGCLKSOURCE_PLL => {}, // __HAL_RCC_PLLCLKOUT_ENABLE(RCC_PLL1_DIVQ);
+    //         else => @panic("Not implemented!"),
+    //     }
+    //     rcc.D2CCIP2R.modify_one("RNGSRC", @as(u2, @intCast(@intFromEnum(clk))));
+    // }
+
+    //---------------------------- SPDIFRX configuration -------------------------------
+    // if (config.SPDIFCLockSelection) |val| {
+    //     _ = val;
+    //     @panic("SPDIF not supported");
+    // }
+
+    ////---------------------------- SAI4A configuration -------------------------------*/
+    //if (config.SAI4ACLockSelection) |clk| {
+    //    switch (clk) {
+    //        else => @panic("Not implemented!"),
+    //    }
+    //    rcc.D3CCIPR.modify_one("SAI4ASRC", @as(u3, @intCast(@intFromEnum(clk))));
+    //}
+    //
+    ////---------------------------- SAI4B configuration -------------------------------*/
+    //if (config.SAI4BCLockSelection) |clk| {
+    //    switch (clk) {
+    //        else => @panic("Not implemented!"),
+    //    }
+    //    rcc.D3CCIPR.modify_one("SAI4BSRC", @as(u3, @intCast(@intFromEnum(clk))));
+    //}
+    //
+    ////---------------------------- SPI4/5 configuration -------------------------------*/
+    //if (config.SPI45CLockSelection) |clk| {
+    //    switch (clk) {
+    //        else => @panic("Not implemented!"),
+    //    }
+    //    rcc.D2CCIP1R.modify_one("SPI45SRC", @as(u3, @intCast(@intFromEnum(clk))));
+    //}
+    //
+    ////---------------------------- SPI6 configuration -------------------------------*/
+    //if (config.SPI6CLockSelection) |clk| {
+    //    switch (clk) {
+    //        else => @panic("Not implemented!"),
+    //    }
+    //    rcc.D3CCIPR.modify_one("SPI6SRC", @as(u3, @intCast(@intFromEnum(clk))));
+    //}
+    //
+    ////---------------------------- RTC configuration -------------------------------*/
+    //if (config.RTCClkSource) |clk| {
+    //    switch (clk) {
+    //        else => @panic("Not implemented!"),
+    //    }
+    //}
 }
 
 fn config_system_clock(comptime config: ClockTree.Config) ClockInitError!void {
@@ -1363,4 +1317,58 @@ pub fn get_clock(source: RccPeriferals) u32 {
 
 pub inline fn get_sys_clk() u32 {
     return clock_outputs.SYS;
+}
+
+/// Verifies that all enabled peripheral clocks have non-zero output values
+///
+/// This compile-time function checks that for every XClockSelection field that is non-null
+/// in the config, the corresponding Xoutput field in the clock tree output is non-zero.
+pub fn verify_peripheral_clocks(comptime config: ClockTree.Config, comptime tree_out: ClockTree.Clock_Output) void {
+    // Map clock selection fields to their corresponding output fields
+    const clock_mappings = .{
+        .{ "SAI1CLockSelection", "SAI1output" },
+        .{ "SAI23CLockSelection", "SAI23output" },
+        .{ "SAI4ACLockSelection", "SAI4Aoutput" },
+        .{ "SAI4BCLockSelection", "SAI4Boutput" },
+        .{ "SPI123CLockSelection", "SPI123output" },
+        .{ "SPI6CLockSelection", "SPI6output" },
+        .{ "Spi45ClockSelection", "SPI45output" },
+        .{ "RNGCLockSelection", "RNGoutput" },
+        .{ "I2C123CLockSelection", "I2C123output" },
+        .{ "I2C4CLockSelection", "I2C4output" },
+        .{ "SPDIFCLockSelection", "SPDIFoutput" },
+        .{ "QSPICLockSelection", "QSPIoutput" },
+        .{ "FMCCLockSelection", "FMCoutput" },
+        .{ "SWPCLockSelection", "SWPoutput" },
+        .{ "SDMMC1CLockSelection", "SDMMCoutput" },
+        .{ "DFSDMCLockSelection", "DFSDMoutput" },
+        .{ "USART16CLockSelection", "USART16output" },
+        .{ "USART234578CLockSelection", "USART234578output" },
+        .{ "LPUART1CLockSelection", "LPUART1output" },
+        .{ "LPTIM1CLockSelection", "LPTIM1output" },
+        .{ "LPTIM345CLockSelection", "LPTIM345output" },
+        .{ "LPTIM2CLockSelection", "LPTIM2output" },
+        .{ "USBCLockSelection", "USBoutput" },
+        .{ "FDCANCLockSelection", "FDCANoutput" },
+        .{ "ADCCLockSelection", "ADCoutput" },
+        .{ "CECCLockSelection", "CECoutput" },
+        .{ "HRTIMCLockSelection", "HRTIMoutput" },
+        .{ "RTCClockSelection", "RTCOutput" },
+        .{ "DSICLockSelection", "DSIoutput" },
+    };
+
+    inline for (clock_mappings) |mapping| {
+        const selection_field = mapping[0];
+        const output_field = mapping[1];
+
+        if (@hasField(ClockTree.Config, selection_field) and @hasField(ClockTree.Clock_Output, output_field)) {
+            const selection_value = @field(config, selection_field);
+            if (selection_value != null) {
+                const output_value = @field(tree_out, output_field);
+                if (output_value == 0) {
+                    @compileError("Clock selection '" ++ selection_field ++ "' is set but output '" ++ output_field ++ "' is 0. Check your clock configuration.");
+                }
+            }
+        }
+    }
 }

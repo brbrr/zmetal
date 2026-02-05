@@ -8,18 +8,13 @@ const chip = microzig.chip;
 const systick = cpu.peripherals.systick;
 const rcc = chip.peripherals.RCC;
 
-// const scb = cpu.peripherals.scb;
-// const hal = @import("hal.zig");
-// const stm32 = hal;
-// const rcc_hal = stm32.rcc;
-
 var uwTick: u32 = 0;
 var uwTickFreq: u32 = 1; // Default 1 Hz freq
 pub var uwTickPrio: cpu.interrupt.Priority = .lowest;
 
-const HSI_VALUE: u32 = 64_000_000; // Value of the Internal oscillator in Hz
-const CSI_VALUE: u32 = 4_000_000; // Value of the Internal oscillator in Hz
-const HSE_VALUE: u32 = 16_000_000; // Value of the External oscillator in Hz
+pub const HSI_VALUE: u32 = 64_000_000; // Value of the Internal oscillator in Hz
+pub const CSI_VALUE: u32 = 4_000_000; // Value of the Internal oscillator in Hz
+pub const HSE_VALUE: u32 = 16_000_000; // Value of the External oscillator in Hz
 
 /// This variable is updated in three ways:
 ///      1) by calling CMSIS function SystemCoreClockUpdate()

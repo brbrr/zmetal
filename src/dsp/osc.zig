@@ -63,6 +63,6 @@ pub const SineOsc = struct {
         self.phase += self.phase_inc;
         self.phase = @mod(self.phase, two_pi);
 
-        return self.amplitude * @sin(self.phase);
+        return self.amplitude * std.math.sin(self.phase);
     }
 };

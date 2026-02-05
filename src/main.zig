@@ -108,15 +108,13 @@ const led_pin = hal.gpio.Pin.init("C", "7", .{
     .speed = .LowSpeed,
 });
 
-var sine = osc.SineOsc.init(110.0, 48000, 0.7);
+var sine = osc.SineOsc.init(110, 48000, 0.9);
 var square = osc.SquareOsc.init(220.0, 48000, 0.9);
 
 var buff: [600]u32 = undefined;
 
 pub fn main() !void {
-    daisy.init() catch {
-        errors.error_handler();
-    };
+    try daisy.init();
 
     // Configure LED pin as output
     const RCC_peri = chip.peripherals.RCC;
@@ -150,8 +148,9 @@ pub fn main() !void {
     //     sine.setFreq(freq);
     // }
 
-    sine.setFreq(440.0);
-    while (true) {}
+    while (true) {
+        cpu.wfi();
+    }
 }
 
 var samps: u32 = 0;
@@ -163,49 +162,5 @@ fn myAudioCallback(input: []const u32, output: []u32) void {
         const samp = ssai.fto24(sine.nextSample());
         output[i] = samp;
         output[i + 1] = samp;
-    }
-}
-
-fn generateFreq(freq: f32, sr: f32) u32 {
-    const samples: u32 = @intFromFloat(sr / freq);
-
-    var sq = osc.SquareOsc.init(freq, sr, 0.9);
-    for (0..samples) |i| {
-        buff[i] = ssai.fto24(sq.nextSample());
-    }
-
-    return samples;
-}
-fn transmitSquareForever(freq: f32) !void {
-    // var o = osc.SquareOsc.init(freq, 48000, 0.9);
-    const regs = chip_peri;
-    var ff: f32 = 110;
-    while (true) {
-        const dc_val = ssai.fto24(0.0);
-        var cnt: u32 = 0;
-        while (cnt < 48000 * 2) {
-            ssai.monitorSaiErrors();
-            while (regs.SAI1.SAI_ASR.read().FLVL == 5) {} // Wait if FIFO full
-            regs.SAI1.SAI_ADR.raw = dc_val;
-            regs.SAI1.SAI_ADR.raw = dc_val;
-            cnt += 1;
-        }
-
-        var o = osc.SineOsc.init(ff, 48000, 0.7);
-        cnt = 0;
-        while (cnt < 48000 * 2) {
-            ssai.monitorSaiErrors();
-            const sample = o.nextSample();
-            const samp = ssai.fto24(sample);
-            while (regs.SAI1.SAI_ASR.read().FLVL == 5) {} // Wait if FIFO full
-            regs.SAI1.SAI_ADR.modify_one("DATA", samp);
-            regs.SAI1.SAI_ADR.modify_one("DATA", samp);
-            cnt += 1;
-        }
-        _ = freq;
-        ff *= 2;
-        if (ff > 1000) {
-            ff = 110;
-        }
     }
 }

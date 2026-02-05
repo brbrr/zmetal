@@ -39,14 +39,6 @@ pub fn create_peripheral_enum(comptime base_name: []const u8, match_type: ?[]con
     return @Type(peri_enum);
 }
 
-pub fn find_clock_tree(comptime name: []const u8) type {
-    const H750 = @import("clocks/clock_stm32h750.zig");
-    // if (std.mem.indexOf(u8, name, "105")) |_| return F105_7;
-    // if (std.mem.indexOf(u8, name, "107")) |_| return F105_7;
-    if (std.mem.indexOf(u8, name, "H750")) |_| return H750;
-    @panic("Not supported cpu" ++ name ++ "\n");
-}
-
 pub fn set_reg_field(reg: anytype, comptime field_name: anytype, value: anytype) void {
     var temp = reg.read();
     @field(temp, field_name) = value;

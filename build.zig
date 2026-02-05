@@ -15,6 +15,8 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("lib/microzig/port/stmicro/stm32/src/hals/common.zig"),
     });
 
+    const clockhelper_dep = b.dependency("ClockHelper", .{}).module("clockhelper");
+
     // root_module.addImport("zaudio", zaudio.module("root"));
 
     var it = mb.dep.builder.modules.iterator();
@@ -63,6 +65,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/hal/STM32H750/hal.zig"),
             .imports = &.{
                 .{ .name = "stm32_common", .module = stm32_common_mod },
+                .{ .name = "ClockTree", .module = clockhelper_dep },
             },
         },
     };

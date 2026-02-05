@@ -151,10 +151,10 @@ pub const SaiDriver = struct {
         const clocks = hal.rcc.getPLL3Clocks();
         _ = clocks;
 
-        const mck_div = SaiDriver.computeMckDiv(daisy.clock_outputs.SAI1, @intFromEnum(self.config.sample_rate), frame_length, false, false);
+        const mck_div = SaiDriver.computeMckDiv(daisy.clock_outputs.SAI1output, @intFromEnum(self.config.sample_rate), frame_length, false, false);
 
         // Configure SAI1 Block A (Master Transmitter)
-        // regs.SAI1.SAI_ACR1.raw = 0;
+        regs.SAI1.SAI_ACR1.raw = 0;
         regs.SAI1.SAI_ACR1.modify(.{
             .MODE = 0, // Master transmitter
             .PRTCFG = 0, // Free protocol
@@ -168,7 +168,7 @@ pub const SaiDriver = struct {
             .MCKDIV = mck_div,
         });
 
-        // regs.SAI1.SAI_ACR2.raw = 0;
+        regs.SAI1.SAI_ACR2.raw = 0;
         regs.SAI1.SAI_ACR2.modify(.{
             .FTH = 0, // FIFO threshold = 1/4
             .FFLUSH = 1, // Flush FIFO
@@ -180,7 +180,7 @@ pub const SaiDriver = struct {
             .COMP = 0b00, // No companding
         });
 
-        // regs.SAI1.SAI_AFRCR.raw = 0;
+        regs.SAI1.SAI_AFRCR.raw = 0;
         regs.SAI1.SAI_AFRCR.modify(.{
             .FRL = frame_length - 1, // Frame length
             .FSALL = frame_length / 2 - 1, // Frame sync length
@@ -300,7 +300,7 @@ pub const SaiDriver = struct {
                 self.tx(), // peripheral
                 &tx_buffer, // memory
                 // tx_buffer[0..self.transfer_size], // memory
-                .{ .enable = true, .mode = .circular, .priority = .High, .fifo_mode = 1, .size = self.transfer_size },
+                .{ .enable = true, .mode = .circular, .priority = .High, .fifo_mode = 0, .size = self.transfer_size },
             );
             regs.SAI1.SAI_ACR1.modify_one("DMAEN", 1);
             hal.clock.delay(100);
@@ -324,7 +324,7 @@ pub const SaiDriver = struct {
                 &rx_buffer, // memory
                 // rx_buffer[0..self.transfer_size], // memory
                 self.rx(), // peripheral
-                .{ .enable = true, .mode = .circular, .priority = .High, .fifo_mode = 1, .size = self.transfer_size },
+                .{ .enable = true, .mode = .circular, .priority = .High, .fifo_mode = 0, .size = self.transfer_size },
             );
 
             regs.SAI1.SAI_BCR1.modify_one("DMAEN", 1);
@@ -433,31 +433,41 @@ pub const SaiDriver = struct {
     }
 };
 
-// pub fn fto24(sample: f32) u32 {
-//     // scale float in [-1.0, 1.0) to signed 24-bit integer
-//     const s24: i32 = @intFromFloat(sample * 8388607.0);
-//     return @intCast(s24 << 8);
-// }
-
 const math = std.math;
 /// Converts a float sample to a 24-bit signed integer packed in a u32
 /// Input float should be in range [-1.0, 1.0]
-pub fn fto24(sample: f32) u32 {
+pub fn fto241(sample: f32) u32 {
     const FBIPMAX: f32 = 0.999985; // close to 1.0 - LSB at 24-bit
     const FBIPMIN: f32 = -FBIPMAX;
     const F2S24_SCALE: f32 = 8388608.0; // 2^23
-    
+
     // Clamp to prevent overflow
     const clamped = math.clamp(sample, FBIPMIN, FBIPMAX);
-    
+
     // Scale to 24-bit signed range
-    const scaled = clamped * F2S24_SCALE;
-    
+    const scaled: f64 = clamped * F2S24_SCALE;
+
     // Convert to i32
     const as_i32 = @as(i32, @intFromFloat(scaled));
-    
+
     // Bitcast to u32 to preserve two's complement representation
     return @as(u32, @bitCast(as_i32));
+}
+
+pub fn fto24(sample: f32) u32 {
+    const scaled = sample * 8388607.0; // 2^23 - 1
+
+    // Round to nearest integer
+    const rounded = @round(scaled);
+
+    // Convert to i32 first
+    const as_i32 = @as(i32, @intFromFloat(rounded));
+
+    // Cast to u32 and mask to 24 bits to ensure clean result
+    const as_u32 = @as(u32, @bitCast(as_i32));
+
+    // Mask to 24 bits (0xFFFFFF)
+    return as_u32 & 0xFFFFFF;
 }
 
 pub fn monitorSaiErrors() void {

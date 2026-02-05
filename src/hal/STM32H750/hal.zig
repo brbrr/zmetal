@@ -32,6 +32,7 @@ pub const power = @import("power.zig");
 pub const clock = @import("clock.zig");
 pub const mpu = @import("mpu.zig");
 pub const time = @import("time.zig");
+pub const cache = @import("cache.zig");
 
 // Daisy-specific modules
 pub const daisy = @import("daisy.zig");
