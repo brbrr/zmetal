@@ -139,6 +139,10 @@ pub const Pin = struct {
 /// Output GPIO wrapper for easy pin manipulation
 pub fn OutputGPIO(comptime pin: Pin) type {
     return struct {
+        pub fn configure() void {
+            pin.configure();
+        }
+
         pub fn toggle() void {
             pin.toggle();
         }

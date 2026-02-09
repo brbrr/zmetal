@@ -1,5 +1,16 @@
+/* Stack pointer for Daisy bootloader - MUST be at end of DTCMRAM */
+_estack = 0x20020000;
+
 SECTIONS
 {
+	/* ISR vector table MUST be first in SRAM for Daisy bootloader */
+	.isr_vector :
+	{
+		. = ALIGN(4);
+		KEEP(*(.isr_vector))
+		. = ALIGN(4);
+	} > SRAM
+
   .dtcmram_bss (NOLOAD) :
 	{
 		. = ALIGN(4);

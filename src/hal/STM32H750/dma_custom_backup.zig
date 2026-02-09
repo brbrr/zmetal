@@ -79,44 +79,26 @@ pub fn dma_irq_handler(chan: Channel) void {
     const teif = (status & stream_mask(local_stream, TEIF_OFFSET)) != 0;
     const feif = (status & stream_mask(local_stream, FEIF_OFFSET)) != 0;
 
-    // Clear all flags for this stream
-    clear_reg.* = stream_mask(local_stream, TCIF_OFFSET) |
-        stream_mask(local_stream, HTIF_OFFSET) |
-        stream_mask(local_stream, TEIF_OFFSET) |
-        stream_mask(local_stream, FEIF_OFFSET);
-
-    // Not sure if the above clear_reg works as expected :)
-    if (stream == 0) {
-        DMA1.LIFCR.modify(.{
-            .CTCIF0 = 1,
-            .CHTIF0 = 1,
-            .CTEIF0 = 1,
-            .CFEIF0 = 1,
-        });
-        DMA1.LIFCR.raw = std.math.maxInt(u32);
-    } else if (stream == 1) {
-        DMA1.LIFCR.modify(.{
-            .CTCIF1 = 1,
-            .CHTIF1 = 1,
-            .CTEIF1 = 1,
-            .CFEIF1 = 1,
-        });
-        DMA1.LIFCR.raw = std.math.maxInt(u32);
-    } else {
-        unreachable;
-    }
-
+    // Handle errors first
     if (teif or feif) {
+        // Clear error flags
+        clear_reg.* = stream_mask(local_stream, TEIF_OFFSET) | stream_mask(local_stream, FEIF_OFFSET);
         std.log.err("DMA error on channel {} (TEIF={}, FEIF={})", .{ chan, teif, feif });
         @breakpoint();
         @panic("!!!!");
     }
 
     const handlers = chan.handlers();
+    
+    // Half Transfer Complete - clear flag and call callback (matches STM32 HAL)
     if (htif and handlers.half_complete != null) {
+        clear_reg.* = stream_mask(local_stream, HTIF_OFFSET);
         handlers.half_complete.?(chan, handlers.ctx.?);
     }
+    
+    // Transfer Complete - clear flag and call callback (matches STM32 HAL)
     if (tcif and handlers.complete != null) {
+        clear_reg.* = stream_mask(local_stream, TCIF_OFFSET);
         handlers.complete.?(chan, handlers.ctx.?);
     }
 }

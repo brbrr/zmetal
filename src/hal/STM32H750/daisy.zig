@@ -213,10 +213,11 @@ fn configure_mpu() !void {
     hal.mpu.disable();
 
     // Configure RAM D2 (SRAM1) as non cacheable
+    // RAM_D2_DMA is 192KB (0x30000000-0x30030000), use 256KB MPU region
     try hal.mpu.config_region(.{
         .enable = .Enabled,
         .BaseAddress = 0x30000000,
-        .Size = .Size32KB,
+        .Size = .Size256KB,
         .AccessPermission = .FullAccess,
         .bufferable = .Disabled,
         .cacheable = .Disabled,
@@ -319,16 +320,46 @@ fn uart_init() !void {
     //
 }
 
-pub fn init() !void {
-    try hal_init();
-    try configure_clocks();
-    try configure_mpu();
+pub const Daisy = struct {
+    sai: hal.sai.SaiDriver,
 
-    try dma_init();
-    try i2c_init();
-    try spi_init();
-    try uart_init();
+    comptime led: hal.gpio.Pin = hal.gpio.Pin.init("C", "7", .{
+        .mode = .output,
+        .pull = .Floating,
+        .otype = .PushPull,
+        .speed = .LowSpeed,
+    }),
 
-    hal.cache.enableDCache();
-    hal.cache.enableICache();
-}
+    pub fn init() !Daisy {
+        try hal_init();
+        try configure_clocks();
+        try configure_mpu();
+
+        try dma_init();
+        try i2c_init();
+        try spi_init();
+        try uart_init();
+
+        hal.cache.enableDCache();
+        hal.cache.enableICache();
+
+        var hw = Daisy{
+            .sai = hal.sai.SaiDriver.init(.{
+                .sample_rate = .@"48khz",
+                .bit_depth = .@"24bit",
+                .a_sync = .master,
+                .b_sync = .slave,
+                .a_dir = .transmit,
+                .b_dir = .receive,
+            }),
+        };
+
+        hw.led.configure();
+        return hw;
+    }
+
+    pub fn startAudio(self: *Daisy, callback: hal.sai.AudioCallback) !void {
+        try self.sai.setup();
+        try self.sai.startAudio(callback);
+    }
+};

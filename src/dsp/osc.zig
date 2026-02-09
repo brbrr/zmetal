@@ -38,31 +38,28 @@ pub const SineOsc = struct {
     phase_inc: f32,
 
     pub fn init(freq: f32, sample_rate: f32, amplitude: f32) SineOsc {
-        const two_pi: f32 = 2.0 * std.math.pi;
-        const delta: f32 = two_pi * freq / sample_rate;
         return .{
             .sample_rate = sample_rate,
             .freq = freq,
             .phase = 0.0,
             .amplitude = amplitude,
-            .phase_inc = delta,
+            .phase_inc = 2.0 * std.math.pi * freq / sample_rate,
         };
     }
 
     pub fn setFreq(self: *SineOsc, freq: f32) void {
         self.freq = freq;
-        const two_pi: f32 = 2.0 * std.math.pi;
-        const delta: f32 = two_pi * freq / self.sample_rate;
-        self.phase_inc = delta;
-        self.phase = 0;
+        self.phase_inc = 2.0 * std.math.pi * freq / self.sample_rate;
     }
 
     pub fn nextSample(self: *SineOsc) f32 {
-        const two_pi: f32 = 2.0 * std.math.pi;
+        const out = self.amplitude * std.math.sin(self.phase);
 
         self.phase += self.phase_inc;
-        self.phase = @mod(self.phase, two_pi);
+        if (self.phase >= 2.0 * std.math.pi) {
+            self.phase -= 2.0 * std.math.pi;
+        }
 
-        return self.amplitude * std.math.sin(self.phase);
+        return out;
     }
 };

@@ -19,7 +19,6 @@ const errors = hal.errors;
 pub const panic = errors.panic;
 
 // Daisy board support
-const daisy = hal.daisy;
 const ssai = hal.sai;
 const SaiDriver = ssai.SaiDriver;
 
@@ -79,19 +78,18 @@ fn sv_call_handler() callconv(.c) void {
 }
 
 var count: u32 = 1;
-const led = hal.gpio.OutputGPIO(led_pin);
 
 fn sys_tick_handler() callconv(.c) void {
     hal.clock.inc_tick();
     count += 1;
     if (count == 1_000) {
-        led.toggle();
+        hw.led.toggle();
     } else if (count == 1100) {
-        led.toggle();
+        hw.led.toggle();
     } else if (count == 1200) {
-        led.toggle();
+        hw.led.toggle();
     } else if (count == 1300) {
-        led.toggle();
+        hw.led.toggle();
         count = 0;
     }
 }
@@ -101,66 +99,32 @@ pub fn init() void {
     // hal.init_vector_table();
 }
 
-// Configure LED on PC7 using custom GPIO API
-const led_pin = hal.gpio.Pin.init("C", "7", .{
-    .mode = .output,
-    .pull = .Floating,
-    .otype = .PushPull,
-    .speed = .LowSpeed,
-});
+var hw: hal.daisy.Daisy = undefined;
 
-var sine = osc.SineOsc.init(110, 48000, 0.9);
-var square = osc.SquareOsc.init(220.0, 48000, 0.9);
-
-var buff: [600]u32 = undefined;
+var sine = osc.SineOsc.init(440, 48000, 0.02);
+var square = osc.SquareOsc.init(440.0, 48000, 0.02);
 
 pub fn main() !void {
-    try daisy.init();
+    hw = try hal.daisy.Daisy.init();
 
     // Configure LED pin as output
     const RCC_peri = chip.peripherals.RCC;
     RCC_peri.AHB4ENR.modify(.{ .GPIOCEN = 1 }); // Enable GPIOC clock
-    led_pin.configure();
 
     // Test toggle
-    led.toggle();
 
-    var sai = SaiDriver.init(.{
-        .sample_rate = .@"48khz",
-        .bit_depth = .@"24bit",
-        .a_sync = .master,
-        .b_sync = .slave,
-        .a_dir = .transmit,
-        .b_dir = .receive,
-    });
-
-    try sai.setup();
-    try sai.startAudio(myAudioCallback);
-
-    // var freq: f32 = 32.7;
-    // sine.setFreq(freq);
-    // while (true) {
-    //     cpu.wfi();
-    //     hal.clock.delay(4000);
-    //     freq *= 2;
-    //     if (freq > 1800) {
-    //         freq = 110.0;
-    //     }
-    //     sine.setFreq(freq);
-    // }
+    try hw.startAudio(myAudioCallback);
 
     while (true) {
         cpu.wfi();
     }
 }
 
-var samps: u32 = 0;
-var c: u32 = 0;
-fn myAudioCallback(input: []const u32, output: []u32) void {
+fn myAudioCallback(input: []const f32, output: []f32, size: u16) void {
     _ = input;
     var i: u32 = 0;
-    while (i < output.len) : (i += 2) {
-        const samp = ssai.fto24(sine.nextSample());
+    while (i < size) : (i += 2) {
+        const samp = sine.nextSample();
         output[i] = samp;
         output[i + 1] = samp;
     }

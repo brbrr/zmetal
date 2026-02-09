@@ -110,7 +110,7 @@ SECTIONS
 		. = ALIGN(4);
 		_ssram1_bss = .;
 
-		PROVIDE(__sram1_bss_start__ = _ssram1_bss);
+		PROVIDE(__sram1_bss_start__ = _sram1_bss);
 		*(.sram1_bss)
 		*(.sram1_bss*)
 		. = ALIGN(4);

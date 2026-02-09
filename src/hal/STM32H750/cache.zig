@@ -104,7 +104,7 @@ pub fn invalidate_dcache_by_addr(addr: usize, size: usize) void {
 
 // After DMA transfer completes
 pub fn clean_dcache_by_addr(addr: usize, size: usize) void {
-    const cache_line_size = 32;
+    const cache_line_size: usize = 32;
     const start_addr = addr & ~(cache_line_size - 1);
     const end_addr = (addr + size + cache_line_size - 1) & ~(cache_line_size - 1);
 

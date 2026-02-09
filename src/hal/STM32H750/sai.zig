@@ -1,4 +1,5 @@
 const std = @import("std");
+const math = std.math;
 const microzig = @import("microzig");
 const hal = @import("hal.zig");
 const daisy = @import("daisy.zig");
@@ -51,11 +52,11 @@ pub fn dma1_1_handler() callconv(.c) void {
     hal.dma.dma_irq_handler(rx_chan);
 }
 
-pub const AudioCallback = fn (input: []const u32, output: []u32) void;
+pub const AudioCallback = fn (input: []const f32, output: []f32, size: u16) void;
 
 const BufferSize: u32 = 1024;
-var tx_buffer: [BufferSize]u32 align(32) linksection(".sram1_bss") = undefined;
-var rx_buffer: [BufferSize]u32 align(32) linksection(".sram1_bss") = undefined;
+var tx_buffer: [BufferSize]u32 linksection(".sram1_bss") = undefined;
+var rx_buffer: [BufferSize]u32 linksection(".sram1_bss") = undefined;
 
 const sai_p_cfg: hal.gpio.PinConfig = .{
     .mode = .{ .alternate = .af6 },
@@ -73,7 +74,7 @@ const codec_reset = hal.gpio.Pin.init("B", "11", .{ .mode = .output, .pull = .Fl
 pub const SaiDriver = struct {
     config: SaiConfig,
     initialized: bool = false,
-    transfer_size: u32 = 0,
+    transfer_size: u16 = 0,
 
     // Set by user
     user_callback: ?*const AudioCallback = null,
@@ -249,15 +250,11 @@ pub const SaiDriver = struct {
         _ = self;
 
         // AK4556 reset sequence
-        // Set reset high
-        // hal.clock.delay(100);
         regs.GPIOB.BSRR.write_raw(1 << 11);
         hal.clock.delay(1);
         regs.GPIOB.BSRR.write_raw(1 << (11 + 16));
         hal.clock.delay(1);
         regs.GPIOB.BSRR.write_raw(1 << 11);
-        //
-        // hal.clock.delay(100);
     }
 
     pub fn enable(self: *Self) !void {
@@ -289,17 +286,11 @@ pub const SaiDriver = struct {
         self.transfer_size = blocksize * 2 * 2;
         self.user_callback = cb;
 
-        // Fill initial TX buffer with first audio data
-        self.fillTxBuffer(0); // Fill first half
-        self.fillTxBuffer(self.transfer_size / 2); // Fill second half
-
-        // TX
-        {
+        { // TX
             // Configure DMA for TX (memory -> peripheral)
             try tx_chan.setup_transfer(
                 self.tx(), // peripheral
                 &tx_buffer, // memory
-                // tx_buffer[0..self.transfer_size], // memory
                 .{ .enable = true, .mode = .circular, .priority = .High, .fifo_mode = 0, .size = self.transfer_size },
             );
             regs.SAI1.SAI_ACR1.modify_one("DMAEN", 1);
@@ -308,21 +299,15 @@ pub const SaiDriver = struct {
                 microzig.cpu.nop();
             }
 
-            var tx_handlers = tx_chan.handlers();
-            tx_handlers.complete = SaiDriver.tx_dma_complete;
-            tx_handlers.half_complete = SaiDriver.tx_dma_half_complete;
-            tx_handlers.ctx = self;
-
             // Enable SAI blocks (B first for slave, then A for master)
             regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 1 });
             hal.clock.delay(100);
         }
 
-        {
+        { // RX
             // Configure DMA for RX (peripheral -> memory)
             try rx_chan.setup_transfer(
                 &rx_buffer, // memory
-                // rx_buffer[0..self.transfer_size], // memory
                 self.rx(), // peripheral
                 .{ .enable = true, .mode = .circular, .priority = .High, .fifo_mode = 0, .size = self.transfer_size },
             );
@@ -330,10 +315,11 @@ pub const SaiDriver = struct {
             regs.SAI1.SAI_BCR1.modify_one("DMAEN", 1);
             hal.clock.delay(100);
 
-            // var rx_handlers = rx_chan.handlers();
-            // rx_handlers.complete = SaiDriver.rx_dma_complete;
-            // rx_handlers.half_complete = SaiDriver.rx_dma_complete;
-            // rx_handlers.ctx = self;
+            // Using RX DMA handlers as in libDaisy
+            var rx_handlers = rx_chan.handlers();
+            rx_handlers.complete = SaiDriver.rx_dma_complete;
+            rx_handlers.half_complete = SaiDriver.rx_dma_half_complete;
+            rx_handlers.ctx = self;
 
             regs.SAI1.SAI_BCR1.modify(.{ .SAIXEN = 1 });
             hal.clock.delay(100);
@@ -346,37 +332,46 @@ pub const SaiDriver = struct {
     }
 
     // DMA complete handlers (second half of buffer)
-    pub fn tx_dma_complete(chan: Channel, ctx: *anyopaque) void {
+    pub fn rx_dma_complete(chan: Channel, ctx: *anyopaque) void {
         _ = chan;
         const self: *SaiDriver = @ptrCast(@alignCast(ctx));
-        // Fill second half of buffer
         self.fillTxBuffer(self.transfer_size / 2);
     }
 
     // DMA half complete handlers (first half of buffer)
-    pub fn tx_dma_half_complete(chan: Channel, ctx: *anyopaque) void {
+    pub fn rx_dma_half_complete(chan: Channel, ctx: *anyopaque) void {
         _ = chan;
         const self: *SaiDriver = @ptrCast(@alignCast(ctx));
-        // Fill first half of buffer
         self.fillTxBuffer(0);
     }
 
     fn fillTxBuffer(self: *Self, offset: u32) void {
         const half_size = self.transfer_size / 2;
-        var temp_buffer: [200]u32 = undefined;
+        const buf_size = 200;
+        std.debug.assert(half_size <= buf_size);
 
-        self.user_callback.?(rx_buffer[offset .. offset + half_size], temp_buffer[0..half_size]);
-        @memcpy(tx_buffer[offset .. offset + half_size], temp_buffer[0..half_size]);
-    }
+        var f_in: [buf_size]f32 = undefined;
+        var f_out: [buf_size]f32 = undefined;
 
-    fn internal_callback(self: *SaiDriver, ch: hal.dma.Channel) void {
-        // Figure out which half completed
-        // DMA NDTR register halves: half-transfer (HT) vs transfer-complete (TC)
-        const ndtr = ch.get_regs().NDTR.read().NDT;
-        const start: u32 = if (ndtr > self.transfer_size / 2) 0 else self.transfer_size / 2;
+        // Convert SAI input to floats and call user callback
+        switch (self.config.bit_depth) {
+            .@"24bit" => {
+                for (0..half_size) |i| {
+                    f_in[i] = s24tof(rx_buffer[offset + i]);
+                }
+            },
+            else => unreachable,
+        }
 
-        if (self.user_callback) |cb| {
-            cb(rx_buffer[start .. start + self.transfer_size], tx_buffer[start .. start + self.transfer_size]);
+        self.user_callback.?(&f_in, &f_out, half_size);
+
+        switch (self.config.bit_depth) {
+            .@"24bit" => {
+                for (0..half_size) |i| {
+                    tx_buffer[offset + i] = fto24(f_out[i]);
+                }
+            },
+            else => unreachable,
         }
     }
 
@@ -433,10 +428,9 @@ pub const SaiDriver = struct {
     }
 };
 
-const math = std.math;
-/// Converts a float sample to a 24-bit signed integer packed in a u32
+/// Converts a float sample to a 24-bit signed integer (matches libdaisy)
 /// Input float should be in range [-1.0, 1.0]
-pub fn fto241(sample: f32) u32 {
+pub fn fto24(sample: f32) u32 {
     const FBIPMAX: f32 = 0.999985; // close to 1.0 - LSB at 24-bit
     const FBIPMIN: f32 = -FBIPMAX;
     const F2S24_SCALE: f32 = 8388608.0; // 2^23
@@ -454,20 +448,12 @@ pub fn fto241(sample: f32) u32 {
     return @as(u32, @bitCast(as_i32));
 }
 
-pub fn fto24(sample: f32) u32 {
-    const scaled = sample * 8388607.0; // 2^23 - 1
-
-    // Round to nearest integer
-    const rounded = @round(scaled);
-
-    // Convert to i32 first
-    const as_i32 = @as(i32, @intFromFloat(rounded));
-
-    // Cast to u32 and mask to 24 bits to ensure clean result
-    const as_u32 = @as(u32, @bitCast(as_i32));
-
-    // Mask to 24 bits (0xFFFFFF)
-    return as_u32 & 0xFFFFFF;
+pub fn s24tof(xx: u32) f32 {
+    const S242F_SCALE: f32 = 1.192092896e-07; // 1 / (2 ** 23)
+    // Use arithmetic shift for faster sign extension: shift left 8, then right 8
+    const as_i32 = @as(i32, @bitCast(xx));
+    const sign_extended = as_i32 << 8 >> 8; // Sign-extend from 24-bit to 32-bit
+    return @as(f32, @floatFromInt(sign_extended)) * S242F_SCALE;
 }
 
 pub fn monitorSaiErrors() void {

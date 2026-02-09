@@ -40,9 +40,9 @@
       }
     },
     {
-      "name": "STlinkdebug",
+      "name": "STlinkdebug-flash",
       "cwd": "${workspaceRoot}",
-      "executable": "${workspaceRoot}/zig-out/firmware/blinky.elf",
+      "executable": "${workspaceRoot}/zig-out/firmware/blinky-flash.elf",
       "request": "launch",
       "type": "cortex-debug",
       "servertype": "stlink",
@@ -50,22 +50,6 @@
       "device": "STM32H750x",
       "interface": "jtag",
       "svdFile": "${workspaceRoot}/.vscode/STM32H750x.svd",
-      //   "runToMain": true,
-      // "swoConfig": {
-      //   "enabled": true,
-      //   "cpuFrequency": 480000000,
-      //   "swoFrequency": 1000000,
-      //   "source": "probe",
-      //   "decoders": [
-      //     {
-      //       "label": "ITM port 0 output",
-      //       "type": "console",
-      //       "port": 0,
-      //       "showOnStartup": true,
-      //       "encoding": "ascii"
-      //     }
-      //   ]
-      // }
     },
     {
       "name": "Cortex JLink",
