@@ -1158,6 +1158,8 @@ pub fn reset_clock(peri: RccPeriferals) void {
         .UART5 => rcc.APB1RSTR.modify(.{ .UART5RST = 1 }), //F103xC/D/E
         .I2C1 => rcc.APB1RSTR.modify(.{ .I2C1RST = 1 }),
         .I2C2 => rcc.APB1RSTR.modify(.{ .I2C2RST = 1 }),
+        .I2C3 => rcc.APB1RSTR.modify(.{ .I2C3RST = 1 }),
+        .I2C4 => rcc.APB4RSTR.modify(.{ .I2C4RST = 1 }),
         .USB => rcc.APB1RSTR.modify(.{ .USBRST = 1 }),
         .CAN => rcc.APB1RSTR.modify(.{ .CANRST = 1 }),
         .BKP => rcc.APB1RSTR.modify(.{ .BKPRST = 1 }),
@@ -1212,6 +1214,8 @@ pub fn set_clock(peri: RccPeriferals, state: u1) void {
         .UART5 => rcc.APB1ENR.modify(.{ .UART5EN = state }), //F103xC/D/E
         .I2C1 => rcc.APB1ENR.modify(.{ .I2C1EN = state }),
         .I2C2 => rcc.APB1ENR.modify(.{ .I2C2EN = state }),
+        .I2C3 => rcc.APB1ENR.modify(.{ .I2C3EN = state }),
+        .I2C4 => rcc.APB4ENR.modify(.{ .I2C4EN = state }),
         .USB => rcc.APB1ENR.modify(.{ .USBEN = state }),
         .CAN => rcc.APB1ENR.modify(.{ .CANEN = state }),
         .BKP => rcc.APB1ENR.modify(.{ .BKPEN = state }),
@@ -1306,11 +1310,14 @@ pub fn get_clock(source: RccPeriferals) u32 {
         .UART5,
         .I2C1,
         .I2C2,
+        .I2C3,
         .CAN,
         .BKP,
         .PWR,
         => clock_outputs.APB1,
 
+        .I2C4 => clock_outputs.APB4,
+        
         .USB => clock_outputs.USB,
     };
 }
