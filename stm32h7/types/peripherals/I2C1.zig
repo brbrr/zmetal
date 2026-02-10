@@ -1,11 +1,14 @@
-const mmio = @import("mmio");
+const microzig = @import("microzig");
+const mmio = microzig.mmio;
 const types = @import("../../types.zig");
+
+pub const I2C = I2C1;
 
 /// I2C
 pub const I2C1 = extern struct {
     /// Access: No wait states, except if a write access occurs while a write access to this register is ongoing. In this case, wait states are inserted in the second write access until the previous one is completed. The latency of the second write access can be up to 2 x PCLK1 + 6 x I2CCLK.
     /// offset: 0x00
-    I2C_CR1: mmio.Mmio(packed struct(u32) {
+    CR1: mmio.Mmio(packed struct(u32) {
         /// Peripheral enable Note: When PE=0, the I2C SCL and SDA lines are released. Internal state machines and status bits are put back to their reset value. When cleared, PE must be kept low for at least 3 APB clock cycles.
         PE: u1,
         /// TX Interrupt enable
@@ -51,34 +54,36 @@ pub const I2C1 = extern struct {
     }),
     /// Access: No wait states, except if a write access occurs while a write access to this register is ongoing. In this case, wait states are inserted in the second write access until the previous one is completed. The latency of the second write access can be up to 2 x PCLK1 + 6 x I2CCLK.
     /// offset: 0x04
-    I2C_CR2: mmio.Mmio(packed struct(u32) {
-        /// Slave address bit 0 (master mode) In 7-bit addressing mode (ADD10 = 0): This bit is dont care In 10-bit addressing mode (ADD10 = 1): This bit should be written with bit 0 of the slave address to be sent Note: Changing these bits when the START bit is set is not allowed.
-        SADD0: u1,
-        /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
-        SADD1: u1,
-        /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
-        SADD2: u1,
-        /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
-        SADD3: u1,
-        /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
-        SADD4: u1,
-        /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
-        SADD5: u1,
-        /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
-        SADD6: u1,
-        /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
-        SADD7: u1,
-        /// Slave address bit 9:8 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits are dont care In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 9:8 of the slave address to be sent Note: Changing these bits when the START bit is set is not allowed.
-        SADD8: u1,
-        /// Slave address bit 9:8 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits are dont care In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 9:8 of the slave address to be sent Note: Changing these bits when the START bit is set is not allowed.
-        SADD9: u1,
+    CR2: mmio.Mmio(packed struct(u32) {
+        /// Slave address  (master mode) In 7-bit addressing mode (ADD10 = 0): This bit is dont care In 10-bit addressing mode (ADD10 = 1): This bit should be written with bit 0 of the slave address to be sent Note: Changing these bits when the START bit is set is not allowed.
+        SADD: u10,
+        /// /// Slave address bit 0 (master mode) In 7-bit addressing mode (ADD10 = 0): This bit is dont care In 10-bit addressing mode (ADD10 = 1): This bit should be written with bit 0 of the slave address to be sent Note: Changing these bits when the START bit is set is not allowed.
+        /// SADD0: u1,
+        /// /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
+        /// SADD1: u1,
+        /// /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
+        /// SADD2: u1,
+        /// /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
+        /// SADD3: u1,
+        /// /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
+        /// SADD4: u1,
+        /// /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
+        /// SADD5: u1,
+        /// /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
+        /// SADD6: u1,
+        /// /// Slave address bit 7:1 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits should be written with the 7-bit slave address to be sent In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 7:1 of the slave address to be sent. Note: Changing these bits when the START bit is set is not allowed.
+        /// SADD7: u1,
+        /// /// Slave address bit 9:8 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits are dont care In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 9:8 of the slave address to be sent Note: Changing these bits when the START bit is set is not allowed.
+        /// SADD8: u1,
+        /// /// Slave address bit 9:8 (master mode) In 7-bit addressing mode (ADD10 = 0): These bits are dont care In 10-bit addressing mode (ADD10 = 1): These bits should be written with bits 9:8 of the slave address to be sent Note: Changing these bits when the START bit is set is not allowed.
+        /// SADD9: u1,
         /// Transfer direction (master mode) Note: Changing this bit when the START bit is set is not allowed.
         RD_WRN: u1,
         /// 10-bit addressing mode (master mode) Note: Changing this bit when the START bit is set is not allowed.
         ADD10: u1,
         /// 10-bit address header only read direction (master receiver mode) Note: Changing this bit when the START bit is set is not allowed.
         HEAD10R: u1,
-        /// Start generation This bit is set by software, and cleared by hardware after the Start followed by the address sequence is sent, by an arbitration loss, by a timeout error detection, or when PE = 0. It can also be cleared by software by writing 1 to the ADDRCF bit in the I2C_ICR register. If the I2C is already in master mode with AUTOEND = 0, setting this bit generates a Repeated Start condition when RELOAD=0, after the end of the NBYTES transfer. Otherwise setting this bit will generate a START condition once the bus is free. Note: Writing 0 to this bit has no effect. The START bit can be set even if the bus is BUSY or I2C is in slave mode. This bit has no effect when RELOAD is set.
+        /// Start generation This bit is set by software, and cleared by hardware after the Start followed by the address sequence is sent, by an arbitration loss, by a timeout error detection, or when PE = 0. It can also be cleared by software by writing 1 to the ADDRCF bit in the ICR register. If the I2C is already in master mode with AUTOEND = 0, setting this bit generates a Repeated Start condition when RELOAD=0, after the end of the NBYTES transfer. Otherwise setting this bit will generate a START condition once the bus is free. Note: Writing 0 to this bit has no effect. The START bit can be set even if the bus is BUSY or I2C is in slave mode. This bit has no effect when RELOAD is set.
         START: u1,
         /// Stop generation (master mode) The bit is set by software, cleared by hardware when a Stop condition is detected, or when PE = 0. In Master Mode: Note: Writing 0 to this bit has no effect.
         STOP: u1,
@@ -96,7 +101,7 @@ pub const I2C1 = extern struct {
     }),
     /// Access: No wait states, except if a write access occurs while a write access to this register is ongoing. In this case, wait states are inserted in the second write access until the previous one is completed. The latency of the second write access can be up to 2 x PCLK1 + 6 x I2CCLK.
     /// offset: 0x08
-    I2C_OAR1: mmio.Mmio(packed struct(u32) {
+    OAR1: mmio.Mmio(packed struct(u32) {
         /// Interface address 7-bit addressing mode: dont care 10-bit addressing mode: bits 9:8 of address Note: These bits can be written only when OA1EN=0. OA1[7:1]: Interface address Bits 7:1 of address Note: These bits can be written only when OA1EN=0. OA1[0]: Interface address 7-bit addressing mode: dont care 10-bit addressing mode: bit 0 of address Note: This bit can be written only when OA1EN=0.
         OA1: u10,
         /// Own Address 1 10-bit mode Note: This bit can be written only when OA1EN=0.
@@ -108,7 +113,7 @@ pub const I2C1 = extern struct {
     }),
     /// Access: No wait states, except if a write access occurs while a write access to this register is ongoing. In this case, wait states are inserted in the second write access until the previous one is completed. The latency of the second write access can be up to 2 x PCLK1 + 6 x I2CCLK.
     /// offset: 0x0c
-    I2C_OAR2: mmio.Mmio(packed struct(u32) {
+    OAR2: mmio.Mmio(packed struct(u32) {
         reserved1: u1 = 0,
         /// Interface address bits 7:1 of address Note: These bits can be written only when OA2EN=0.
         OA2: u7,
@@ -121,7 +126,7 @@ pub const I2C1 = extern struct {
     }),
     /// Access: No wait states
     /// offset: 0x10
-    I2C_TIMINGR: mmio.Mmio(packed struct(u32) {
+    TIMINGR: mmio.Mmio(packed struct(u32) {
         /// SCL low period (master mode) This field is used to generate the SCL low period in master mode. tSCLL = (SCLL+1) x tPRESC Note: SCLL is also used to generate tBUF and tSU:STA timings.
         SCLL: u8,
         /// SCL high period (master mode) This field is used to generate the SCL high period in master mode. tSCLH = (SCLH+1) x tPRESC Note: SCLH is also used to generate tSU:STO and tHD:STA timing.
@@ -136,7 +141,7 @@ pub const I2C1 = extern struct {
     }),
     /// Access: No wait states, except if a write access occurs while a write access to this register is ongoing. In this case, wait states are inserted in the second write access until the previous one is completed. The latency of the second write access can be up to 2 x PCLK1 + 6 x I2CCLK.
     /// offset: 0x14
-    I2C_TIMEOUTR: mmio.Mmio(packed struct(u32) {
+    TIMEOUTR: mmio.Mmio(packed struct(u32) {
         /// Bus Timeout A This field is used to configure: The SCL low timeout condition tTIMEOUT when TIDLE=0 tTIMEOUT= (TIMEOUTA+1) x 2048 x tI2CCLK The bus idle condition (both SCL and SDA high) when TIDLE=1 tIDLE= (TIMEOUTA+1) x 4 x tI2CCLK Note: These bits can be written only when TIMOUTEN=0.
         TIMEOUTA: u12,
         /// Idle clock timeout detection Note: This bit can be written only when TIMOUTEN=0.
@@ -152,12 +157,12 @@ pub const I2C1 = extern struct {
     }),
     /// Access: No wait states
     /// offset: 0x18
-    I2C_ISR: mmio.Mmio(packed struct(u32) {
-        /// Transmit data register empty (transmitters) This bit is set by hardware when the I2C_TXDR register is empty. It is cleared when the next data to be sent is written in the I2C_TXDR register. This bit can be written to 1 by software in order to flush the transmit data register I2C_TXDR. Note: This bit is set by hardware when PE=0.
+    ISR: mmio.Mmio(packed struct(u32) {
+        /// Transmit data register empty (transmitters) This bit is set by hardware when the TXDR register is empty. It is cleared when the next data to be sent is written in the TXDR register. This bit can be written to 1 by software in order to flush the transmit data register TXDR. Note: This bit is set by hardware when PE=0.
         TXE: u1,
-        /// Transmit interrupt status (transmitters) This bit is set by hardware when the I2C_TXDR register is empty and the data to be transmitted must be written in the I2C_TXDR register. It is cleared when the next data to be sent is written in the I2C_TXDR register. This bit can be written to 1 by software when NOSTRETCH=1 only, in order to generate a TXIS event (interrupt if TXIE=1 or DMA request if TXDMAEN=1). Note: This bit is cleared by hardware when PE=0.
+        /// Transmit interrupt status (transmitters) This bit is set by hardware when the TXDR register is empty and the data to be transmitted must be written in the TXDR register. It is cleared when the next data to be sent is written in the TXDR register. This bit can be written to 1 by software when NOSTRETCH=1 only, in order to generate a TXIS event (interrupt if TXIE=1 or DMA request if TXDMAEN=1). Note: This bit is cleared by hardware when PE=0.
         TXIS: u1,
-        /// Receive data register not empty (receivers) This bit is set by hardware when the received data is copied into the I2C_RXDR register, and is ready to be read. It is cleared when I2C_RXDR is read. Note: This bit is cleared by hardware when PE=0.
+        /// Receive data register not empty (receivers) This bit is set by hardware when the received data is copied into the RXDR register, and is ready to be read. It is cleared when RXDR is read. Note: This bit is cleared by hardware when PE=0.
         RXNE: u1,
         /// Address matched (slave mode) This bit is set by hardware as soon as the received slave address matched with one of the enabled slave addresses. It is cleared by software by setting ADDRCF bit. Note: This bit is cleared by hardware when PE=0.
         ADDR: u1,
@@ -192,46 +197,46 @@ pub const I2C1 = extern struct {
     }),
     /// Access: No wait states
     /// offset: 0x1c
-    I2C_ICR: mmio.Mmio(packed struct(u32) {
+    ICR: mmio.Mmio(packed struct(u32) {
         reserved3: u3 = 0,
-        /// Address matched flag clear Writing 1 to this bit clears the ADDR flag in the I2C_ISR register. Writing 1 to this bit also clears the START bit in the I2C_CR2 register.
+        /// Address matched flag clear Writing 1 to this bit clears the ADDR flag in the ISR register. Writing 1 to this bit also clears the START bit in the CR2 register.
         ADDRCF: u1,
-        /// Not Acknowledge flag clear Writing 1 to this bit clears the ACKF flag in I2C_ISR register.
+        /// Not Acknowledge flag clear Writing 1 to this bit clears the ACKF flag in ISR register.
         NACKCF: u1,
-        /// Stop detection flag clear Writing 1 to this bit clears the STOPF flag in the I2C_ISR register.
+        /// Stop detection flag clear Writing 1 to this bit clears the STOPF flag in the ISR register.
         STOPCF: u1,
         reserved8: u2 = 0,
-        /// Bus error flag clear Writing 1 to this bit clears the BERRF flag in the I2C_ISR register.
+        /// Bus error flag clear Writing 1 to this bit clears the BERRF flag in the ISR register.
         BERRCF: u1,
-        /// Arbitration Lost flag clear Writing 1 to this bit clears the ARLO flag in the I2C_ISR register.
+        /// Arbitration Lost flag clear Writing 1 to this bit clears the ARLO flag in the ISR register.
         ARLOCF: u1,
-        /// Overrun/Underrun flag clear Writing 1 to this bit clears the OVR flag in the I2C_ISR register.
+        /// Overrun/Underrun flag clear Writing 1 to this bit clears the OVR flag in the ISR register.
         OVRCF: u1,
-        /// PEC Error flag clear Writing 1 to this bit clears the PECERR flag in the I2C_ISR register. Note: If the SMBus feature is not supported, this bit is reserved and forced by hardware to 0. Please refer to Section25.3: I2C implementation.
+        /// PEC Error flag clear Writing 1 to this bit clears the PECERR flag in the ISR register. Note: If the SMBus feature is not supported, this bit is reserved and forced by hardware to 0. Please refer to Section25.3: I2C implementation.
         PECCF: u1,
-        /// Timeout detection flag clear Writing 1 to this bit clears the TIMEOUT flag in the I2C_ISR register. Note: If the SMBus feature is not supported, this bit is reserved and forced by hardware to 0. Please refer to Section25.3: I2C implementation.
+        /// Timeout detection flag clear Writing 1 to this bit clears the TIMEOUT flag in the ISR register. Note: If the SMBus feature is not supported, this bit is reserved and forced by hardware to 0. Please refer to Section25.3: I2C implementation.
         TIMOUTCF: u1,
-        /// Alert flag clear Writing 1 to this bit clears the ALERT flag in the I2C_ISR register. Note: If the SMBus feature is not supported, this bit is reserved and forced by hardware to 0. Please refer to Section25.3: I2C implementation.
+        /// Alert flag clear Writing 1 to this bit clears the ALERT flag in the ISR register. Note: If the SMBus feature is not supported, this bit is reserved and forced by hardware to 0. Please refer to Section25.3: I2C implementation.
         ALERTCF: u1,
         padding: u18 = 0,
     }),
     /// Access: No wait states
     /// offset: 0x20
-    I2C_PECR: mmio.Mmio(packed struct(u32) {
+    PECR: mmio.Mmio(packed struct(u32) {
         /// Packet error checking register This field contains the internal PEC when PECEN=1. The PEC is cleared by hardware when PE=0.
         PEC: u8,
         padding: u24 = 0,
     }),
     /// Access: No wait states
     /// offset: 0x24
-    I2C_RXDR: mmio.Mmio(packed struct(u32) {
+    RXDR: mmio.Mmio(packed struct(u32) {
         /// 8-bit receive data Data byte received from the I2C bus.
         RXDATA: u8,
         padding: u24 = 0,
     }),
     /// Access: No wait states
     /// offset: 0x28
-    I2C_TXDR: mmio.Mmio(packed struct(u32) {
+    TXDR: mmio.Mmio(packed struct(u32) {
         /// 8-bit transmit data Data byte to be transmitted to the I2C bus. Note: These bits can be written only when TXE=1.
         TXDATA: u8,
         padding: u24 = 0,

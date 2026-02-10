@@ -38,6 +38,7 @@ pub const HRTIM_TIMD = @import("peripherals/HRTIM_TIMD.zig").HRTIM_TIMD;
 pub const HRTIM_TIME = @import("peripherals/HRTIM_TIME.zig").HRTIM_TIME;
 pub const HSEM = @import("peripherals/HSEM.zig").HSEM;
 pub const I2C1 = @import("peripherals/I2C1.zig").I2C1;
+pub const i2c_v2 = @import("peripherals/I2C1.zig");
 pub const IWDG = @import("peripherals/IWDG.zig").IWDG;
 pub const JPEG = @import("peripherals/JPEG.zig").JPEG;
 pub const LPTIM1 = @import("peripherals/LPTIM1.zig").LPTIM1;

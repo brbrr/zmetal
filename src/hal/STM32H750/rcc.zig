@@ -686,27 +686,6 @@ pub fn validate_clocks(comptime config: ClockTree.Config) ClockOutputs {
     return outputs;
 }
 
-fn set_flash(clck: u32) void {
-    var latency: FLASH.LATENCY = .WS7;
-    hal_power.set_voltage_scalling(.Scale1);
-    if (clck <= 400_000_000) {
-        hal_power.set_voltage_scalling(.Scale1);
-        latency = .Latency2;
-    } else if (clck <= 480_000_000) {
-        hal_power.set_voltage_scalling(@enumFromInt(0));
-        latency = .Latency4;
-    } else {
-        @breakpoint();
-        unreachable;
-        // @compileError("invalid sysclock?");
-    }
-
-    flash.ACR.modify_one("LATENCY", latency);
-    while (!hal_power.get_flag(.VOSRDY)) {
-        microzig.cpu.nop();
-    }
-}
-
 //force HSI Clock and clear any clock configs
 fn secure_enable() void {
     rcc.CR.modify(.{ .HSION = 1 });
@@ -986,63 +965,10 @@ fn config_peripherals(comptime tree_out: ClockTree.Tree_Output) !void {
     //}
 }
 
-fn config_system_clock(comptime config: ClockTree.Config) ClockInitError!void {
-    if (config.SysClkSource) |src| {
-        const val: u2 = @intFromEnum(src);
-        const e_val: SW = @enumFromInt(val);
-        switch (val) {
-            1 => try config_HSE(config),
-            2 => init_pll(),
-            else => {},
-        }
-
-        rcc.CFGR.modify(.{ .SW = e_val });
-        while (true) {
-            const sws = rcc.CFGR.read().SWS;
-            if (sws == e_val) break;
-            asm volatile ("" ::: .{ .memory = true });
-        }
-    }
-}
-
 fn init_pll() void {
     rcc.CR.modify(.{ .PLLON = 1 });
     while (rcc.CR.read().PLLRDY == 0) {
         asm volatile ("" ::: .{ .memory = true });
-    }
-}
-
-fn config_RTC(comptime config: ClockTree.Config) ClockInitError!void {
-    if (config.RTCClkSource) |src| {
-        //enable backup domain
-        enable_clock(.PWR);
-        enable_clock(.BKP);
-        hal_power.backup_domain_protection(false);
-
-        var rtcs: RTCSEL = .DISABLE;
-        switch (src) {
-            .RCC_RTCCLKSOURCE_HSE_DIV128 => {
-                rtcs = .HSE;
-                try config_HSE(config);
-            },
-            .RCC_RTCCLKSOURCE_LSE => {
-                rtcs = .LSE;
-                try config_LSE(config);
-            },
-            .RCC_RTCCLKSOURCE_LSI => {
-                rtcs = .LSI;
-                config_LSI();
-            },
-        }
-
-        rcc.BDCR.modify(.{ .RTCSEL = rtcs });
-        hal_power.backup_domain_protection(true);
-
-        // Disable and reset clocks to avoid potential conflicts with the main application
-        disable_clock(.BKP);
-        reset_clock(.BKP);
-        disable_clock(.PWR);
-        reset_clock(.PWR);
     }
 }
 
@@ -1069,108 +995,6 @@ fn config_MCO(comptime config: ClockTree.Config) void {
         };
         rcc.CFGR.modify(.{ .MCO1SEL = mco });
     }
-}
-
-///after the reset, the BDRD becomes read_only until access is released by the power register
-///this function can also be called from `backup.reset()`
-pub fn reset_backup_domain() void {
-    rcc.BDCR.modify(.{ .BDRST = 1 });
-    for (0..5) |i| {
-        std.mem.doNotOptimizeAway(i);
-    }
-    rcc.BDCR.modify(.{ .BDRST = 0 });
-}
-
-///configure the power and clock registers before enabling the RTC
-///this function also can be called from `rtc.enable()`
-pub fn enable_RTC(on: bool) void {
-    rcc.BDCR.modify(.{ .RTCEN = @intFromBool(on) });
-}
-
-///backup domain is not reset with the rest of the system
-///so this function can be used to check if the RTC is already running.
-pub fn rtc_running() bool {
-    return rcc.BDCR.read().RTCEN != 0;
-}
-
-///This function is called internally by the HAL, the RESET value should only be read after the RESET
-///read the Reset value through the global variable hal.RESET
-pub fn get_reset_reason() ResetReason {
-    const flags = rcc.RSR.read();
-    // comptime {
-    //     const info = @typeInfo(@TypeOf(flags));
-    //     for (info.@"struct".fields) |field| {
-    //         @compileLog("Field: {s}, Type: {s}\n", .{ field.name, @typeName(field.type) });
-    //     }
-    // }
-
-    const rst: ResetReason = blk: {
-        if (flags.PINRSTF == 1) break :blk ResetReason.NRST;
-        if (flags.PORRSTF == 1) break :blk ResetReason.POR_or_PDR;
-        if (flags.SFTRSTF == 1) break :blk ResetReason.low_power;
-        if (flags.IWDG1RSTF == 1) break :blk ResetReason.independent_watchdog;
-        if (flags.WWDG1RSTF == 1) break :blk ResetReason.window_watchdog;
-        if (flags.LPWRRSTF == 1) break :blk ResetReason.low_power;
-        break :blk ResetReason.POR_or_PDR;
-    };
-
-    rcc.RSR.modify(.{ .RMVF = 1 });
-    return rst;
-}
-
-///reset the selected peripheral to they default state.
-///this is useful to get the peripheral out of a deadlock state or
-///to put the peripheral in a known state before configuring it.
-///
-///NOTE: this function does not effect the ENR (clock enable) registers.
-pub fn reset_clock(peri: RccPeriferals) void {
-
-    //set the selected peripheral reset bit
-    switch (peri) {
-        // APB2RSTR (APB2 peripherals)
-        .AFIO => rcc.APB2RSTR.modify(.{ .AFIORST = 1 }),
-        .GPIOA => rcc.APB2RSTR.modify(.{ .GPIOARST = 1 }),
-        .GPIOB => rcc.APB2RSTR.modify(.{ .GPIOBRST = 1 }),
-        .GPIOC => rcc.APB2RSTR.modify(.{ .GPIOCRST = 1 }),
-        .GPIOD => rcc.APB2RSTR.modify(.{ .GPIODRST = 1 }),
-        .GPIOE => rcc.APB2RSTR.modify(.{ .GPIOERST = 1 }),
-        .GPIOF => rcc.APB2RSTR.modify(.{ .GPIOFRST = 1 }), //F103xE
-        .GPIOG => rcc.APB2RSTR.modify(.{ .GPIOGRST = 1 }), //F103xE
-        .ADC1 => rcc.APB2RSTR.modify(.{ .ADC1RST = 1 }),
-        .ADC2 => rcc.APB2RSTR.modify(.{ .ADC2RST = 1 }),
-        .TIM1 => rcc.APB2RSTR.modify(.{ .TIM1RST = 1 }),
-        .SPI1 => rcc.APB2RSTR.modify(.{ .SPI1RST = 1 }),
-        .USART1 => rcc.APB2RSTR.modify(.{ .USART1RST = 1 }),
-
-        // APB1RSTR (APB1 peripherals)
-        .TIM2 => rcc.APB1RSTR.modify(.{ .TIM2RST = 1 }),
-        .TIM3 => rcc.APB1RSTR.modify(.{ .TIM3RST = 1 }),
-        .TIM4 => rcc.APB1RSTR.modify(.{ .TIM4RST = 1 }),
-        .TIM5 => rcc.APB1RSTR.modify(.{ .TIM5RST = 1 }), //F103xE
-        .TIM6 => rcc.APB1RSTR.modify(.{ .TIM6RST = 1 }), //F103xE
-        .TIM7 => rcc.APB1RSTR.modify(.{ .TIM7RST = 1 }), //F103xE
-        .WWDG => rcc.APB1RSTR.modify(.{ .WWDGRST = 1 }),
-        .SPI2 => rcc.APB1RSTR.modify(.{ .SPI2RST = 1 }),
-        .SPI3 => rcc.APB1RSTR.modify(.{ .SPI3RST = 1 }), //F103xD/E
-        .USART2 => rcc.APB1RSTR.modify(.{ .USART2RST = 1 }),
-        .USART3 => rcc.APB1RSTR.modify(.{ .USART3RST = 1 }),
-        .UART4 => rcc.APB1RSTR.modify(.{ .UART4RST = 1 }), //F103xC/D/E
-        .UART5 => rcc.APB1RSTR.modify(.{ .UART5RST = 1 }), //F103xC/D/E
-        .I2C1 => rcc.APB1RSTR.modify(.{ .I2C1RST = 1 }),
-        .I2C2 => rcc.APB1RSTR.modify(.{ .I2C2RST = 1 }),
-        .I2C3 => rcc.APB1RSTR.modify(.{ .I2C3RST = 1 }),
-        .I2C4 => rcc.APB4RSTR.modify(.{ .I2C4RST = 1 }),
-        .USB => rcc.APB1RSTR.modify(.{ .USBRST = 1 }),
-        .CAN => rcc.APB1RSTR.modify(.{ .CANRST = 1 }),
-        .BKP => rcc.APB1RSTR.modify(.{ .BKPRST = 1 }),
-        .PWR => rcc.APB1RSTR.modify(.{ .PWRRST = 1 }),
-        .DAC => rcc.APB1RSTR.modify(.{ .DACRST = 1 }), //F103xE
-        else => {},
-    }
-    //release the reset, this is necessary because the reset bits are not self-clearing
-    //write 0 to all bits is safe becuse 0 does nothing (other than releasing the reset)
-    rcc.APB2RSTR.raw = 0;
-    rcc.APB1RSTR.raw = 0;
 }
 
 pub fn set_clock(peri: RccPeriferals, state: u1) void {
@@ -1228,41 +1052,6 @@ pub fn enable_clock(peri: RccPeriferals) void {
     set_clock(peri, 1);
 }
 
-pub fn disable_clock(peri: RccPeriferals) void {
-    set_clock(peri, 0);
-}
-
-pub fn enable_all_clocks() void {
-    //enable all clocks
-    rcc.AHBENR.raw = std.math.maxInt(u32);
-    rcc.APB1ENR.raw = std.math.maxInt(u32);
-    rcc.APB2ENR.raw = std.math.maxInt(u32);
-}
-
-pub fn disable_all_clocks() void {
-    //disable all clocks
-    rcc.AHBENR.raw = 0;
-    rcc.APB1ENR.raw = 0;
-    rcc.APB2ENR.raw = 0;
-}
-
-///Reset all periferals of the specified bus to they default state.
-///NOTE: this function does not effect the ENR registers.
-pub fn reset_bus(bus: Bus) void {
-    //first write 1 to all bits to reset them
-    //then write 0 to all bits to release the reset
-    //this is necessary because the reset bits are not self-clearing
-    switch (bus) {
-        .APB1 => {
-            rcc.APB1RSTR.raw = std.math.maxInt(u32);
-            rcc.APB1RSTR.raw = 0;
-        },
-        .APB2 => {
-            rcc.APB2RSTR.raw = std.math.maxInt(u32);
-            rcc.APB2RSTR.raw = 0;
-        },
-    }
-}
 //NOTE: should we panic on invalid clocks?
 //errors at comptime appear for peripherals manually configured like USB.
 ///if requests the clock of an unconfigured peripheral, 0 means error, != 0 means ok
