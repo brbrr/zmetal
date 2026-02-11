@@ -98,28 +98,28 @@ pub const Config = struct {
 
 /// Pin configuration for I2C
 pub const PinConfig = struct {
-    scl: struct { port: []const u8, pin: []const u8, af: u8 },
-    sda: struct { port: []const u8, pin: []const u8, af: u8 },
+    scl: struct { port: []const u8, pin: []const u8, af: gpio.AlternateFunction },
+    sda: struct { port: []const u8, pin: []const u8, af: gpio.AlternateFunction },
 };
 
 /// Default pin configurations for Daisy Seed board
 pub const daisy_pin_configs = struct {
     /// I2C1: PB8 (SCL), PB9 (SDA) - AF4
     pub const I2C1 = PinConfig{
-        .scl = .{ .port = "B", .pin = "8", .af = 4 },
-        .sda = .{ .port = "B", .pin = "9", .af = 4 },
+        .scl = .{ .port = "B", .pin = "8", .af = .af4 },
+        .sda = .{ .port = "B", .pin = "9", .af = .af4 },
     };
 
     /// I2C2: PB10 (SCL), PB11 (SDA) - AF4
     pub const I2C2 = PinConfig{
-        .scl = .{ .port = "B", .pin = "10", .af = 4 },
-        .sda = .{ .port = "B", .pin = "11", .af = 4 },
+        .scl = .{ .port = "B", .pin = "10", .af = .af4 },
+        .sda = .{ .port = "B", .pin = "11", .af = .af4 },
     };
 
     /// I2C3: PA8 (SCL), PC9 (SDA) - AF4
     pub const I2C3 = PinConfig{
-        .scl = .{ .port = "A", .pin = "8", .af = 4 },
-        .sda = .{ .port = "C", .pin = "9", .af = 4 },
+        .scl = .{ .port = "A", .pin = "8", .af = .af4 },
+        .sda = .{ .port = "C", .pin = "9", .af = .af4 },
     };
 
     /// I2C4: PD12 (SCL), PD13 (SDA) - AF4
@@ -260,7 +260,7 @@ pub const I2C_Device = struct {
 fn configure_pins(comptime pin_cfg: PinConfig) void {
     // Configure SCL pin
     const scl_pin = comptime gpio.Pin.init(pin_cfg.scl.port, pin_cfg.scl.pin, .{
-        .mode = .{ .alternate = @enumFromInt(pin_cfg.scl.af) },
+        .mode = .{ .alternate = pin_cfg.scl.af },
         .otype = .OpenDrain,
         .speed = .VeryHighSpeed,
         .pull = .PullUp,
@@ -269,7 +269,7 @@ fn configure_pins(comptime pin_cfg: PinConfig) void {
 
     // Configure SDA pin
     const sda_pin = comptime gpio.Pin.init(pin_cfg.sda.port, pin_cfg.sda.pin, .{
-        .mode = .{ .alternate = @enumFromInt(pin_cfg.sda.af) },
+        .mode = .{ .alternate = pin_cfg.sda.af },
         .otype = .OpenDrain,
         .speed = .VeryHighSpeed,
         .pull = .PullUp,

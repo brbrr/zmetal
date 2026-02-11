@@ -85,6 +85,7 @@ pub const MCP23017 = struct {
     pin_data: [2]u8, // Cached output state for ports A and B
 
     /// Initialize the MCP23017
+    /// i2c_dev: I2C_Device interface (microzig fat pointer - safe to copy)
     /// address: 7-bit I2C address (typically 0x20-0x27)
     pub fn init(i2c_dev: I2C_Device, address: u8) Error!MCP23017 {
         var self = MCP23017{
@@ -118,7 +119,7 @@ pub const MCP23017 = struct {
     pub fn readRegister(self: *const MCP23017, reg: Register) Error!u8 {
         const reg_addr = [_]u8{@intFromEnum(reg)};
         var value: [1]u8 = undefined;
-        
+
         const addr: I2C_Device.Address = @enumFromInt(self.address);
         self.i2c.write_then_read(addr, &reg_addr, &value) catch return Error.I2CError;
         return value[0];
@@ -135,7 +136,7 @@ pub const MCP23017 = struct {
     pub fn readRegisterPair(self: *const MCP23017, base_reg: Register) Error![2]u8 {
         const reg_addr = [_]u8{@intFromEnum(base_reg)};
         var values: [2]u8 = undefined;
-        
+
         const addr: I2C_Device.Address = @enumFromInt(self.address);
         self.i2c.write_then_read(addr, &reg_addr, &values) catch return Error.I2CError;
         return values;

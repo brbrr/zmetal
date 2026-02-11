@@ -83,6 +83,7 @@ fn buildTargetVariant(
     const firmware = mb.add_firmware(.{
         .name = config.name,
         .target = target,
+        // .optimize = .ReleaseSmall,
         .optimize = .Debug,
         .root_source_file = b.path("src/main.zig"),
     });

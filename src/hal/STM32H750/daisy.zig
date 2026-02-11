@@ -307,7 +307,8 @@ fn dma_init() !void {
 }
 
 fn i2c_init() !void {
-    //
+    // cpu.interrupt.set_priority(.I2C1_EV, .highest);
+    // cpu.interrupt.enable(.I2C1_EV);
 }
 
 fn spi_init() !void {
@@ -320,6 +321,7 @@ fn uart_init() !void {
 
 pub const Daisy = struct {
     sai: hal.sai.SaiDriver,
+    i2c: hal.i2c.I2C_Device,
 
     comptime led: hal.gpio.Pin = hal.gpio.Pin.init("C", "7", .{
         .mode = .output,
@@ -328,7 +330,22 @@ pub const Daisy = struct {
         .speed = .LowSpeed,
     }),
 
-    pub fn init() !Daisy {
+    pub fn create() !Daisy {
+        return Daisy{
+            .sai = hal.sai.SaiDriver.init(.{
+                .sample_rate = .@"48khz",
+                .bit_depth = .@"24bit",
+                .a_sync = .master,
+                .b_sync = .slave,
+                .a_dir = .transmit,
+                .b_dir = .receive,
+            }),
+
+            .i2c = undefined,
+        };
+    }
+
+    pub fn init(self: *Daisy) !void {
         try hal_init();
         try configure_clocks();
         try configure_mpu();
@@ -341,19 +358,9 @@ pub const Daisy = struct {
         hal.cache.enableDCache();
         hal.cache.enableICache();
 
-        var hw = Daisy{
-            .sai = hal.sai.SaiDriver.init(.{
-                .sample_rate = .@"48khz",
-                .bit_depth = .@"24bit",
-                .a_sync = .master,
-                .b_sync = .slave,
-                .a_dir = .transmit,
-                .b_dir = .receive,
-            }),
-        };
-
-        hw.led.configure();
-        return hw;
+        self.i2c = try hal.i2c.I2C_Device.init(.I2C1, .{ .speed = .I2C_400KHZ });
+        self.led.configure();
+        self.i2c.apply();
     }
 
     pub fn startAudio(self: *Daisy, callback: hal.sai.AudioCallback) !void {

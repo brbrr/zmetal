@@ -100,44 +100,38 @@ pub fn init() void {
     // hal.init_vector_table();
 }
 
-var hw: hal.daisy.Daisy = undefined;
+var hw: hal.daisy.Daisy = hal.daisy.Daisy.create() catch unreachable;
 
 var sine = osc.SineOsc.init(440, 48000, 0.02);
 var square = osc.SquareOsc.init(440.0, 48000, 0.02);
 
-var kbd: keyboard.Keyboard = undefined;
-var kbd_initialized = false;
+// I2C device for keyboard (must be global/static for pointer stability)
+// var kbd_i2c: hal.i2c.I2C_Device = undefined;
+// Keyboard type generated at comptime with embedded I2C reference
+// const KeyboardType = keyboard.KeyboardBuilder(kbd_i2c.i2c_device());
+// var kbd: KeyboardType = undefined;
 
 pub fn main() !void {
-    hw = try hal.daisy.Daisy.init();
+    try hw.init();
+    // try hw.startAudio(myAudioCallback);
 
-    // Configure LED pin as output
-    const RCC_peri = chip.peripherals.RCC;
-    RCC_peri.AHB4ENR.modify(.{ .GPIOCEN = 1 }); // Enable GPIOC clock
+    // try example_ili9341();
 
-    // Test toggle
-
-    try hw.startAudio(myAudioCallback);
-
-    try example_ili9341();
-
-    // try example_mcp23017();
-
-    // try example_keyboard_init();
+    var kbd = try keyboard.Keyboard.init(hw.i2c.i2c_device());
 
     var tick_count: u32 = 0;
     while (true) {
         // Process keyboard every 10ms (100Hz scan rate)
-        // if (kbd_initialized and tick_count % 10 == 0) {
-        //     if (kbd.process()) |events| {
-        //         // Handle key events
-        //         for (events.slice()) |evt| {
-        //             handle_key_event(evt);
-        //         }
-        //     } else |_| {
-        //         // Ignore keyboard errors
-        //     }
-        // }
+        if (tick_count % 10 == 0) {
+            if (kbd.process()) |events| {
+                // Handle key events
+                for (events.slice()) |evt| {
+                    handle_key_event(evt);
+                }
+            } else |_| {
+                // Ignore keyboard errors
+            }
+        }
 
         hal.clock.delay_ms(1);
         tick_count += 1;
@@ -160,31 +154,23 @@ pub fn example_ili9341() !void {
     // Configure SPI1 for ILI9341 - MUST use FullDuplex (TWO_LINES) like WoopyOne
     var spi1_display = try hal.spi.SPI_Device.init(.SPI1, .{
         .mode = .Mode0,
-        .baud_prescaler = .PS_256, // Very slow for debugging
+        .baud_prescaler = .PS_2,
         .chip_select = .Software,
-        .direction = .FullDuplex, // ⚠️ CRITICAL: Must be FullDuplex, not TxOnly!
+        .direction = .FullDuplex,
     });
     spi1_display.apply();
 
-    // Test: Simple SPI write before initializing display
     hal.clock.delay_ms(100);
 
     // Configure control pins (comptime)
-    const dc_pin = comptime hal.gpio.Pin.init("A", "3", .{
-        .mode = .output,
-    });
-    const rst_pin = comptime hal.gpio.Pin.init("A", "5", .{
-        .mode = .output,
-    });
+    const dc_pin = comptime hal.gpio.Pin.init("A", "3", .{ .mode = .output });
+    const rst_pin = comptime hal.gpio.Pin.init("A", "5", .{ .mode = .output });
 
     // CS pin (PG10) - manual GPIO control, NOT SPI alternate function!
-    const cs_pin = comptime hal.gpio.Pin.init("G", "10", .{
-        .mode = .output,
-    });
+    const cs_pin = comptime hal.gpio.Pin.init("G", "10", .{ .mode = .output });
 
     // Create display driver with comptime pins
-    const Display = ili9341.ILI9341(dc_pin, rst_pin, cs_pin);
-    const display = try Display.init(&spi1_display, .Landscape);
+    const display = try ili9341.ILI9341(dc_pin, rst_pin, cs_pin).init(&spi1_display, .Landscape);
 
     // Fill screen with black
     try display.fill_screen(ili9341.Colors.Black);
@@ -202,54 +188,6 @@ pub fn example_ili9341() !void {
     // Draw rectangles
     try display.draw_rect(200, 80, 100, 60, ili9341.Colors.Cyan);
     try display.fill_rect(210, 90, 80, 40, ili9341.Colors.Magenta);
-}
-
-pub fn example_mcp23017() !void {
-    const mcp23017 = @import("drivers/mcp23017.zig");
-
-    // Initialize I2C1
-    var i2c1 = try hal.i2c.I2C_Device.init(.I2C1, .{
-        .speed = .I2C_400KHZ,
-    });
-    i2c1.apply();
-
-    // Get the I2C_Device interface
-    const i2c_dev = i2c1.i2c_device();
-
-    // Initialize MCP23017 at address 0x20
-    var mcp = try mcp23017.MCP23017.init(i2c_dev, 0x20);
-
-    // Configure Port A as outputs (for driving column pins)
-    try mcp.setPortMode(.A, 0x00); // All outputs
-
-    // Configure Port B as inputs with pull-ups (for reading row pins)
-    try mcp.setPortMode(.B, 0xFF); // All inputs
-
-    // Set all Port A pins high initially
-    try mcp.writePort(.A, 0xFF);
-
-    // Test: Toggle pin 0 on Port A
-    try mcp.writePin(0, false);
-    hal.clock.delay_ms(100);
-    try mcp.writePin(0, true);
-
-    // Test: Read Port B
-    const port_b_state = try mcp.readPort(.B);
-    _ = port_b_state;
-}
-
-pub fn example_keyboard_init() !void {
-    // Initialize I2C2 for keyboard (separate from other I2C devices)
-    var i2c2 = try hal.i2c.I2C_Device.init(.I2C2, .{
-        .speed = .I2C_400KHZ,
-    });
-    i2c2.apply();
-
-    const i2c_dev = i2c2.i2c_device();
-
-    // Initialize keyboard
-    kbd = try keyboard.Keyboard.init(i2c_dev);
-    kbd_initialized = true;
 }
 
 fn handle_key_event(evt: keyboard.KeyEventData) void {
