@@ -4,6 +4,8 @@ const time = microzig.drivers.time;
 const clk = @import("clock.zig");
 // hal.clock.inc_tick();
 
+// TODO: Implement Clock_Device
+
 pub fn get_time_since_boot() time.Absolute {
     const ticks = clk.get_tick();
 

@@ -148,8 +148,6 @@ pub const clk_config = ClockTree.Config{
     },
 };
 
-// pub const clock_outputs = hal.rcc.validate_clocks(clk_config);
-
 pub const clock_outputs = clocktree_outputs.clock;
 pub const clocktree_outputs: ClockTree.Tree_Output = ClockTree.get_clocks(clk_config) catch unreachable;
 

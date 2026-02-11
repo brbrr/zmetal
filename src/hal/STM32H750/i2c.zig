@@ -86,10 +86,14 @@ pub const Speed = enum {
 pub const Config = struct {
     /// Clock speed selection (default: 400 kHz)
     speed: Speed = .I2C_400KHZ,
-    
+
     /// Pin configuration (optional - use default Daisy Seed pins if not specified)
     /// If provided, these pins will be configured automatically
     pin_config: ?PinConfig = null,
+
+    /// Override TIMINGR register value (optional - uses libdaisy tested values if not specified)
+    /// If null, uses hardcoded values from libdaisy that are known to work
+    timingr_override: ?u32 = null,
 };
 
 /// Pin configuration for I2C
@@ -105,19 +109,19 @@ pub const daisy_pin_configs = struct {
         .scl = .{ .port = "B", .pin = "8", .af = 4 },
         .sda = .{ .port = "B", .pin = "9", .af = 4 },
     };
-    
+
     /// I2C2: PB10 (SCL), PB11 (SDA) - AF4
     pub const I2C2 = PinConfig{
         .scl = .{ .port = "B", .pin = "10", .af = 4 },
         .sda = .{ .port = "B", .pin = "11", .af = 4 },
     };
-    
+
     /// I2C3: PA8 (SCL), PC9 (SDA) - AF4
     pub const I2C3 = PinConfig{
         .scl = .{ .port = "A", .pin = "8", .af = 4 },
         .sda = .{ .port = "C", .pin = "9", .af = 4 },
     };
-    
+
     /// I2C4: PD12 (SCL), PD13 (SDA) - AF4
     pub const I2C4 = PinConfig{
         .scl = .{ .port = "D", .pin = "12", .af = 4 },
@@ -128,18 +132,32 @@ pub const daisy_pin_configs = struct {
 /// I2C Device wrapper that provides zero-cost abstraction over microzig's I2C_Device
 pub const I2C_Device = struct {
     inner: i2c_v2.I2C_Device,
-    
+
     /// Initialize an I2C peripheral with the given configuration
     /// This should be called at comptime or at startup to compute timing parameters
     ///
     /// Note: After init(), call apply() to enable the peripheral
     pub fn init(comptime peripheral: Peripheral, comptime config: Config) !I2C_Device {
-        const i2c_type = peripheral.to_i2c_type();
-        
+        const i2c_type = comptime peripheral.to_i2c_type();
+
         // Initialize the underlying microzig I2C device
         // This computes timing registers based on the clock configuration
-        const inner = try i2c_v2.I2C_Device.init(i2c_type);
-        
+        var inner = try i2c_v2.I2C_Device.init(i2c_type);
+
+        // Override TIMINGR with libdaisy proven values if requested or use speed-based defaults
+        if (config.timingr_override) |timingr_val| {
+            inner.i2c.timingr = @bitCast(timingr_val);
+        } else {
+            // Use libdaisy tested TIMINGR values (these are proven to work on Daisy Seed)
+            // Based on PCLK1 = 120MHz for STM32H750
+            const timingr_val: u32 = switch (config.speed) {
+                .I2C_100KHZ => 0x6090435F, // 100kHz @ 120MHz PCLK1
+                .I2C_400KHZ => 0x30B00F2D, // 400kHz @ 120MHz PCLK1
+                .I2C_1MHZ => 0x10A00B20, // ~837kHz @ 120MHz PCLK1
+            };
+            inner.i2c.timingr = @bitCast(timingr_val);
+        }
+
         // Configure pins if specified, otherwise use defaults
         const pin_cfg = config.pin_config orelse switch (peripheral) {
             .I2C1 => daisy_pin_configs.I2C1,
@@ -147,49 +165,49 @@ pub const I2C_Device = struct {
             .I2C3 => daisy_pin_configs.I2C3,
             .I2C4 => daisy_pin_configs.I2C4,
         };
-        
+
         // Configure GPIO pins for I2C function
         configure_pins(pin_cfg);
-        
+
         return I2C_Device{ .inner = inner };
     }
-    
+
     /// Apply the configuration and enable the I2C peripheral
     /// Must be called after init() and before using the device
     pub fn apply(self: *const I2C_Device) void {
         self.inner.apply();
     }
-    
+
     /// Get the I2C_Device interface for use with microzig drivers
     /// This returns a drivers.base.I2C_Device with vtable for runtime dispatch
     pub fn i2c_device(self: *I2C_Device) drivers.base.I2C_Device {
         return self.inner.i2c_device();
     }
-    
+
     /// Write data to an I2C device (blocking)
     pub fn write(self: *I2C_Device, address: Address, data: []const u8) Error!void {
         const dev = self.i2c_device();
         return dev.write(address, data);
     }
-    
+
     /// Write multiple chunks to an I2C device (blocking)
     pub fn writev(self: *I2C_Device, address: Address, chunks: []const []const u8) Error!void {
         const dev = self.i2c_device();
         return dev.writev(address, chunks);
     }
-    
+
     /// Read data from an I2C device (blocking)
     pub fn read(self: *I2C_Device, address: Address, buffer: []u8) Error!usize {
         const dev = self.i2c_device();
         return dev.read(address, buffer);
     }
-    
+
     /// Read multiple chunks from an I2C device (blocking)
     pub fn readv(self: *I2C_Device, address: Address, buffers: []const []u8) Error!usize {
         const dev = self.i2c_device();
         return dev.readv(address, buffers);
     }
-    
+
     /// Write then read from an I2C device (blocking, with repeated start)
     /// This is useful for reading registers: write register address, then read value
     pub fn write_then_read(
@@ -201,7 +219,7 @@ pub const I2C_Device = struct {
         const dev = self.i2c_device();
         return dev.write_then_read(address, write_data, read_buffer);
     }
-    
+
     /// Write multiple chunks then read multiple chunks (blocking, with repeated start)
     pub fn writev_then_readv(
         self: *I2C_Device,
@@ -212,7 +230,7 @@ pub const I2C_Device = struct {
         const dev = self.i2c_device();
         return dev.writev_then_readv(address, write_chunks, read_chunks);
     }
-    
+
     /// Read from a specific register address (convenience function)
     /// Equivalent to write_then_read with a single-byte register address
     pub fn read_register(
@@ -224,7 +242,7 @@ pub const I2C_Device = struct {
         const reg_bytes = [_]u8{register_addr};
         return self.write_then_read(device_addr, &reg_bytes, buffer);
     }
-    
+
     /// Write to a specific register address (convenience function)
     /// Sends register address followed by data bytes
     pub fn write_register(
@@ -241,22 +259,20 @@ pub const I2C_Device = struct {
 /// Configure GPIO pins for I2C function
 fn configure_pins(comptime pin_cfg: PinConfig) void {
     // Configure SCL pin
-    const scl_pin = gpio.Pin.init(pin_cfg.scl.port, pin_cfg.scl.pin, .{
-        .mode = .AlternateFunction,
-        .output_type = .OpenDrain,
-        .speed = .VeryHigh,
-        .pull = .Up,
-        .alternate_function = pin_cfg.scl.af,
+    const scl_pin = comptime gpio.Pin.init(pin_cfg.scl.port, pin_cfg.scl.pin, .{
+        .mode = .{ .alternate = @enumFromInt(pin_cfg.scl.af) },
+        .otype = .OpenDrain,
+        .speed = .VeryHighSpeed,
+        .pull = .PullUp,
     });
     scl_pin.configure();
-    
+
     // Configure SDA pin
-    const sda_pin = gpio.Pin.init(pin_cfg.sda.port, pin_cfg.sda.pin, .{
-        .mode = .AlternateFunction,
-        .output_type = .OpenDrain,
-        .speed = .VeryHigh,
-        .pull = .Up,
-        .alternate_function = pin_cfg.sda.af,
+    const sda_pin = comptime gpio.Pin.init(pin_cfg.sda.port, pin_cfg.sda.pin, .{
+        .mode = .{ .alternate = @enumFromInt(pin_cfg.sda.af) },
+        .otype = .OpenDrain,
+        .speed = .VeryHighSpeed,
+        .pull = .PullUp,
     });
     sda_pin.configure();
 }

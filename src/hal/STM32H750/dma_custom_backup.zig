@@ -89,17 +89,19 @@ pub fn dma_irq_handler(chan: Channel) void {
     }
 
     const handlers = chan.handlers();
-    
+
     // Half Transfer Complete - clear flag and call callback (matches STM32 HAL)
-    if (htif and handlers.half_complete != null) {
+    if (htif) {
         clear_reg.* = stream_mask(local_stream, HTIF_OFFSET);
-        handlers.half_complete.?(chan, handlers.ctx.?);
+        if (handlers.half_complete != null)
+            handlers.half_complete.?(chan, handlers.ctx.?);
     }
-    
+
     // Transfer Complete - clear flag and call callback (matches STM32 HAL)
-    if (tcif and handlers.complete != null) {
+    if (tcif) {
         clear_reg.* = stream_mask(local_stream, TCIF_OFFSET);
-        handlers.complete.?(chan, handlers.ctx.?);
+        if (handlers.complete != null)
+            handlers.complete.?(chan, handlers.ctx.?);
     }
 }
 

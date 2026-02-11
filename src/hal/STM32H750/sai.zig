@@ -251,9 +251,9 @@ pub const SaiDriver = struct {
 
         // AK4556 reset sequence
         regs.GPIOB.BSRR.write_raw(1 << 11);
-        hal.clock.delay(1);
+        hal.clock.delay_ms(1);
         regs.GPIOB.BSRR.write_raw(1 << (11 + 16));
-        hal.clock.delay(1);
+        hal.clock.delay_ms(1);
         regs.GPIOB.BSRR.write_raw(1 << 11);
     }
 
@@ -262,9 +262,9 @@ pub const SaiDriver = struct {
 
         // Enable SAI blocks (B first for slave, then A for master)
         regs.SAI1.SAI_BCR1.modify(.{ .SAIXEN = 1 });
-        hal.clock.delay(100);
+        hal.clock.delay_ms(100);
         regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 1 });
-        hal.clock.delay(100);
+        hal.clock.delay_ms(100);
     }
 
     pub fn disable(self: *Self) void {
@@ -294,14 +294,19 @@ pub const SaiDriver = struct {
                 .{ .enable = true, .mode = .circular, .priority = .High, .fifo_mode = 0, .size = self.transfer_size },
             );
             regs.SAI1.SAI_ACR1.modify_one("DMAEN", 1);
-            hal.clock.delay(100);
+            hal.clock.delay_ms(100);
             while (regs.SAI1.SAI_ASR.read().FLVL == 0) { // SAI_FIFOSTATUS_EMPTY
                 microzig.cpu.nop();
             }
 
+            var handlers = tx_chan.handlers();
+            handlers.complete = SaiDriver.rx_dma_complete;
+            handlers.half_complete = SaiDriver.rx_dma_half_complete;
+            handlers.ctx = self;
+
             // Enable SAI blocks (B first for slave, then A for master)
             regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 1 });
-            hal.clock.delay(100);
+            hal.clock.delay_ms(100);
         }
 
         { // RX
@@ -313,16 +318,16 @@ pub const SaiDriver = struct {
             );
 
             regs.SAI1.SAI_BCR1.modify_one("DMAEN", 1);
-            hal.clock.delay(100);
+            hal.clock.delay_ms(100);
 
             // Using RX DMA handlers as in libDaisy
-            var rx_handlers = rx_chan.handlers();
-            rx_handlers.complete = SaiDriver.rx_dma_complete;
-            rx_handlers.half_complete = SaiDriver.rx_dma_half_complete;
-            rx_handlers.ctx = self;
+            // var rx_handlers = rx_chan.handlers();
+            // rx_handlers.complete = SaiDriver.rx_dma_complete;
+            // rx_handlers.half_complete = SaiDriver.rx_dma_half_complete;
+            // rx_handlers.ctx = self;
 
             regs.SAI1.SAI_BCR1.modify(.{ .SAIXEN = 1 });
-            hal.clock.delay(100);
+            hal.clock.delay_ms(100);
         }
 
         // Enable SAI blocks
@@ -454,16 +459,4 @@ pub fn s24tof(xx: u32) f32 {
     const as_i32 = @as(i32, @bitCast(xx));
     const sign_extended = as_i32 << 8 >> 8; // Sign-extend from 24-bit to 32-bit
     return @as(f32, @floatFromInt(sign_extended)) * S242F_SCALE;
-}
-
-pub fn monitorSaiErrors() void {
-    const status = regs.SAI1.SAI_ASR.read();
-    if (status.OVRUDR == 1) {
-        // std.log.err("SAI Overrun/Underrun!");
-        @panic("!!!");
-    }
-    if (status.FREQ == 1) {
-        // @panic("!!!");
-    }
-    std.log.info("FIFO level: {d}/8", .{status.FLVL});
 }

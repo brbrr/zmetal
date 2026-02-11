@@ -35,7 +35,7 @@ pub inline fn inc_tick() void {
     _ = cpu.atomic.add(u32, &uwTick, uwTickFreq);
 }
 
-pub fn delay(wait: u32) void {
+pub fn delay_ms(wait: u32) void {
     const tickstart = get_tick();
     var _wait = wait;
 

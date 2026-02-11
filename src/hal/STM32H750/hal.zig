@@ -15,12 +15,12 @@ const scb = cpu.peripherals.scb;
 const stm32_common = @import("stm32_common");
 
 // microzig STM32 common implementations (standard peripherals)
-pub const spi = stm32_common.spi_v2;
 pub const timer = stm32_common.timer_v1;
 pub const systick = stm32_common.systick;
 
-// I2C implementation with Daisy-specific configuration
+// I2C and SPI implementations with Daisy-specific configuration
 pub const i2c = @import("i2c.zig");
+pub const spi = @import("spi.zig");
 
 // Custom implementations: GPIO/Pins incompatible with gpio_v2 (H7 uses AFRL/AFRH not AFR[2])
 pub const gpio = @import("gpio.zig");
