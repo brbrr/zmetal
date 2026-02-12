@@ -39,6 +39,40 @@ const SaiConfig = struct {
     b_sync: SyncMode = .slave,
     a_dir: Direction = .transmit,
     b_dir: Direction = .receive,
+
+    fn getSaiRegFlags(self: SaiConfig) struct { frame_length: u7, data_size: u3, f_pol: u1, f_off: u1 } {
+        const frame_length: u7 = switch (self.bit_depth) {
+            .@"16bit" => 32, // 16 bits * 2 channels
+            .@"24bit" => 64, // 32 bits * 2 channels (24-bit in 32-bit frame)
+            .@"32bit" => 64, // 32 bits * 2 channels
+        };
+
+        const data_size: u3 = switch (self.bit_depth) {
+            .@"16bit" => 4,
+            .@"24bit" => 6,
+            .@"32bit" => 7,
+        };
+
+        const protocol: u1 = switch (self.bit_depth) {
+            .@"16bit" => 0,
+            .@"24bit" => 1, // Change to 0 for I2S
+            .@"32bit" => 0,
+        };
+        var f_pol: u1 = 0; // SAI_FS_ACTIVE_LOW
+        var f_off: u1 = 1; // SAI_FS_BEFOREFIRSTBIT
+
+        if (protocol == 1) { // Not SAI_I2S_STANDARD
+            f_pol = 1; // SAI_FS_ACTIVE_HIGH
+            f_off = 0; // SAI_FS_FIRSTBIT
+        }
+
+        return .{
+            .frame_length = frame_length,
+            .data_size = data_size,
+            .f_pol = f_pol,
+            .f_off = f_off,
+        };
+    }
 };
 
 pub const tx_chan = hal.dma.channel(0);
@@ -72,16 +106,14 @@ const sa = hal.gpio.Pin.init("E", "6", sai_p_cfg);
 const codec_reset = hal.gpio.Pin.init("B", "11", .{ .mode = .output, .pull = .Floating, .otype = .PushPull, .speed = .LowSpeed });
 
 pub const SaiDriver = struct {
+    const Self = @This();
+
     config: SaiConfig,
     initialized: bool = false,
     transfer_size: u16 = 0,
-
-    // Set by user
     user_callback: ?*const AudioCallback = null,
 
-    const Self = @This();
-
-    pub fn init(config: SaiConfig) Self {
+    pub fn init(comptime config: SaiConfig) Self {
         return Self{
             .config = config,
         };
@@ -122,44 +154,17 @@ pub const SaiDriver = struct {
     }
 
     fn initSaiBlocks(self: *Self) !void {
-        const frame_length: u7 = switch (self.config.bit_depth) {
-            .@"16bit" => 32, // 16 bits * 2 channels
-            .@"24bit" => 64, // 32 bits * 2 channels (24-bit in 32-bit frame)
-            .@"32bit" => 64, // 32 bits * 2 channels
-        };
-
-        const data_size: u3 = switch (self.config.bit_depth) {
-            .@"16bit" => 4,
-            .@"24bit" => 6,
-            .@"32bit" => 7,
-        };
-
-        const protocol: u1 = switch (self.config.bit_depth) {
-            .@"16bit" => 0,
-            .@"24bit" => 1, // Change to 0 for I2S
-            .@"32bit" => 0,
-        };
-        var f_pol: u1 = 0; // SAI_FS_ACTIVE_LOW
-        var f_off: u1 = 1; // SAI_FS_BEFOREFIRSTBIT
-
-        if (protocol == 1) { // Not SAI_I2S_STANDARD
-            f_pol = 1; // SAI_FS_ACTIVE_HIGH
-            f_off = 0; // SAI_FS_FIRSTBIT
-        }
-
         regs.SAI1.SAI_GCR.raw = 0;
 
-        const clocks = hal.rcc.getPLL3Clocks();
-        _ = clocks;
-
-        const mck_div = SaiDriver.computeMckDiv(daisy.clock_outputs.SAI1output, @intFromEnum(self.config.sample_rate), frame_length, false, false);
+        const data = self.config.getSaiRegFlags();
+        const mck_div = SaiDriver.computeMckDiv(daisy.clock_outputs.SAI1output, @intFromEnum(self.config.sample_rate), data.frame_length, false, false);
 
         // Configure SAI1 Block A (Master Transmitter)
         regs.SAI1.SAI_ACR1.raw = 0;
         regs.SAI1.SAI_ACR1.modify(.{
             .MODE = 0, // Master transmitter
             .PRTCFG = 0, // Free protocol
-            .DS = data_size,
+            .DS = data.data_size,
             .LSBFIRST = 0, // MSB first
             .CKSTR = 1, // Clock strobing on falling edge
             .SYNCEN = 0, // Asynchronous
@@ -183,10 +188,10 @@ pub const SaiDriver = struct {
 
         regs.SAI1.SAI_AFRCR.raw = 0;
         regs.SAI1.SAI_AFRCR.modify(.{
-            .FRL = frame_length - 1, // Frame length
-            .FSALL = frame_length / 2 - 1, // Frame sync length
-            .FSPOL = f_pol,
-            .FSOFF = f_off,
+            .FRL = data.frame_length - 1, // Frame length
+            .FSALL = data.frame_length / 2 - 1, // Frame sync length
+            .FSPOL = data.f_pol,
+            .FSOFF = data.f_off,
             .FSDEF = 1, // FS = channel start indicator, not "active all frame"
         });
 
@@ -202,7 +207,7 @@ pub const SaiDriver = struct {
         regs.SAI1.SAI_BCR1.modify(.{
             .MODE = 3, // Slave receiver
             .PRTCFG = 0, // Free protocol
-            .DS = data_size,
+            .DS = data.data_size,
             .LSBFIRST = 0, // MSB first
             .CKSTR = 1, // Clock strobing on rising edge
             .SYNCEN = 1, // Synchronous with other sub-block
@@ -225,10 +230,10 @@ pub const SaiDriver = struct {
 
         regs.SAI1.SAI_BFRCR.raw = 0;
         regs.SAI1.SAI_BFRCR.modify(.{
-            .FRL = frame_length - 1, // Frame length
-            .FSALL = frame_length / 2 - 1, // Frame sync length
-            .FSPOL = f_pol,
-            .FSOFF = f_off,
+            .FRL = data.frame_length - 1, // Frame length
+            .FSALL = data.frame_length / 2 - 1, // Frame sync length
+            .FSPOL = data.f_pol,
+            .FSOFF = data.f_off,
             .FSDEF = 1, // FS = channel start indicator, not "active all frame"
         });
 

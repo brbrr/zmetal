@@ -309,6 +309,20 @@ fn dma_init() !void {
 fn i2c_init() !void {
     // cpu.interrupt.set_priority(.I2C1_EV, .highest);
     // cpu.interrupt.enable(.I2C1_EV);
+
+    // Reset I2C1 peripheral via RCC to clear any stuck BUSY state
+    // This is necessary if the I2C bus was in a bad state from previous power cycle
+    const rcc_regs = chip.peripherals.RCC;
+    rcc_regs.APB1LRSTR.modify(.{ .I2C1RST = 1 });
+    var i2c_reset_delay: u32 = 0;
+    while (i2c_reset_delay < 200) : (i2c_reset_delay += 1) {
+        asm volatile ("nop");
+    }
+    rcc_regs.APB1LRSTR.modify(.{ .I2C1RST = 0 });
+    i2c_reset_delay = 0;
+    while (i2c_reset_delay < 200) : (i2c_reset_delay += 1) {
+        asm volatile ("nop");
+    }
 }
 
 fn spi_init() !void {

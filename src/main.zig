@@ -113,9 +113,9 @@ var square = osc.SquareOsc.init(440.0, 48000, 0.02);
 
 pub fn main() !void {
     try hw.init();
-    // try hw.startAudio(myAudioCallback);
+    try hw.startAudio(myAudioCallback);
 
-    // try example_ili9341();
+    try example_ili9341();
 
     var kbd = try keyboard.Keyboard.init(hw.i2c.i2c_device());
 
@@ -174,7 +174,6 @@ pub fn example_ili9341() !void {
 
     // Fill screen with black
     try display.fill_screen(ili9341.Colors.Black);
-    hal.clock.delay_ms(500);
 
     // Draw some test patterns
     try display.fill_rect(10, 10, 50, 50, ili9341.Colors.Red);

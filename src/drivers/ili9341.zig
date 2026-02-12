@@ -113,19 +113,13 @@ const Command = enum(u8) {
     PUMP_RATIO = 0xF7,
 };
 
-/// ILI9341 Display Driver
-/// Generic over GPIO pin types to support comptime pin configuration
-pub fn ILI9341(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gpio.Pin, comptime cs_pin: ?hal.gpio.Pin) type {
+pub fn ILI9341_Transport(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gpio.Pin, comptime cs_pin: ?hal.gpio.Pin) type {
     return struct {
         const Self = @This();
 
         spi: *const hal.spi.SPI_Device,
-        width: u16,
-        height: u16,
-        orientation: Orientation,
 
-        /// Initialize the ILI9341 display
-        pub fn init(spi: *const hal.spi.SPI_Device, orientation: Orientation) !Self {
+        pub fn init(spi: *const hal.spi.SPI_Device) !Self {
             // Configure DC pin as output
             dc_pin.configure();
 
@@ -138,82 +132,12 @@ pub fn ILI9341(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gpio.Pin, co
                 cs.write(.High); // Deselect initially
             }
 
-            var display = Self{
-                .spi = spi,
-                .width = WIDTH,
-                .height = HEIGHT,
-                .orientation = orientation,
-            };
-
-            // Perform hardware reset
-            display.reset();
-
-            // Initialize display
-            try display.init_display();
-
-            // Set orientation
-            display.set_orientation(orientation);
-
-            return display;
+            return .{ .spi = spi };
         }
 
-        /// Perform hardware reset
-        fn reset(self: *Self) void {
-            _ = self;
-            rst_pin.write(.Low);
-            hal.clock.delay_ms(10);
-            rst_pin.write(.High);
-            hal.clock.delay_ms(120);
-        }
+        pub fn init_display(self: *Self) !void {
+            self.reset();
 
-        /// Select the display (assert CS low)
-        inline fn select(self: *const Self) void {
-            _ = self;
-            if (cs_pin) |cs| {
-                cs.write(.Low);
-            }
-        }
-
-        /// Deselect the display (assert CS high)
-        inline fn deselect(self: *const Self) void {
-            _ = self;
-            if (cs_pin) |cs| {
-                cs.write(.High);
-            }
-        }
-
-        /// Send a command byte
-        fn send_command(self: *const Self, cmd: Command) !void {
-            dc_pin.write(.Low); // Command mode
-            self.select();
-            try self.spi.write_blocking(&[_]u8{@intFromEnum(cmd)});
-            self.deselect();
-        }
-
-        /// Send data bytes
-        fn send_data(self: *const Self, data: []const u8) !void {
-            dc_pin.write(.High); // Data mode
-            self.select();
-            try self.spi.write_blocking(data);
-            self.deselect();
-        }
-
-        /// Send a single data byte
-        fn send_data_byte(self: *const Self, byte: u8) !void {
-            try self.send_data(&[_]u8{byte});
-        }
-
-        /// Send 16-bit data (big-endian)
-        fn send_data_u16(self: *const Self, value: u16) !void {
-            const bytes = [_]u8{
-                @intCast((value >> 8) & 0xFF),
-                @intCast(value & 0xFF),
-            };
-            try self.send_data(&bytes);
-        }
-
-        /// Initialize display with ILI9341 command sequence
-        fn init_display(self: *Self) !void {
             // Software reset
             try self.send_command(.SWRESET);
             hal.clock.delay_ms(100);
@@ -305,10 +229,53 @@ pub fn ILI9341(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gpio.Pin, co
             hal.clock.delay_ms(100);
         }
 
-        /// Set display orientation
-        pub fn set_orientation(self: *Self, orientation: Orientation) void {
-            self.orientation = orientation;
+        /// Select the display (assert CS low)
+        inline fn select(self: *const Self) void {
+            _ = self;
+            if (cs_pin) |cs| {
+                cs.write(.Low);
+            }
+        }
 
+        /// Deselect the display (assert CS high)
+        inline fn deselect(self: *const Self) void {
+            _ = self;
+            if (cs_pin) |cs| {
+                cs.write(.High);
+            }
+        }
+
+        /// Send a command byte
+        fn send_command(self: *const Self, cmd: Command) !void {
+            dc_pin.write(.Low); // Command mode
+            self.select();
+            try self.spi.write_blocking(&[_]u8{@intFromEnum(cmd)});
+            self.deselect();
+        }
+
+        /// Send data bytes
+        fn send_data(self: *const Self, data: []const u8) !void {
+            dc_pin.write(.High); // Data mode
+            self.select();
+            try self.spi.write_blocking(data);
+            self.deselect();
+        }
+
+        /// Send a single data byte
+        fn send_data_byte(self: *const Self, byte: u8) !void {
+            try self.send_data(&[_]u8{byte});
+        }
+
+        /// Send 16-bit data (big-endian)
+        fn send_data_u16(self: *const Self, value: u16) !void {
+            const bytes = [_]u8{
+                @intCast((value >> 8) & 0xFF),
+                @intCast(value & 0xFF),
+            };
+            try self.send_data(&bytes);
+        }
+
+        pub fn set_orientation(self: *Self, orientation: Orientation) !void {
             // MADCTL bits
             const MADCTL_MY: u8 = 0x80; // Row Address Order
             const MADCTL_MX: u8 = 0x40; // Column Address Order
@@ -322,20 +289,25 @@ pub fn ILI9341(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gpio.Pin, co
                 .LandscapeFlipped => MADCTL_MX | MADCTL_MY | MADCTL_MV | MADCTL_BGR,
             };
 
-            // Update dimensions based on orientation
-            switch (orientation) {
-                .Portrait, .PortraitFlipped => {
-                    self.width = 240;
-                    self.height = 320;
-                },
-                .Landscape, .LandscapeFlipped => {
-                    self.width = 320;
-                    self.height = 240;
-                },
+            try self.send_command(.MADCTL);
+            try self.send_data_byte(madctl_value);
+        }
+
+        /// Send bulk pixel data (for optimized fill operations)
+        pub fn send_pixels(self: *const Self, pixels: u32, color: Color) !void {
+            dc_pin.write(.High); // Data mode
+            self.select();
+
+            const color_hi: u8 = @intCast((color >> 8) & 0xFF);
+            const color_lo: u8 = @intCast(color & 0xFF);
+            const color_bytes = [_]u8{ color_hi, color_lo };
+
+            var i: u32 = 0;
+            while (i < pixels) : (i += 1) {
+                try self.spi.write_blocking(&color_bytes);
             }
 
-            self.send_command(.MADCTL) catch return;
-            self.send_data_byte(madctl_value) catch return;
+            self.deselect();
         }
 
         /// Set address window for drawing
@@ -362,17 +334,79 @@ pub fn ILI9341(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gpio.Pin, co
             try self.send_command(.RAMWR);
         }
 
+        /// Draw a single pixel
+        pub fn draw_pixel(self: *const Self, x: u16, y: u16, color: Color) !void {
+            try self.set_address_window(x, y, x, y);
+            try self.send_data_u16(color);
+        }
+
+        /// Perform hardware reset
+        fn reset(self: *Self) void {
+            _ = self;
+            rst_pin.write(.Low);
+            hal.clock.delay_ms(10);
+            rst_pin.write(.High);
+            hal.clock.delay_ms(120);
+        }
+    };
+}
+
+/// ILI9341 Display Driver
+/// Generic over GPIO pin types to support comptime pin configuration
+pub fn ILI9341(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gpio.Pin, comptime cs_pin: ?hal.gpio.Pin) type {
+    return struct {
+        const Self = @This();
+
+        spi: *const hal.spi.SPI_Device,
+        height: u16,
+        width: u16,
+        orientation: Orientation,
+
+        tr: ILI9341_Transport(dc_pin, rst_pin, cs_pin),
+
+        /// Initialize the ILI9341 display
+        pub fn init(spi: *const hal.spi.SPI_Device, orientation: Orientation) !Self {
+            const Transport = ILI9341_Transport(dc_pin, rst_pin, cs_pin);
+
+            var display = Self{
+                .spi = spi,
+                .width = WIDTH,
+                .height = HEIGHT,
+                .orientation = orientation,
+                .tr = try Transport.init(spi),
+            };
+
+            // Initialize display
+            try display.tr.init_display();
+
+            // Set orientation
+            try display.set_orientation(orientation);
+
+            return display;
+        }
+
+        /// Set display orientation
+        pub fn set_orientation(self: *Self, orientation: Orientation) !void {
+            self.orientation = orientation;
+
+            // Update dimensions based on orientation
+            switch (orientation) {
+                .Portrait, .PortraitFlipped => {
+                    self.width = 240;
+                    self.height = 320;
+                },
+                .Landscape, .LandscapeFlipped => {
+                    self.width = 320;
+                    self.height = 240;
+                },
+            }
+
+            try self.tr.set_orientation(orientation);
+        }
+
         /// Fill entire screen with a color
         pub fn fill_screen(self: *const Self, color: Color) !void {
             try self.fill_rect(0, 0, self.width, self.height, color);
-        }
-
-        /// Draw a single pixel
-        pub fn draw_pixel(self: *const Self, x: u16, y: u16, color: Color) !void {
-            if (x >= self.width or y >= self.height) return;
-
-            try self.set_address_window(x, y, x, y);
-            try self.send_data_u16(color);
         }
 
         /// Fill a rectangle with a color
@@ -382,35 +416,17 @@ pub fn ILI9341(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gpio.Pin, co
             const x1 = @min(x + w - 1, self.width - 1);
             const y1 = @min(y + h - 1, self.height - 1);
 
-            try self.set_address_window(x, y, x1, y1);
+            try self.tr.set_address_window(x, y, x1, y1);
 
             // Send color data for all pixels
             const pixels = (@as(u32, x1) - x + 1) * (@as(u32, y1) - y + 1);
-
-            dc_pin.write(.High); // Data mode
-            self.select();
-
-            // Send color bytes for each pixel
-            var i: u32 = 0;
-            const color_hi: u8 = @intCast((color >> 8) & 0xFF);
-            const color_lo: u8 = @intCast(color & 0xFF);
-            const color_bytes = [_]u8{ color_hi, color_lo };
-
-            while (i < pixels) : (i += 1) {
-                try self.spi.write_blocking(&color_bytes);
-            }
-
-            self.deselect();
+            try self.tr.send_pixels(pixels, color);
         }
 
-        /// Draw a horizontal line
-        pub fn draw_hline(self: *const Self, x: u16, y: u16, w: u16, color: Color) !void {
-            try self.fill_rect(x, y, w, 1, color);
-        }
-
-        /// Draw a vertical line
-        pub fn draw_vline(self: *const Self, x: u16, y: u16, h: u16, color: Color) !void {
-            try self.fill_rect(x, y, 1, h, color);
+        /// Draw a single pixel
+        pub fn draw_pixel(self: *const Self, x: u16, y: u16, color: Color) !void {
+            if (x >= self.width or y >= self.height) return;
+            try self.tr.draw_pixel(x, y, color);
         }
 
         /// Draw a line using Bresenham's algorithm
@@ -467,6 +483,16 @@ pub fn ILI9341(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gpio.Pin, co
             return (@as(u16, r & 0xF8) << 8) |
                 (@as(u16, g & 0xFC) << 3) |
                 (@as(u16, b) >> 3);
+        }
+
+        /// Draw a horizontal line
+        fn draw_hline(self: *const Self, x: u16, y: u16, w: u16, color: Color) !void {
+            try self.fill_rect(x, y, w, 1, color);
+        }
+
+        /// Draw a vertical line
+        fn draw_vline(self: *const Self, x: u16, y: u16, h: u16, color: Color) !void {
+            try self.fill_rect(x, y, 1, h, color);
         }
     };
 }
