@@ -40,9 +40,11 @@ pub fn delay_ms(wait: u32) void {
     var _wait = wait;
 
     _wait += uwTickFreq;
+    var now = tickstart;
     //* Add a freq to guarantee minimum wait */
-    while ((get_tick() - tickstart) < _wait) {
-        // asm volatile ("" ::: .{ .memory = true });
+    while ((now - tickstart) < _wait) {
+        now = get_tick();
+        asm volatile ("" ::: .{ .memory = true });
     }
 }
 
@@ -137,7 +139,6 @@ pub fn hal_init_tick(priority: cpu.interrupt.Priority) !void {
 }
 
 fn init_systick(tick_limit: u24) !void {
-    cpu.interrupt.enable_interrupts();
     cpu.interrupt.exception.set_priority(.SysTick, .highest);
     uwTick = 0;
     systick.LOAD.modify(.{ .RELOAD = tick_limit });

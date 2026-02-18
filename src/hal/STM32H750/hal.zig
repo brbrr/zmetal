@@ -128,5 +128,5 @@ fn apply_h7_workarounds() void {
 
 /// Configure the vector table offset register
 fn configure_vector_table() void {
-    // scb.VTOR = @intCast(@intFromPtr(&cpu.startup_logic._vector_table));
+    scb.VTOR = @intCast(@intFromPtr(&cpu.startup_logic._vector_table));
 }

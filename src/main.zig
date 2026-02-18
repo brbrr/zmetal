@@ -43,11 +43,9 @@ pub const microzig_options: microzig.Options = .{
 
         .DMA1_STR0 = .{ .c = ssai.dma1_0_handler },
         .DMA1_STR1 = .{ .c = ssai.dma1_1_handler },
-        // .DMA1_STR2 = .{ .c = ssai.dma1_1_handler },
-        // .DMA1_STR3 = .{ .c = ssai.dma1_1_handler },
-        // .DMA1_STR4 = .{ .c = ssai.dma1_1_handler },
-        // .DMA1_STR5 = .{ .c = ssai.dma1_1_handler },
-        // .DMA1_STR6 = .{ .c = ssai.dma1_1_handler },
+
+        .DMA1_STR3 = .{ .c = hal.spi.dma1_str3_handler },
+        .SPI1 = .{ .c = hal.spi.spi1_irq_handler },
     },
 
     .logFn = hal.uart.log,
@@ -77,6 +75,17 @@ fn sv_call_handler() callconv(.c) void {
     @breakpoint();
     @panic("SVCall");
 }
+
+// fn dma2_str3_handler() callconv(.c) void {
+//     // DEBUG: Toggle LED to verify interrupt is firing
+//     hw.led.toggle();
+//
+//     const dma_chan = hal.dma.channel(10); // DMA2_STR3 = channel 10
+//     // DMA2 Stream 3 - used for SPI1 TX (ILI9341 display)
+//     hal.dma.dma_irq_handler(dma_chan);
+// }
+
+// const dma_chan = hal.dma.channel(3); // DMA1_STR3 = channel 3
 
 var count: u32 = 1;
 
@@ -113,28 +122,31 @@ var square = osc.SquareOsc.init(440.0, 48000, 0.02);
 
 pub fn main() !void {
     try hw.init();
+
     try hw.startAudio(myAudioCallback);
 
-    try example_ili9341();
+    // Test DMA driver now that we've verified SPI HAL works
+    // try example_ili9341();
+    try example_ili9341_dma();
 
-    var kbd = try keyboard.Keyboard.init(hw.i2c.i2c_device());
-
-    var tick_count: u32 = 0;
+    // var kbd = try keyboard.Keyboard.init(hw.i2c.i2c_device());
+    //
+    // var tick_count: u32 = 0;
     while (true) {
-        // Process keyboard every 10ms (100Hz scan rate)
-        if (tick_count % 10 == 0) {
-            if (kbd.process()) |events| {
-                // Handle key events
-                for (events.slice()) |evt| {
-                    handle_key_event(evt);
-                }
-            } else |_| {
-                // Ignore keyboard errors
-            }
-        }
-
-        hal.clock.delay_ms(1);
-        tick_count += 1;
+        //     // Process keyboard every 10ms (100Hz scan rate)
+        //     if (tick_count % 10 == 0) {
+        //         if (kbd.process()) |events| {
+        //             // Handle key events
+        //             for (events.slice()) |evt| {
+        //                 handle_key_event(evt);
+        //             }
+        //         } else |_| {
+        //             // Ignore keyboard errors
+        //         }
+        //     }
+        //
+        //     hal.clock.delay_ms(1);
+        //     tick_count += 1;
     }
 }
 
@@ -187,6 +199,87 @@ pub fn example_ili9341() !void {
     // Draw rectangles
     try display.draw_rect(200, 80, 100, 60, ili9341.Colors.Cyan);
     try display.fill_rect(210, 90, 80, 40, ili9341.Colors.Magenta);
+}
+
+// Framebuffer in DMA-safe memory (SRAM - same as SAI buffers)
+// 320x240x2 = 153,600 bytes, aligned to 32-byte cache line
+var display_framebuffer: [320 * 240 * 2]u8 linksection(".sram1_bss") = undefined;
+// var display_framebuffer: [320 * 240 * 2]u8 align(32) linksection(".sram1_bss") = undefined;
+
+pub fn example_ili9341_dma() !void {
+    const ili9341 = @import("drivers/ili9341.zig");
+
+    // Configure SPI1 for ILI9341 with DMA
+    const spi_config = hal.spi.Config{
+        .mode = .Mode0,
+        .baud_prescaler = .PS_2,
+        .chip_select = .Software,
+        .direction = .FullDuplex,
+    };
+
+    // Try DMA1 Stream 3 instead of DMA2 Stream 3
+    // const dma_chan = comptime hal.dma.channel(3); // DMA1_STR3 (channel 3)
+
+    // Initialize SPI with DMA support
+    var spi1_display = try hal.spi.SPI_Device.init(.SPI1, spi_config);
+    // defer spi1_display.deinit();
+    spi1_display.apply();
+
+    // NVIC enable via microzig doesn't work for DMA1_STR3 - manually set register!
+    // DMA1_STR3 = IRQ 14 = bit 14 in NVIC_ISER0
+    // const NVIC_ISER0: *volatile u32 = @ptrFromInt(0xE000E100);
+    // NVIC_ISER0.* |= (1 << 14);
+    // std.log.info("Manually set NVIC_ISER0 bit 14 for DMA1_STR3", .{});
+
+    hal.clock.delay_ms(100);
+
+    // Configure control pins (comptime)
+    const dc_pin = comptime hal.gpio.Pin.init("A", "3", .{ .mode = .output });
+    const rst_pin = comptime hal.gpio.Pin.init("A", "5", .{ .mode = .output });
+    const cs_pin = comptime hal.gpio.Pin.init("G", "10", .{ .mode = .output });
+
+    // Create DMA-based display driver
+    const Display = ili9341.ILI9341_DMA(dc_pin, rst_pin, cs_pin);
+    var display = try Display.init(&spi1_display, &display_framebuffer);
+    // defer display.deinit();
+
+    // Set orientation
+    try display.set_orientation(.Landscape);
+
+    // Fill framebuffer with black
+    display.fill_screen(ili9341.Colors.Black);
+
+    // Draw some test patterns to framebuffer
+    display.fill_rect(10, 10, 50, 50, ili9341.Colors.Red);
+    display.fill_rect(70, 10, 50, 50, ili9341.Colors.Green);
+    display.fill_rect(130, 10, 50, 50, ili9341.Colors.Blue);
+
+    // Draw lines
+    display.draw_line(10, 80, 180, 120, ili9341.Colors.White);
+    display.draw_line(10, 120, 180, 80, ili9341.Colors.Yellow);
+
+    // Draw rectangles
+    display.draw_rect(200, 80, 100, 60, ili9341.Colors.Cyan);
+    display.fill_rect(210, 90, 80, 40, ili9341.Colors.Magenta);
+
+    // Flush framebuffer to display via DMA (blocking)
+    try display.flush_wait();
+
+    // Continuous update loop example
+    var frame: u32 = 0;
+    while (true) : (frame += 1) {
+        // Animate something
+        const x = @as(u16, @intCast((frame % 270)));
+        display.fill_rect(x, 180, 50, 30, ili9341.Colors.Orange);
+
+        // Flush and wait for DMA
+        try display.flush_wait();
+
+        // Clear the moving rectangle for next frame
+        display.fill_rect(x, 180, 50, 30, ili9341.Colors.Black);
+
+        hal.clock.delay_ms(16); // ~60 FPS
+    }
 }
 
 fn handle_key_event(evt: keyboard.KeyEventData) void {

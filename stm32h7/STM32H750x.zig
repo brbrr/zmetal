@@ -224,8 +224,6 @@ pub const VectorTable = extern struct {
     DMA1_STR5: Handler = unhandled,
     /// DMA1 Stream6
     DMA1_STR6: Handler = unhandled,
-    /// DMA1 Stream7
-    DMA1_STR7: Handler = unhandled,
     /// ADC1 and ADC2
     ADC1_2: Handler = unhandled,
     /// FDCAN1 Interrupt 0
@@ -283,6 +281,8 @@ pub const VectorTable = extern struct {
     TIM8_TRG_COM_TIM14: Handler = unhandled,
     /// TIM8 capture / compare
     TIM8_CC: Handler = unhandled,
+    /// DMA1 Stream7
+    DMA1_STR7: Handler = unhandled,
     /// FMC global interrupt
     FMC: Handler = unhandled,
     /// SDMMC global interrupt

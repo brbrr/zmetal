@@ -980,6 +980,7 @@ pub fn set_clock(peri: RccPeriferals, state: u1) void {
         .TIM1 => rcc.APB2ENR.modify(.{ .TIM1EN = state }),
         .SPI1 => rcc.APB2ENR.modify(.{ .SPI1EN = state }),
         .USART1 => rcc.APB2ENR.modify(.{ .USART1EN = state }),
+        .SAI1 => rcc.APB2ENR.modify(.{ .SAI1EN = state }),
 
         .TIM2 => rcc.APB1LENR.modify(.{ .TIM2EN = state }),
         .TIM3 => rcc.APB1LENR.modify(.{ .TIM3EN = state }),

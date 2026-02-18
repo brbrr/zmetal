@@ -121,10 +121,10 @@ pub const SaiDriver = struct {
 
     pub fn setup(self: *Self) !void {
         // Enable clocks
+        hal.rcc.enable_clock(.SAI1);
         self.initPins();
         self.disable();
         try self.initCodec();
-        regs.RCC.APB2ENR.modify(.{ .SAI1EN = 1 });
         try self.initSaiBlocks();
         self.initialized = true;
     }
@@ -195,7 +195,7 @@ pub const SaiDriver = struct {
             .FSDEF = 1, // FS = channel start indicator, not "active all frame"
         });
 
-        // regs.SAI1.SAI_ASLOTR.raw = 0;
+        regs.SAI1.SAI_ASLOTR.raw = 0;
         regs.SAI1.SAI_ASLOTR.modify(.{
             .FBOFF = 0, // First bit offset
             .SLOTSZ = 0b10, // 32-bit slot size for 24-bit data
@@ -204,6 +204,7 @@ pub const SaiDriver = struct {
         });
 
         // Configure SAI1 Block B (Slave Receiver)
+        regs.SAI1.SAI_BCR1.raw = 0;
         regs.SAI1.SAI_BCR1.modify(.{
             .MODE = 3, // Slave receiver
             .PRTCFG = 0, // Free protocol
@@ -217,6 +218,7 @@ pub const SaiDriver = struct {
             .MCKDIV = mck_div,
         });
 
+        regs.SAI1.SAI_BCR2.raw = 0;
         regs.SAI1.SAI_BCR2.modify(.{
             .FTH = 0, // FIFO threshold = 1/4
             .FFLUSH = 1, // Flush FIFO
@@ -237,6 +239,7 @@ pub const SaiDriver = struct {
             .FSDEF = 1, // FS = channel start indicator, not "active all frame"
         });
 
+        regs.SAI1.SAI_BSLOTR.raw = 0;
         regs.SAI1.SAI_BSLOTR.modify(.{
             .FBOFF = 0, // First bit offset
             .SLOTSZ = 0b10, // 32-bit slot size for 24-bit data
@@ -267,7 +270,6 @@ pub const SaiDriver = struct {
 
         // Enable SAI blocks (B first for slave, then A for master)
         regs.SAI1.SAI_BCR1.modify(.{ .SAIXEN = 1 });
-        hal.clock.delay_ms(100);
         regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 1 });
         hal.clock.delay_ms(100);
     }
@@ -291,7 +293,14 @@ pub const SaiDriver = struct {
         self.transfer_size = blocksize * 2 * 2;
         self.user_callback = cb;
 
+        self.fillTxBuffer(0);
+
         { // TX
+
+            var rx_handlers = tx_chan.handlers();
+            rx_handlers.complete = SaiDriver.rx_dma_complete;
+            rx_handlers.half_complete = SaiDriver.rx_dma_half_complete;
+            rx_handlers.ctx = self;
             // Configure DMA for TX (memory -> peripheral)
             try tx_chan.setup_transfer(
                 self.tx(), // peripheral
@@ -300,21 +309,31 @@ pub const SaiDriver = struct {
             );
             regs.SAI1.SAI_ACR1.modify_one("DMAEN", 1);
             hal.clock.delay_ms(100);
-            while (regs.SAI1.SAI_ASR.read().FLVL == 0) { // SAI_FIFOSTATUS_EMPTY
-                microzig.cpu.nop();
+            // while (regs.SAI1.SAI_ASR.read().FLVL == 0) { // SAI_FIFOSTATUS_EMPTY
+            //     microzig.cpu.nop();
+            // }
+
+            while (regs.SAI1.SAI_ASR.read().FLVL == 0) {
+                cpu.dsb();
+                cpu.isb();
+                cpu.nop();
             }
 
-            var handlers = tx_chan.handlers();
-            handlers.complete = SaiDriver.rx_dma_complete;
-            handlers.half_complete = SaiDriver.rx_dma_half_complete;
-            handlers.ctx = self;
+            // var handlers = tx_chan.handlers();
+            // handlers.complete = SaiDriver.rx_dma_complete;
+            // handlers.half_complete = SaiDriver.rx_dma_half_complete;
+            // handlers.ctx = self;
 
             // Enable SAI blocks (B first for slave, then A for master)
-            regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 1 });
-            hal.clock.delay_ms(100);
+            // regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 1 });
+            // hal.clock.delay_ms(100);
         }
 
         { // RX
+            // var rx_handlers = rx_chan.handlers();
+            // rx_handlers.complete = SaiDriver.rx_dma_complete;
+            // rx_handlers.half_complete = SaiDriver.rx_dma_half_complete;
+            // rx_handlers.ctx = self;
             // Configure DMA for RX (peripheral -> memory)
             try rx_chan.setup_transfer(
                 &rx_buffer, // memory
@@ -325,15 +344,12 @@ pub const SaiDriver = struct {
             regs.SAI1.SAI_BCR1.modify_one("DMAEN", 1);
             hal.clock.delay_ms(100);
 
-            // Using RX DMA handlers as in libDaisy
-            // var rx_handlers = rx_chan.handlers();
-            // rx_handlers.complete = SaiDriver.rx_dma_complete;
-            // rx_handlers.half_complete = SaiDriver.rx_dma_half_complete;
-            // rx_handlers.ctx = self;
-
             regs.SAI1.SAI_BCR1.modify(.{ .SAIXEN = 1 });
             hal.clock.delay_ms(100);
         }
+
+        regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 1 });
+        hal.clock.delay_ms(100);
 
         // Enable SAI blocks
         // try self.enable();
@@ -344,6 +360,8 @@ pub const SaiDriver = struct {
     // DMA complete handlers (second half of buffer)
     pub fn rx_dma_complete(chan: Channel, ctx: *anyopaque) void {
         _ = chan;
+        rx_chan.clear_flags();
+        tx_chan.clear_flags();
         const self: *SaiDriver = @ptrCast(@alignCast(ctx));
         self.fillTxBuffer(self.transfer_size / 2);
     }
@@ -351,6 +369,8 @@ pub const SaiDriver = struct {
     // DMA half complete handlers (first half of buffer)
     pub fn rx_dma_half_complete(chan: Channel, ctx: *anyopaque) void {
         _ = chan;
+        rx_chan.clear_flags();
+        tx_chan.clear_flags();
         const self: *SaiDriver = @ptrCast(@alignCast(ctx));
         self.fillTxBuffer(0);
     }

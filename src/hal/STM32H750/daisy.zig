@@ -287,23 +287,23 @@ fn dma_init() !void {
     // DMA1_Stream5_IRQn and DMA2_Stream4_IRQn interrupt configuration for uart rx and tx
     cpu.interrupt.set_priority(.DMA1_STR5, .highest);
     cpu.interrupt.enable(.DMA1_STR5);
-    cpu.interrupt.set_priority(.DMA2_STR4, .highest);
-    cpu.interrupt.enable(.DMA2_STR4);
     // DMA1_Stream6_IRQn interrupt configuration for I2C
     cpu.interrupt.set_priority(.DMA1_STR6, .highest);
     cpu.interrupt.enable(.DMA1_STR6);
+
     // DMA2_Stream0_IRQn, interrupt configuration for DAC Ch1
     cpu.interrupt.set_priority(.DMA2_STR0, .highest);
     cpu.interrupt.enable(.DMA2_STR0);
     // DMA2_Stream1_IRQn, interrupt configuration for DAC Ch2
     cpu.interrupt.set_priority(.DMA2_STR1, .highest);
     cpu.interrupt.enable(.DMA2_STR1);
-
     // DMA2_Stream2_IRQn and DMA2_Stream3_IRQn interrupt configuration for SPI
     cpu.interrupt.set_priority(.DMA2_STR2, .highest);
     cpu.interrupt.enable(.DMA2_STR2);
     cpu.interrupt.set_priority(.DMA2_STR3, .highest);
     cpu.interrupt.enable(.DMA2_STR3);
+    cpu.interrupt.set_priority(.DMA2_STR4, .highest);
+    cpu.interrupt.enable(.DMA2_STR4);
 }
 
 fn i2c_init() !void {
@@ -326,7 +326,8 @@ fn i2c_init() !void {
 }
 
 fn spi_init() !void {
-    //
+    microzig.cpu.interrupt.set_priority(.SPI1, .highest);
+    microzig.cpu.interrupt.enable(.SPI1);
 }
 
 fn uart_init() !void {
@@ -369,12 +370,14 @@ pub const Daisy = struct {
         try spi_init();
         try uart_init();
 
+        microzig.interrupt.enable_interrupts();
+
         hal.cache.enableDCache();
         hal.cache.enableICache();
 
-        self.i2c = try hal.i2c.I2C_Device.init(.I2C1, .{ .speed = .I2C_400KHZ });
         self.led.configure();
-        self.i2c.apply();
+        // self.i2c = try hal.i2c.I2C_Device.init(.I2C1, .{ .speed = .I2C_400KHZ });
+        // self.i2c.apply();
     }
 
     pub fn startAudio(self: *Daisy, callback: hal.sai.AudioCallback) !void {
