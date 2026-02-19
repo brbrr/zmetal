@@ -43,6 +43,7 @@ pub const microzig_options: microzig.Options = .{
 
         .DMA1_STR0 = .{ .c = ssai.dma1_0_handler },
         .DMA1_STR1 = .{ .c = ssai.dma1_1_handler },
+        .SAI1 = .{ .c = ssai.SaiDriver.sai1_irq_handler },
 
         .DMA1_STR3 = .{ .c = hal.spi.dma1_str3_handler },
         .SPI1 = .{ .c = hal.spi.spi1_irq_handler },
@@ -76,17 +77,6 @@ fn sv_call_handler() callconv(.c) void {
     @panic("SVCall");
 }
 
-// fn dma2_str3_handler() callconv(.c) void {
-//     // DEBUG: Toggle LED to verify interrupt is firing
-//     hw.led.toggle();
-//
-//     const dma_chan = hal.dma.channel(10); // DMA2_STR3 = channel 10
-//     // DMA2 Stream 3 - used for SPI1 TX (ILI9341 display)
-//     hal.dma.dma_irq_handler(dma_chan);
-// }
-
-// const dma_chan = hal.dma.channel(3); // DMA1_STR3 = channel 3
-
 var count: u32 = 1;
 
 fn sys_tick_handler() callconv(.c) void {
@@ -111,7 +101,7 @@ pub fn init() void {
 
 var hw: hal.daisy.Daisy = hal.daisy.Daisy.create() catch unreachable;
 
-var sine = osc.SineOsc.init(440, 48000, 0.02);
+var sine = osc.SineOsc.init(10, 48000, 0.02);
 var square = osc.SquareOsc.init(440.0, 48000, 0.02);
 
 // I2C device for keyboard (must be global/static for pointer stability)
@@ -123,11 +113,9 @@ var square = osc.SquareOsc.init(440.0, 48000, 0.02);
 pub fn main() !void {
     try hw.init();
 
-    try hw.startAudio(myAudioCallback);
+    try hw.startAudio(&myAudioCallback);
 
-    // Test DMA driver now that we've verified SPI HAL works
-    // try example_ili9341();
-    try example_ili9341_dma();
+    // try example_ili9341_dma();
 
     // var kbd = try keyboard.Keyboard.init(hw.i2c.i2c_device());
     //
@@ -160,51 +148,9 @@ fn myAudioCallback(input: []const f32, output: []f32, size: u16) void {
     }
 }
 
-pub fn example_ili9341() !void {
-    const ili9341 = @import("drivers/ili9341.zig");
-
-    // Configure SPI1 for ILI9341 - MUST use FullDuplex (TWO_LINES) like WoopyOne
-    var spi1_display = try hal.spi.SPI_Device.init(.SPI1, .{
-        .mode = .Mode0,
-        .baud_prescaler = .PS_2,
-        .chip_select = .Software,
-        .direction = .FullDuplex,
-    });
-    spi1_display.apply();
-
-    hal.clock.delay_ms(100);
-
-    // Configure control pins (comptime)
-    const dc_pin = comptime hal.gpio.Pin.init("A", "3", .{ .mode = .output });
-    const rst_pin = comptime hal.gpio.Pin.init("A", "5", .{ .mode = .output });
-
-    // CS pin (PG10) - manual GPIO control, NOT SPI alternate function!
-    const cs_pin = comptime hal.gpio.Pin.init("G", "10", .{ .mode = .output });
-
-    // Create display driver with comptime pins
-    const display = try ili9341.ILI9341(dc_pin, rst_pin, cs_pin).init(&spi1_display, .Landscape);
-
-    // Fill screen with black
-    try display.fill_screen(ili9341.Colors.Black);
-
-    // Draw some test patterns
-    try display.fill_rect(10, 10, 50, 50, ili9341.Colors.Red);
-    try display.fill_rect(70, 10, 50, 50, ili9341.Colors.Green);
-    try display.fill_rect(130, 10, 50, 50, ili9341.Colors.Blue);
-
-    // Draw lines
-    try display.draw_line(10, 80, 180, 120, ili9341.Colors.White);
-    try display.draw_line(10, 120, 180, 80, ili9341.Colors.Yellow);
-
-    // Draw rectangles
-    try display.draw_rect(200, 80, 100, 60, ili9341.Colors.Cyan);
-    try display.fill_rect(210, 90, 80, 40, ili9341.Colors.Magenta);
-}
-
 // Framebuffer in DMA-safe memory (SRAM - same as SAI buffers)
 // 320x240x2 = 153,600 bytes, aligned to 32-byte cache line
 var display_framebuffer: [320 * 240 * 2]u8 linksection(".sram1_bss") = undefined;
-// var display_framebuffer: [320 * 240 * 2]u8 align(32) linksection(".sram1_bss") = undefined;
 
 pub fn example_ili9341_dma() !void {
     const ili9341 = @import("drivers/ili9341.zig");
@@ -225,18 +171,12 @@ pub fn example_ili9341_dma() !void {
     // defer spi1_display.deinit();
     spi1_display.apply();
 
-    // NVIC enable via microzig doesn't work for DMA1_STR3 - manually set register!
-    // DMA1_STR3 = IRQ 14 = bit 14 in NVIC_ISER0
-    // const NVIC_ISER0: *volatile u32 = @ptrFromInt(0xE000E100);
-    // NVIC_ISER0.* |= (1 << 14);
-    // std.log.info("Manually set NVIC_ISER0 bit 14 for DMA1_STR3", .{});
-
     hal.clock.delay_ms(100);
 
     // Configure control pins (comptime)
-    const dc_pin = comptime hal.gpio.Pin.init("A", "3", .{ .mode = .output });
-    const rst_pin = comptime hal.gpio.Pin.init("A", "5", .{ .mode = .output });
-    const cs_pin = comptime hal.gpio.Pin.init("G", "10", .{ .mode = .output });
+    const dc_pin = comptime hal.gpio.Pin.init("A", "3", .{ .mode = .output, .speed = .VeryHighSpeed });
+    const rst_pin = comptime hal.gpio.Pin.init("A", "5", .{ .mode = .output, .speed = .VeryHighSpeed });
+    const cs_pin = comptime hal.gpio.Pin.init("G", "10", .{ .mode = .output, .speed = .VeryHighSpeed });
 
     // Create DMA-based display driver
     const Display = ili9341.ILI9341_DMA(dc_pin, rst_pin, cs_pin);

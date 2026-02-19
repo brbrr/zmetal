@@ -25,10 +25,58 @@ pub const BitDepth = enum(u8) {
     @"32bit" = 32,
 };
 
+pub const Direction = enum {
+    transmit,
+    receive,
+};
+
+pub const SyncMode = enum {
+    master,
+    slave,
+};
+
 pub const SaiConfig = struct {
     sample_rate: SampleRate = .@"48khz",
     bit_depth: BitDepth = .@"24bit",
+    a_sync: SyncMode = .master,
+    b_sync: SyncMode = .slave,
+    a_dir: Direction = .transmit,
+    b_dir: Direction = .receive,
     blocksize: u16 = 48,
+
+    fn getSaiRegFlags(self: SaiConfig) struct { frame_length: u7, data_size: u3, f_pol: u1, f_off: u1 } {
+        const frame_length: u7 = switch (self.bit_depth) {
+            .@"16bit" => 32, // 16 bits * 2 channels
+            .@"24bit" => 64, // 32 bits * 2 channels (24-bit in 32-bit frame)
+            .@"32bit" => 64, // 32 bits * 2 channels
+        };
+
+        const data_size: u3 = switch (self.bit_depth) {
+            .@"16bit" => 4,
+            .@"24bit" => 6,
+            .@"32bit" => 7,
+        };
+
+        const protocol: u1 = switch (self.bit_depth) {
+            .@"16bit" => 0,
+            .@"24bit" => 1, // Change to 0 for I2S
+            .@"32bit" => 0,
+        };
+        var f_pol: u1 = 0; // SAI_FS_ACTIVE_LOW
+        var f_off: u1 = 1; // SAI_FS_BEFOREFIRSTBIT
+
+        if (protocol == 1) { // Not SAI_I2S_STANDARD
+            f_pol = 1; // SAI_FS_ACTIVE_HIGH
+            f_off = 0; // SAI_FS_FIRSTBIT
+        }
+
+        return .{
+            .frame_length = frame_length,
+            .data_size = data_size,
+            .f_pol = f_pol,
+            .f_off = f_off,
+        };
+    }
 };
 
 pub const AudioCallback = fn (input: []const f32, output: []f32, size: u16) void;
@@ -69,7 +117,7 @@ var rx_buffer: [BufferSize]u32 linksection(".sram1_bss") = undefined;
 const sai_p_cfg: hal.gpio.PinConfig = .{
     .mode = .{ .alternate = .af6 },
     .otype = .PushPull,
-    .speed = .MediumSpeed,
+    .speed = .VeryHighSpeed,
     .pull = .PullUp,
 };
 
@@ -237,14 +285,18 @@ pub const SaiDriver = struct {
     // DMA Targets
     // ------------------------------------------------------------------
 
-    fn txTarget(self: Self) hal.dma.DMA_WriteTarget {
-        _ = self;
-        return .{ .dreq = .SAI1_A, .addr = @intFromPtr(&regs.SAI1.SAI_ADR) };
+    pub fn txTarget(self: Self) hal.dma.DMA_WriteTarget {
+        return .{
+            .dreq = if (self.config.a_dir == .transmit) .SAI1_A else .SAI1_B,
+            .addr = if (self.config.a_dir == .transmit) @intFromPtr(&regs.SAI1.SAI_ADR) else @intFromPtr(&regs.SAI1.SAI_BDR),
+        };
     }
 
-    fn rxTarget(self: Self) hal.dma.DMA_ReadTarget {
-        _ = self;
-        return .{ .dreq = .SAI1_B, .addr = @intFromPtr(&regs.SAI1.SAI_BDR) };
+    pub fn rxTarget(self: Self) hal.dma.DMA_ReadTarget {
+        return .{
+            .dreq = if (self.config.a_dir == .receive) .SAI1_A else .SAI1_B,
+            .addr = if (self.config.a_dir == .receive) @intFromPtr(&regs.SAI1.SAI_ADR) else @intFromPtr(&regs.SAI1.SAI_BDR),
+        };
     }
 
     // ------------------------------------------------------------------
@@ -252,13 +304,8 @@ pub const SaiDriver = struct {
     // ------------------------------------------------------------------
 
     fn initSaiBlocks(self: *Self) void {
-        const mck_div = computeMckDiv(
-            daisy.clock_outputs.SAI1output,
-            @intFromEnum(self.config.sample_rate),
-            64, // frame_length for 24-bit: 32 bits * 2 channels
-            false, // no_divider = false (divider enabled)
-            false, // oversampling = false
-        );
+        const data = self.config.getSaiRegFlags();
+        const mck_div = computeMckDiv(daisy.clock_outputs.SAI1output, @intFromEnum(self.config.sample_rate), data.frame_length, false, false);
 
         regs.SAI1.SAI_GCR.raw = 0;
 
@@ -267,9 +314,9 @@ pub const SaiDriver = struct {
         regs.SAI1.SAI_ACR1.modify(.{
             .MODE = 0, // Master transmitter
             .PRTCFG = 0, // Free protocol
-            .DS = 6, // 24-bit data
+            .DS = data.data_size,
             .LSBFIRST = 0, // MSB first
-            .CKSTR = 1, // Falling edge (TX: FALLINGEDGE → CKSTR=1)
+            .CKSTR = 1, // Clock strobing on falling edge
             .SYNCEN = 0, // Asynchronous (master generates clocks)
             .MONO = 0, // Stereo
             .OUTDRIV = 0, // Output drive disabled
@@ -278,29 +325,33 @@ pub const SaiDriver = struct {
         });
 
         regs.SAI1.SAI_ACR2.raw = 0;
-        // Libdaisy is at 0
+        // NOTE: libdaisy don't do that
         // regs.SAI1.SAI_ACR2.modify(.{
-        //     .FTH = 0, // FIFO threshold: empty (match libdaisy SAI_FIFOTHRESHOLD_EMPTY)
+        //     .FTH = 0, // FIFO threshold = 1/4
         //     .FFLUSH = 1, // Flush FIFO
+        //     .TRIS = 0, // No high-Z state
+        //     .MUTE = 0, // No mute
+        //     .MUTEVAL = 0,
+        //     .MUTECNT = 0,
+        //     .CPL = 0, // No complement
         //     .COMP = 0b00, // No companding
-        //     .TRIS = 0, // Output not tri-stated
         // });
 
         regs.SAI1.SAI_AFRCR.raw = 0;
         regs.SAI1.SAI_AFRCR.modify(.{
-            .FRL = 63, // Frame length: 64 bits (32 per channel)
-            .FSALL = 31, // FS active length: 32 bits
-            .FSPOL = 1, // FS active high (MSB-justified)
+            .FRL = data.frame_length - 1, // Frame length
+            .FSALL = data.frame_length / 2 - 1, // Frame sync length
+            .FSPOL = data.f_pol,
+            .FSOFF = data.f_off,
             .FSDEF = 1, // FS = channel identification
-            .FSOFF = 0, // FS on first bit (MSB-justified)
         });
 
         regs.SAI1.SAI_ASLOTR.raw = 0;
         regs.SAI1.SAI_ASLOTR.modify(.{
-            .FBOFF = 0, // First bit offset: 0
+            .FBOFF = 0, // First bit offset
             .SLOTSZ = 0b10, // 32-bit slot size
-            .NBSLOT = 1, // 2 slots (value = N-1)
-            .SLOTEN = 0xffff, //as in c hal was 0x0003, // Enable slots 0 and 1 only
+            .NBSLOT = 1, // 2 slots - 1
+            .SLOTEN = 0xffff, // Enable all
         });
 
         try rx_chan.setup_transfer(&rx_buffer, self.rxTarget(), .{
@@ -325,9 +376,9 @@ pub const SaiDriver = struct {
         regs.SAI1.SAI_BCR1.modify(.{
             .MODE = 3, // Slave receiver
             .PRTCFG = 0, // Free protocol
-            .DS = 6, // 24-bit data
+            .DS = data.data_size,
             .LSBFIRST = 0, // MSB first
-            .CKSTR = 1, // Rising edge (RX: RISINGEDGE → CKSTR=1)
+            .CKSTR = 1, // Clock strobing on rising edge
             .SYNCEN = 1, // Synchronous with other sub-block (Block A)
             .MONO = 0, // Stereo
             .OUTDRIV = 0, // Output drive disabled
@@ -336,28 +387,33 @@ pub const SaiDriver = struct {
         });
 
         regs.SAI1.SAI_BCR2.raw = 0;
-        regs.SAI1.SAI_BCR2.modify(.{
-            .FTH = 0, // FIFO threshold: empty
-            .FFLUSH = 1, // Flush FIFO
-            .COMP = 0b00, // No companding
-            .TRIS = 0,
-        });
+        // NOTE: libdaisy doesn't do that
+        // regs.SAI1.SAI_BCR2.modify(.{
+        //     .FTH = 0, // FIFO threshold
+        //     .FFLUSH = 1, // Flush FIFO
+        //     .TRIS = 0, // No high-Z state
+        //     .MUTE = 0, // No mute
+        //     .MUTEVAL = 0,
+        //     .MUTECNT = 0,
+        //     .CPL = 0, // No complement
+        //     .COMP = 0b00, // No companding
+        // });
 
         regs.SAI1.SAI_BFRCR.raw = 0;
         regs.SAI1.SAI_BFRCR.modify(.{
-            .FRL = 63,
-            .FSALL = 31,
-            .FSPOL = 1,
-            .FSOFF = 0,
-            .FSDEF = 1,
+            .FRL = data.frame_length - 1, // Frame length
+            .FSALL = data.frame_length / 2 - 1, // Frame sync length
+            .FSPOL = data.f_pol,
+            .FSOFF = data.f_off,
+            .FSDEF = 1, // FS = channel identification
         });
 
         regs.SAI1.SAI_BSLOTR.raw = 0;
         regs.SAI1.SAI_BSLOTR.modify(.{
-            .FBOFF = 0,
-            .SLOTSZ = 0b10,
-            .NBSLOT = 1,
-            .SLOTEN = 0xffff, //as in c hal was 0x0003, // Enable slots 0 and 1 only
+            .FBOFF = 0, // First bit offset
+            .SLOTSZ = 0b10, // 32-bit slot size
+            .NBSLOT = 1, // 2 slots - 1
+            .SLOTEN = 0xffff, // Enable all
         });
 
         // Disable PDM
@@ -369,7 +425,6 @@ pub const SaiDriver = struct {
             .priority = .High,
             .fifo_mode = 0,
             .size = self.transfer_size,
-            // .enable_interrupts = false, // TX has no callbacks, skip HT/TC interrupts
         });
 
         // Enable SAI error interrupts for master
@@ -432,14 +487,28 @@ pub const SaiDriver = struct {
         const half_size = self.transfer_size / 2;
         std.debug.assert(half_size <= buf_size);
 
-        for (0..half_size) |i| {
-            S.f_in[i] = s24tof(rx_buffer[offset + i]);
+        // Convert SAI input to floats
+        switch (self.config.bit_depth) {
+            .@"24bit" => {
+                for (0..half_size) |i| {
+                    S.f_in[i] = s24tof(rx_buffer[offset + i]);
+                }
+            },
+            else => unreachable,
         }
+
         if (self.user_callback) |cb| {
             cb(S.f_in[0..half_size], S.f_out[0..half_size], @intCast(half_size));
         }
-        for (0..half_size) |i| {
-            tx_buffer[offset + i] = fto24(S.f_out[i]);
+
+        // Convert floats back to SAI output
+        switch (self.config.bit_depth) {
+            .@"24bit" => {
+                for (0..half_size) |i| {
+                    tx_buffer[offset + i] = fto24(S.f_out[i]);
+                }
+            },
+            else => unreachable,
         }
     }
 

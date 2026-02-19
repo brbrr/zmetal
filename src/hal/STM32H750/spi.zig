@@ -380,6 +380,11 @@ pub const SPI_Device = struct {
             },
         );
 
+        var dma_regs = self.dma_channel.get_regs();
+        dma_regs.CR.modify_one("EN", 0);
+        dma_regs.NDTR.modify_one("NDT", @intCast(data.len));
+        dma_regs.CR.modify_one("EN", 1);
+
         // Enable DMA request
         self.spi.CFG1.modify(.{ .TXDMAEN = 1 });
 

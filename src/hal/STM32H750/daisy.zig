@@ -327,8 +327,8 @@ fn i2c_init() !void {
 
 fn sai_init() !void {
     // SAI1 global interrupt for error handling (OVRUDR, AFSDET, LFSDET, WCKCFG)
-    cpu.interrupt.set_priority(.SAI1, .highest);
-    cpu.interrupt.enable(.SAI1);
+    // cpu.interrupt.set_priority(.SAI1, .highest);
+    // cpu.interrupt.enable(.SAI1);
 }
 
 fn spi_init() !void {
@@ -363,8 +363,8 @@ pub const Daisy = struct {
         try configure_clocks();
 
         // Reconfigure SysTick for actual clock frequency (PLL1 instead of HSI)
-        hal.clock.update_system_core_clock();
-        try hal.clock.hal_init_tick(.highest);
+        // hal.clock.update_system_core_clock();
+        // try hal.clock.hal_init_tick(.highest);
 
         try configure_mpu();
 

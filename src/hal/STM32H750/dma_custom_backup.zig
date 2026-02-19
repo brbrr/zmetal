@@ -380,10 +380,8 @@ pub const Channel = enum(u4) {
 
         chan.clear_flags();
 
-        // FIXME: need to set it here, or when starting transfer
         // Number of transfers (in words)
-        // ch_regs.NDTR.modify_one("NDT", count);
-        _ = count;
+        ch_regs.NDTR.modify_one("NDT", @intCast(count));
 
         switch (config.dir) {
             .mem_to_perih => {
@@ -409,10 +407,10 @@ pub const Channel = enum(u4) {
         }
 
         ch_regs.CR.modify(.{
-            .PINC = 0, // config.src.inc,
-            .MINC = 1, //config.dest.inc,
-            .PSIZE = .Bits32,
-            .MSIZE = .Bits32,
+            // .PINC = 0, // config.src.inc,
+            // .MINC = 1, //config.dest.inc,
+            // .PSIZE = .Bits32,
+            // .MSIZE = .Bits32,
 
             // .PSIZE = config.dest.alignment,
             // .MSIZE = config.src.alignment,
