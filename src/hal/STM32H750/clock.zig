@@ -27,7 +27,7 @@ pub var SystemCoreClock: u32 = 0;
 pub var SystemD2Clock: u32 = 0;
 const D1CorePrescTable: [16]u8 = [_]u8{ 0, 0, 0, 0, 1, 2, 3, 4, 1, 2, 3, 4, 6, 7, 8, 9 };
 
-pub fn get_tick() u32 {
+pub inline fn get_tick() u32 {
     return cpu.atomic.load(u32, &uwTick, .acquire);
 }
 
@@ -35,7 +35,7 @@ pub inline fn inc_tick() void {
     _ = cpu.atomic.add(u32, &uwTick, uwTickFreq);
 }
 
-pub fn delay_ms(wait: u32) void {
+pub inline fn delay_ms(wait: u32) void {
     const tickstart = get_tick();
     var _wait = wait;
 
@@ -44,7 +44,8 @@ pub fn delay_ms(wait: u32) void {
     //* Add a freq to guarantee minimum wait */
     while ((now - tickstart) < _wait) {
         now = get_tick();
-        asm volatile ("" ::: .{ .memory = true });
+        cpu.wfi();
+        // asm volatile ("" ::: .{ .memory = true });
     }
 }
 
@@ -139,7 +140,7 @@ pub fn hal_init_tick(priority: cpu.interrupt.Priority) !void {
 }
 
 fn init_systick(tick_limit: u24) !void {
-    cpu.interrupt.exception.set_priority(.SysTick, .highest);
+    // cpu.interrupt.exception.set_priority(.SysTick, .highest);
     uwTick = 0;
     systick.LOAD.modify(.{ .RELOAD = tick_limit });
     systick.VAL.modify(.{ .CURRENT = 0 });

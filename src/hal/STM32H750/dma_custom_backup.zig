@@ -43,6 +43,7 @@ pub const TransferConfig = struct {
     mode: Mode,
     priority: dmat.PL,
     fifo_mode: u8,
+    enable_interrupts: bool = true,
 };
 
 var chan_handlers: [num_channels]ChHandlers = [_]ChHandlers{ChHandlers{}} ** num_channels;
@@ -98,7 +99,7 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
     const handlers = chan.handlers();
 
     var ISR = if (info.is_high) dma.HISR else dma.LISR;
-    var IFCR = if (info.is_high) dma.HIFCR else dma.LIFCR;
+    const IFCR = if (comptime info.is_high) &dma.HIFCR else &dma.LIFCR;
 
     const status = ISR.read();
 
@@ -115,7 +116,7 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
         // Check IT source enabled
         if (ch_regs.CR.read().TEIE == 1) {
             ch_regs.CR.modify_one("TEIE", 0); // disable TE interrupt
-            write_one_to_clear(&IFCR, "CTEIF" ++ info.suffix);
+            write_one_to_clear(IFCR, "CTEIF" ++ info.suffix);
             handlers.error_code.te = true;
         }
     }
@@ -125,7 +126,7 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
     // -------------------------------------------------------------------------
     if (feif == 1) {
         if (ch_regs.FCR.read().FEIE == 1) {
-            write_one_to_clear(&IFCR, "CFEIF" ++ info.suffix);
+            write_one_to_clear(IFCR, "CFEIF" ++ info.suffix);
             handlers.error_code.fe = true;
         }
     }
@@ -135,7 +136,7 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
     // -------------------------------------------------------------------------
     if (dmeif == 1) {
         if (ch_regs.CR.read().DMEIE == 1) {
-            write_one_to_clear(&IFCR, "CDMEIF" ++ info.suffix);
+            write_one_to_clear(IFCR, "CDMEIF" ++ info.suffix);
             handlers.error_code.dme = true;
         }
     }
@@ -145,7 +146,7 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
     // -------------------------------------------------------------------------
     if (htif == 1) {
         if (ch_regs.CR.read().HTIE == 1) {
-            write_one_to_clear(&IFCR, "CHTIF" ++ info.suffix);
+            write_one_to_clear(IFCR, "CHTIF" ++ info.suffix);
 
             const cr = ch_regs.CR.read();
 
@@ -176,7 +177,7 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
     // -------------------------------------------------------------------------
     if (tcif == 1) {
         if (ch_regs.CR.read().TCIE == 1) {
-            write_one_to_clear(&IFCR, "CTCIF" ++ info.suffix);
+            write_one_to_clear(IFCR, "CTCIF" ++ info.suffix);
 
             // Abort flow
             if (handlers.state == .abort) {
@@ -196,7 +197,9 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
 
                 if (handlers.abort) |cb|
                     cb(chan, handlers.ctx.?);
-                return;
+                @breakpoint();
+                @panic("ZZZ");
+                // return;
             }
 
             const cr = ch_regs.CR.read();
@@ -251,6 +254,9 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
             cb(chan, handlers.ctx.?, handlers.error_code);
 
         handlers.error_code = DmaError.none;
+
+        @breakpoint();
+        @panic("ZZZ");
     }
 }
 
@@ -374,8 +380,10 @@ pub const Channel = enum(u4) {
 
         chan.clear_flags();
 
+        // FIXME: need to set it here, or when starting transfer
         // Number of transfers (in words)
-        ch_regs.NDTR.raw = count;
+        // ch_regs.NDTR.modify_one("NDT", count);
+        _ = count;
 
         switch (config.dir) {
             .mem_to_perih => {
@@ -401,10 +409,10 @@ pub const Channel = enum(u4) {
         }
 
         ch_regs.CR.modify(.{
-            // .PINC = 0, // config.src.inc,
-            // .MINC = 1, //config.dest.inc,
-            // .PSIZE = .Bits32,
-            // .MSIZE = .Bits32,
+            .PINC = 0, // config.src.inc,
+            .MINC = 1, //config.dest.inc,
+            .PSIZE = .Bits32,
+            .MSIZE = .Bits32,
 
             // .PSIZE = config.dest.alignment,
             // .MSIZE = config.src.alignment,
@@ -412,14 +420,12 @@ pub const Channel = enum(u4) {
             .DIR = @as(dmat.DIR, @enumFromInt(@intFromEnum(config.dir))),
             .CIRC = @as(u1, if (config.mode == .circular) 1 else 0),
             .PFCTRL = @as(dmat.PFCTRL, if (config.mode == .pfctrl) .Peripheral else .DMA),
-            // Direct mode error interrupt enable
+            // Error interrupts always enabled
             .DMEIE = 1,
-            // Transfer error interrupt enable
             .TEIE = 1,
-            // Half transfer interrupt enable
-            .HTIE = 1,
-            // Transfer complete interrupt enable
-            .TCIE = 1,
+            // HT/TC interrupts only when callbacks are needed
+            .HTIE = @as(u1, if (config.enable_interrupts) 1 else 0),
+            .TCIE = @as(u1, if (config.enable_interrupts) 1 else 0),
             .PL = config.priority,
         });
 
@@ -429,24 +435,9 @@ pub const Channel = enum(u4) {
             @panic("FIFO enabled is not supported for now!");
         }
 
-        // Configure DMAMUX channel routing for all 16 channels
-        // Note: RG registers only exist for channels 0-7
-        // const chan_num = @intFromEnum(chan);
-        // inline for (0..16) |i| {
-        //     if (chan_num == i) {
-        //         const chan_str = comptime std.fmt.comptimePrint("{d}", .{i});
-        //         @field(regs.DMAMUX1, "DMAMUX1_C" ++ chan_str ++ "CR").modify(.{ .DMAREQ_ID = @intFromEnum(config.req) });
-        //         if (i < 8) {
-        //             @field(regs.DMAMUX1, "DMAMUX1_RG" ++ chan_str ++ "CR").raw = 0;
-        //         }
-        //     }
-        // }
-
         chan.configure_dmamux(config.req);
         // regs.DMAMUX1.DMAMUX1_CSR.raw = 0;
         // regs.DMAMUX1.DMAMUX1_RGSR.raw = 0;
-
-        ch_regs.CR.modify_one("EN", 1);
     }
 
     pub const SetupTransferConfig = struct {
@@ -455,6 +446,7 @@ pub const Channel = enum(u4) {
         priority: dmat.PL,
         fifo_mode: u8,
         size: ?u32,
+        enable_interrupts: bool = true,
     };
 
     pub fn setup_transfer(
@@ -634,6 +626,7 @@ pub const Channel = enum(u4) {
                 .mode = config.mode,
                 .priority = config.priority,
                 .fifo_mode = config.fifo_mode,
+                .enable_interrupts = config.enable_interrupts,
             },
         );
     }
@@ -663,21 +656,6 @@ pub const Channel = enum(u4) {
     }
 
     fn configure_dmamux(comptime chan: Channel, request: utils.DmaRequest) void {
-
-        // const chan_num = @intFromEnum(chan);
-        // inline for (0..16) |i| {
-        //     if (chan_num == i) {
-        //         const chan_str = comptime std.fmt.comptimePrint("{d}", .{i});
-        //         @field(regs.DMAMUX1, "DMAMUX1_C" ++ chan_str ++ "CR").modify(.{ .DMAREQ_ID = @intFromEnum(config.req) });
-        //         if (i < 8) {
-        //             @field(regs.DMAMUX1, "DMAMUX1_RG" ++ chan_str ++ "CR").raw = 0;
-        //         }
-        //     }
-        // }
-        //
-        // regs.DMAMUX1.DMAMUX1_CSR.raw = 0;
-        // regs.DMAMUX1.DMAMUX1_RGSR.raw = 0;
-
         const dmamux = regs.DMAMUX1;
         const inf = comptime chan.info();
         // const channel = self.stream.to_dmamux_channel(self.controller);

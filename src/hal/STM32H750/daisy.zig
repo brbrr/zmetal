@@ -186,9 +186,9 @@ pub fn hal_init() !void {
 
     hal.clock.update_system_core_clock();
 
-    try hal.clock.hal_init_tick(.highest);
-    // Init the low level hardware
-    // HAL_MspInit();
+    hal.clock.hal_init_tick(hal.clock.uwTickPrio) catch {
+        return error.ClockSetupError;
+    };
 }
 
 pub fn configure_clocks() !void {
@@ -325,6 +325,12 @@ fn i2c_init() !void {
     }
 }
 
+fn sai_init() !void {
+    // SAI1 global interrupt for error handling (OVRUDR, AFSDET, LFSDET, WCKCFG)
+    cpu.interrupt.set_priority(.SAI1, .highest);
+    cpu.interrupt.enable(.SAI1);
+}
+
 fn spi_init() !void {
     microzig.cpu.interrupt.set_priority(.SPI1, .highest);
     microzig.cpu.interrupt.enable(.SPI1);
@@ -347,15 +353,7 @@ pub const Daisy = struct {
 
     pub fn create() !Daisy {
         return Daisy{
-            .sai = hal.sai.SaiDriver.init(.{
-                .sample_rate = .@"48khz",
-                .bit_depth = .@"24bit",
-                .a_sync = .master,
-                .b_sync = .slave,
-                .a_dir = .transmit,
-                .b_dir = .receive,
-            }),
-
+            .sai = undefined,
             .i2c = undefined,
         };
     }
@@ -363,9 +361,15 @@ pub const Daisy = struct {
     pub fn init(self: *Daisy) !void {
         try hal_init();
         try configure_clocks();
+
+        // Reconfigure SysTick for actual clock frequency (PLL1 instead of HSI)
+        hal.clock.update_system_core_clock();
+        try hal.clock.hal_init_tick(.highest);
+
         try configure_mpu();
 
         try dma_init();
+        try sai_init();
         try i2c_init();
         try spi_init();
         try uart_init();
@@ -376,12 +380,12 @@ pub const Daisy = struct {
         hal.cache.enableICache();
 
         self.led.configure();
-        // self.i2c = try hal.i2c.I2C_Device.init(.I2C1, .{ .speed = .I2C_400KHZ });
-        // self.i2c.apply();
+
+        // Initialize SAI after clocks and interrupts are ready
+        self.sai = hal.sai.SaiDriver.init(.{});
     }
 
-    pub fn startAudio(self: *Daisy, callback: hal.sai.AudioCallback) !void {
-        try self.sai.setup();
-        try self.sai.startAudio(callback);
+    pub fn startAudio(self: *Daisy, callback: *const hal.sai.AudioCallback) !void {
+        try self.sai.start(callback);
     }
 };

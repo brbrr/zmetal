@@ -7,8 +7,11 @@ const regs = microzig.chip.peripherals;
 const cpu = microzig.cpu;
 const Channel = hal.dma.Channel;
 
-// SAI Configuration Types
-const SampleRate = enum(u32) {
+// ============================================================================
+// Configuration Types
+// ============================================================================
+
+pub const SampleRate = enum(u32) {
     @"8khz" = 8000,
     @"16khz" = 16000,
     @"32khz" = 32000,
@@ -16,64 +19,29 @@ const SampleRate = enum(u32) {
     @"96khz" = 96000,
 };
 
-const BitDepth = enum(u8) {
+pub const BitDepth = enum(u8) {
     @"16bit" = 16,
     @"24bit" = 24,
     @"32bit" = 32,
 };
 
-const Direction = enum {
-    transmit,
-    receive,
-};
-
-const SyncMode = enum {
-    master,
-    slave,
-};
-
-const SaiConfig = struct {
+pub const SaiConfig = struct {
     sample_rate: SampleRate = .@"48khz",
     bit_depth: BitDepth = .@"24bit",
-    a_sync: SyncMode = .master,
-    b_sync: SyncMode = .slave,
-    a_dir: Direction = .transmit,
-    b_dir: Direction = .receive,
-
-    fn getSaiRegFlags(self: SaiConfig) struct { frame_length: u7, data_size: u3, f_pol: u1, f_off: u1 } {
-        const frame_length: u7 = switch (self.bit_depth) {
-            .@"16bit" => 32, // 16 bits * 2 channels
-            .@"24bit" => 64, // 32 bits * 2 channels (24-bit in 32-bit frame)
-            .@"32bit" => 64, // 32 bits * 2 channels
-        };
-
-        const data_size: u3 = switch (self.bit_depth) {
-            .@"16bit" => 4,
-            .@"24bit" => 6,
-            .@"32bit" => 7,
-        };
-
-        const protocol: u1 = switch (self.bit_depth) {
-            .@"16bit" => 0,
-            .@"24bit" => 1, // Change to 0 for I2S
-            .@"32bit" => 0,
-        };
-        var f_pol: u1 = 0; // SAI_FS_ACTIVE_LOW
-        var f_off: u1 = 1; // SAI_FS_BEFOREFIRSTBIT
-
-        if (protocol == 1) { // Not SAI_I2S_STANDARD
-            f_pol = 1; // SAI_FS_ACTIVE_HIGH
-            f_off = 0; // SAI_FS_FIRSTBIT
-        }
-
-        return .{
-            .frame_length = frame_length,
-            .data_size = data_size,
-            .f_pol = f_pol,
-            .f_off = f_off,
-        };
-    }
+    blocksize: u16 = 48,
 };
+
+pub const AudioCallback = fn (input: []const f32, output: []f32, size: u16) void;
+
+const buf_size = 200;
+const S = struct {
+    var f_in: [buf_size]f32 = undefined;
+    var f_out: [buf_size]f32 = undefined;
+};
+
+// ============================================================================
+// DMA Channels (fixed for SAI1: Stream0=TX, Stream1=RX)
+// ============================================================================
 
 pub const tx_chan = hal.dma.channel(0);
 pub const rx_chan = hal.dma.channel(1);
@@ -86,371 +54,420 @@ pub fn dma1_1_handler() callconv(.c) void {
     hal.dma.dma_irq_handler(rx_chan);
 }
 
-pub const AudioCallback = fn (input: []const f32, output: []f32, size: u16) void;
+// ============================================================================
+// Buffers (placed in DMA-safe non-cacheable SRAM1)
+// ============================================================================
 
 const BufferSize: u32 = 1024;
 var tx_buffer: [BufferSize]u32 linksection(".sram1_bss") = undefined;
 var rx_buffer: [BufferSize]u32 linksection(".sram1_bss") = undefined;
 
+// ============================================================================
+// GPIO Pin Configuration (match libdaisy: AF6, PushPull, MediumSpeed, PullUp)
+// ============================================================================
+
 const sai_p_cfg: hal.gpio.PinConfig = .{
     .mode = .{ .alternate = .af6 },
     .otype = .PushPull,
-    .speed = .HighSpeed,
-    .pull = .Floating,
+    .speed = .MediumSpeed,
+    .pull = .PullUp,
 };
+
 const mclk = hal.gpio.Pin.init("E", "2", sai_p_cfg);
 const sb = hal.gpio.Pin.init("E", "3", sai_p_cfg);
 const fs = hal.gpio.Pin.init("E", "4", sai_p_cfg);
 const sck = hal.gpio.Pin.init("E", "5", sai_p_cfg);
 const sa = hal.gpio.Pin.init("E", "6", sai_p_cfg);
-const codec_reset = hal.gpio.Pin.init("B", "11", .{ .mode = .output, .pull = .Floating, .otype = .PushPull, .speed = .LowSpeed });
+const codec_reset = hal.gpio.Pin.init("B", "11", .{
+    .mode = .output,
+    .pull = .Floating,
+    .otype = .PushPull,
+    .speed = .LowSpeed,
+});
+
+// ============================================================================
+// SAI Driver
+// ============================================================================
 
 pub const SaiDriver = struct {
     const Self = @This();
 
     config: SaiConfig,
-    initialized: bool = false,
     transfer_size: u16 = 0,
     user_callback: ?*const AudioCallback = null,
 
-    pub fn init(comptime config: SaiConfig) Self {
-        return Self{
-            .config = config,
-        };
-    }
+    // ------------------------------------------------------------------
+    // Public API
+    // ------------------------------------------------------------------
 
-    pub fn setup(self: *Self) !void {
-        // Enable clocks
+    /// Create and initialize the SAI peripheral.
+    /// Configures clocks, pins, codec, and SAI register blocks.
+    /// Does NOT start audio — call start() for that.
+    pub fn init(config: SaiConfig) Self {
+        var self = Self{ .config = config };
+
+        // Enable SAI1 clock
         hal.rcc.enable_clock(.SAI1);
-        self.initPins();
-        self.disable();
-        try self.initCodec();
-        try self.initSaiBlocks();
-        self.initialized = true;
-    }
 
-    pub fn initPins(self: *Self) void {
-        _ = self;
-        fs.configure();
+        // Configure GPIO pins
         mclk.configure();
+        fs.configure();
         sck.configure();
         sa.configure();
         sb.configure();
         codec_reset.configure();
+
+        // Disable SAI blocks before configuration
+        disableSai();
+
+        // Reset codec (AK4556)
+        resetCodec();
+
+        tx_chan.claim() catch unreachable;
+        rx_chan.claim() catch unreachable;
+
+        self.transfer_size = self.config.blocksize * 2 * 2; // blocksize * 2 channels * 2 halves
+
+        @memset(&tx_buffer, 0);
+        @memset(&rx_buffer, 0);
+        // Configure SAI register blocks
+        self.initSaiBlocks();
+
+        return self;
     }
 
-    pub fn tx(self: Self) hal.dma.DMA_WriteTarget {
-        return .{
-            .dreq = if (self.config.a_dir == .transmit) .SAI1_A else .SAI1_B,
-            .addr = if (self.config.a_dir == .transmit) @intFromPtr(&regs.SAI1.SAI_ADR) else @intFromPtr(&regs.SAI1.SAI_BDR),
-        };
+    /// Start DMA audio streaming with the given callback.
+    /// Follows libdaisy's start sequence: slave (RX) first, then master (TX).
+    pub fn start(self: *Self, callback: *const AudioCallback) !void {
+        self.user_callback = callback;
+
+        // Pre-fill TX buffer with silence
+        // self.fillTxBuffer(0);
+
+        const rx_hdl = rx_chan.handlers();
+        rx_hdl.complete = rx_dma_complete;
+        rx_hdl.half_complete = rx_dma_half_complete;
+        rx_hdl.ctx = @ptrCast(self);
+
+        // ----- START SLAVE (Block B / RX) -----
+        var rx_regs = rx_chan.get_regs();
+        rx_regs.CR.modify_one("EN", 0);
+        rx_regs.NDTR.modify_one("NDT", self.transfer_size);
+        rx_regs.CR.modify_one("EN", 1);
+        // Enable DMA request on Block B
+        regs.SAI1.SAI_BCR1.modify(.{ .DMAEN = 1 });
+
+        // Enable Block B (slave — waits for master clock before actually receiving)
+        regs.SAI1.SAI_BCR1.modify(.{ .SAIXEN = 1 });
+
+        // ----- START MASTER (Block A / TX) -----
+        var tx_regs = tx_chan.get_regs();
+        tx_regs.CR.modify_one("EN", 0);
+        tx_regs.NDTR.modify_one("NDT", self.transfer_size);
+        tx_regs.CR.modify_one("EN", 1);
+
+        // Enable DMA request on Block A
+        regs.SAI1.SAI_ACR1.modify(.{ .DMAEN = 1 });
+
+        // Wait for TX FIFO to have data (DMA fills it from tx_buffer)
+        var timeout: u32 = hal.clock.SystemCoreClock / 1000;
+        while (regs.SAI1.SAI_ASR.read().FLVL == 0) {
+            if (timeout == 0) return error.Timeout;
+            timeout -= 1;
+        }
+        // Enable Block A (master — starts clocking, slave syncs)
+        regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 1 });
+
+        cpu.dsb();
+        cpu.isb();
     }
 
-    pub fn rx(self: Self) hal.dma.DMA_ReadTarget {
-        return .{
-            .dreq = if (self.config.a_dir == .receive) .SAI1_A else .SAI1_B,
-            .addr = if (self.config.a_dir == .receive) @intFromPtr(&regs.SAI1.SAI_ADR) else @intFromPtr(&regs.SAI1.SAI_BDR),
-        };
+    /// Stop audio streaming. Disables SAI and DMA.
+    pub fn stop(self: *Self) void {
+        _ = self;
+
+        // Disable SAI error interrupts
+        regs.SAI1.SAI_AIM.raw = 0;
+        regs.SAI1.SAI_BIM.raw = 0;
+
+        // Disable DMA requests
+        regs.SAI1.SAI_ACR1.modify(.{ .DMAEN = 0 });
+        regs.SAI1.SAI_BCR1.modify(.{ .DMAEN = 0 });
+
+        // Disable SAI blocks
+        disableSai();
+
+        // Release DMA channels
+        tx_chan.unclaim();
+        rx_chan.unclaim();
     }
 
-    fn initSaiBlocks(self: *Self) !void {
+    // ------------------------------------------------------------------
+    // SAI1 Error Interrupt Handler
+    // ------------------------------------------------------------------
+
+    pub fn sai1_irq_handler() callconv(.c) void {
+        // Block A (master TX) errors
+        const a_sr = regs.SAI1.SAI_ASR.read();
+        const a_im = regs.SAI1.SAI_AIM.read();
+
+        if (a_sr.OVRUDR == 1 and a_im.OVRUDRIE == 1) {
+            regs.SAI1.SAI_ACLRFR.modify(.{ .COVRUDR = 1 });
+        }
+        if (a_sr.WCKCFG == 1 and a_im.WCKCFGIE == 1) {
+            regs.SAI1.SAI_ACLRFR.modify(.{ .CWCKCFG = 1 });
+        }
+
+        // Block B (slave RX) errors
+        const b_sr = regs.SAI1.SAI_BSR.read();
+        const b_im = regs.SAI1.SAI_BIM.read();
+
+        if (b_sr.OVRUDR == 1 and b_im.OVRUDRIE == 1) {
+            regs.SAI1.SAI_BCLRFR.modify(.{ .COVRUDR = 1 });
+        }
+        if (b_sr.AFSDET == 1 and b_im.AFSDETIE == 1) {
+            regs.SAI1.SAI_BCLRFR.modify(.{ .CAFSDET = 1 });
+        }
+        if (b_sr.LFSDET == 1 and b_im.LFSDETIE == 1) {
+            regs.SAI1.SAI_BCLRFR.modify(.{ .CLFSDET = 1 });
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // DMA Targets
+    // ------------------------------------------------------------------
+
+    fn txTarget(self: Self) hal.dma.DMA_WriteTarget {
+        _ = self;
+        return .{ .dreq = .SAI1_A, .addr = @intFromPtr(&regs.SAI1.SAI_ADR) };
+    }
+
+    fn rxTarget(self: Self) hal.dma.DMA_ReadTarget {
+        _ = self;
+        return .{ .dreq = .SAI1_B, .addr = @intFromPtr(&regs.SAI1.SAI_BDR) };
+    }
+
+    // ------------------------------------------------------------------
+    // SAI Block Configuration
+    // ------------------------------------------------------------------
+
+    fn initSaiBlocks(self: *Self) void {
+        const mck_div = computeMckDiv(
+            daisy.clock_outputs.SAI1output,
+            @intFromEnum(self.config.sample_rate),
+            64, // frame_length for 24-bit: 32 bits * 2 channels
+            false, // no_divider = false (divider enabled)
+            false, // oversampling = false
+        );
+
         regs.SAI1.SAI_GCR.raw = 0;
 
-        const data = self.config.getSaiRegFlags();
-        const mck_div = SaiDriver.computeMckDiv(daisy.clock_outputs.SAI1output, @intFromEnum(self.config.sample_rate), data.frame_length, false, false);
-
-        // Configure SAI1 Block A (Master Transmitter)
+        // ---- Block A: Master Transmitter ----
         regs.SAI1.SAI_ACR1.raw = 0;
         regs.SAI1.SAI_ACR1.modify(.{
             .MODE = 0, // Master transmitter
             .PRTCFG = 0, // Free protocol
-            .DS = data.data_size,
+            .DS = 6, // 24-bit data
             .LSBFIRST = 0, // MSB first
-            .CKSTR = 1, // Clock strobing on falling edge
-            .SYNCEN = 0, // Asynchronous
+            .CKSTR = 1, // Falling edge (TX: FALLINGEDGE → CKSTR=1)
+            .SYNCEN = 0, // Asynchronous (master generates clocks)
             .MONO = 0, // Stereo
-            .OUTDRIV = 0, // Output drive disable
-            .NOMCK = 0,
+            .OUTDRIV = 0, // Output drive disabled
+            .NOMCK = 0, // Master clock divider enabled
             .MCKDIV = mck_div,
         });
 
         regs.SAI1.SAI_ACR2.raw = 0;
-        regs.SAI1.SAI_ACR2.modify(.{
-            .FTH = 0, // FIFO threshold = 1/4
-            .FFLUSH = 1, // Flush FIFO
-            .TRIS = 0, // No high-Z state
-            .MUTE = 0, // No mute
-            .MUTEVAL = 0,
-            .MUTECNT = 0,
-            .CPL = 0, // No complement
-            .COMP = 0b00, // No companding
-        });
+        // Libdaisy is at 0
+        // regs.SAI1.SAI_ACR2.modify(.{
+        //     .FTH = 0, // FIFO threshold: empty (match libdaisy SAI_FIFOTHRESHOLD_EMPTY)
+        //     .FFLUSH = 1, // Flush FIFO
+        //     .COMP = 0b00, // No companding
+        //     .TRIS = 0, // Output not tri-stated
+        // });
 
         regs.SAI1.SAI_AFRCR.raw = 0;
         regs.SAI1.SAI_AFRCR.modify(.{
-            .FRL = data.frame_length - 1, // Frame length
-            .FSALL = data.frame_length / 2 - 1, // Frame sync length
-            .FSPOL = data.f_pol,
-            .FSOFF = data.f_off,
-            .FSDEF = 1, // FS = channel start indicator, not "active all frame"
+            .FRL = 63, // Frame length: 64 bits (32 per channel)
+            .FSALL = 31, // FS active length: 32 bits
+            .FSPOL = 1, // FS active high (MSB-justified)
+            .FSDEF = 1, // FS = channel identification
+            .FSOFF = 0, // FS on first bit (MSB-justified)
         });
 
         regs.SAI1.SAI_ASLOTR.raw = 0;
         regs.SAI1.SAI_ASLOTR.modify(.{
-            .FBOFF = 0, // First bit offset
-            .SLOTSZ = 0b10, // 32-bit slot size for 24-bit data
-            .NBSLOT = 1, // 2 slots - 1
-            .SLOTEN = 65535, // Enable all
+            .FBOFF = 0, // First bit offset: 0
+            .SLOTSZ = 0b10, // 32-bit slot size
+            .NBSLOT = 1, // 2 slots (value = N-1)
+            .SLOTEN = 0xffff, //as in c hal was 0x0003, // Enable slots 0 and 1 only
         });
 
-        // Configure SAI1 Block B (Slave Receiver)
+        try rx_chan.setup_transfer(&rx_buffer, self.rxTarget(), .{
+            .enable = true,
+            .mode = .circular,
+            .priority = .High,
+            .fifo_mode = 0,
+            .size = self.transfer_size,
+        });
+
+        // Enable SAI error interrupts for slave
+        regs.SAI1.SAI_BIM.modify(.{
+            .OVRUDRIE = 1,
+            .WCKCFGIE = 1,
+            .CNRDYIE = 1,
+            .AFSDETIE = 1,
+            .LFSDETIE = 1,
+        });
+
+        // ---- Block B: Slave Receiver ----
         regs.SAI1.SAI_BCR1.raw = 0;
         regs.SAI1.SAI_BCR1.modify(.{
             .MODE = 3, // Slave receiver
             .PRTCFG = 0, // Free protocol
-            .DS = data.data_size,
+            .DS = 6, // 24-bit data
             .LSBFIRST = 0, // MSB first
-            .CKSTR = 1, // Clock strobing on rising edge
-            .SYNCEN = 1, // Synchronous with other sub-block
+            .CKSTR = 1, // Rising edge (RX: RISINGEDGE → CKSTR=1)
+            .SYNCEN = 1, // Synchronous with other sub-block (Block A)
             .MONO = 0, // Stereo
-            .OUTDRIV = 0, // Output drive disabled (slave)
+            .OUTDRIV = 0, // Output drive disabled
             .NOMCK = 0,
-            .MCKDIV = mck_div,
+            .MCKDIV = mck_div, // Slave ignores MCKDIV
         });
 
         regs.SAI1.SAI_BCR2.raw = 0;
         regs.SAI1.SAI_BCR2.modify(.{
-            .FTH = 0, // FIFO threshold = 1/4
+            .FTH = 0, // FIFO threshold: empty
             .FFLUSH = 1, // Flush FIFO
-            .TRIS = 0, // No high-Z state
-            .MUTE = 0, // No mute
-            .MUTEVAL = 0,
-            .MUTECNT = 0,
-            .CPL = 0, // No complement
             .COMP = 0b00, // No companding
+            .TRIS = 0,
         });
 
         regs.SAI1.SAI_BFRCR.raw = 0;
         regs.SAI1.SAI_BFRCR.modify(.{
-            .FRL = data.frame_length - 1, // Frame length
-            .FSALL = data.frame_length / 2 - 1, // Frame sync length
-            .FSPOL = data.f_pol,
-            .FSOFF = data.f_off,
-            .FSDEF = 1, // FS = channel start indicator, not "active all frame"
+            .FRL = 63,
+            .FSALL = 31,
+            .FSPOL = 1,
+            .FSOFF = 0,
+            .FSDEF = 1,
         });
 
         regs.SAI1.SAI_BSLOTR.raw = 0;
         regs.SAI1.SAI_BSLOTR.modify(.{
-            .FBOFF = 0, // First bit offset
-            .SLOTSZ = 0b10, // 32-bit slot size for 24-bit data
-            .NBSLOT = 1, // 2 slots - 1
-            .SLOTEN = 65535, // Enable all
-            // .SLOTEN = 2, // Enable all
+            .FBOFF = 0,
+            .SLOTSZ = 0b10,
+            .NBSLOT = 1,
+            .SLOTEN = 0xffff, //as in c hal was 0x0003, // Enable slots 0 and 1 only
         });
 
+        // Disable PDM
         regs.SAI1.SAI_PDMCR.raw = 0;
 
+        try tx_chan.setup_transfer(self.txTarget(), &tx_buffer, .{
+            .enable = true,
+            .mode = .circular,
+            .priority = .High,
+            .fifo_mode = 0,
+            .size = self.transfer_size,
+            // .enable_interrupts = false, // TX has no callbacks, skip HT/TC interrupts
+        });
+
+        // Enable SAI error interrupts for master
+        regs.SAI1.SAI_AIM.modify(.{
+            .OVRUDRIE = 1,
+            .WCKCFGIE = 1,
+            .CNRDYIE = 1,
+            .AFSDETIE = 1,
+            .LFSDETIE = 1,
+        });
+
         cpu.dsb();
         cpu.isb();
     }
 
-    fn initCodec(self: *Self) !void {
-        _ = self;
+    // ------------------------------------------------------------------
+    // Codec Reset (AK4556)
+    // ------------------------------------------------------------------
 
-        // AK4556 reset sequence
-        regs.GPIOB.BSRR.write_raw(1 << 11);
+    fn resetCodec() void {
+        regs.GPIOB.BSRR.write_raw(1 << 11); // Set B11 high
         hal.clock.delay_ms(1);
-        regs.GPIOB.BSRR.write_raw(1 << (11 + 16));
+        regs.GPIOB.BSRR.write_raw(1 << (11 + 16)); // Reset B11 low
         hal.clock.delay_ms(1);
-        regs.GPIOB.BSRR.write_raw(1 << 11);
+        regs.GPIOB.BSRR.write_raw(1 << 11); // Set B11 high
     }
 
-    pub fn enable(self: *Self) !void {
-        if (!self.initialized) return error.NotInitialized;
+    // ------------------------------------------------------------------
+    // SAI Enable/Disable
+    // ------------------------------------------------------------------
 
-        // Enable SAI blocks (B first for slave, then A for master)
-        regs.SAI1.SAI_BCR1.modify(.{ .SAIXEN = 1 });
-        regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 1 });
-        hal.clock.delay_ms(100);
+    fn disableSai() void {
+        regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 0 });
+        while (regs.SAI1.SAI_ACR1.read().SAIXEN != 0) cpu.nop();
+        regs.SAI1.SAI_BCR1.modify(.{ .SAIXEN = 0 });
+        while (regs.SAI1.SAI_BCR1.read().SAIXEN != 0) cpu.nop();
     }
 
-    pub fn disable(self: *Self) void {
-        _ = self;
-        // Disable SAI blocks
-        regs.SAI1.SAI_ACR1.modify_one("SAIXEN", 0);
-        while (regs.SAI1.SAI_ACR1.read().SAIXEN != 0) microzig.cpu.nop();
-        regs.SAI1.SAI_BCR1.modify_one("SAIXEN", 0);
-        while (regs.SAI1.SAI_BCR1.read().SAIXEN != 0) microzig.cpu.nop();
-    }
+    // ------------------------------------------------------------------
+    // DMA Callbacks (driven by RX DMA half/complete interrupts)
+    // ------------------------------------------------------------------
 
-    pub fn startAudio(self: *Self, cb: *const AudioCallback) !void {
-        try tx_chan.claim();
-        try rx_chan.claim();
-        for (&tx_buffer) |*x| x.* = 0;
-        for (&rx_buffer) |*x| x.* = 0;
-
-        const blocksize = 48;
-        self.transfer_size = blocksize * 2 * 2;
-        self.user_callback = cb;
-
-        self.fillTxBuffer(0);
-
-        { // TX
-
-            var rx_handlers = tx_chan.handlers();
-            rx_handlers.complete = SaiDriver.rx_dma_complete;
-            rx_handlers.half_complete = SaiDriver.rx_dma_half_complete;
-            rx_handlers.ctx = self;
-            // Configure DMA for TX (memory -> peripheral)
-            try tx_chan.setup_transfer(
-                self.tx(), // peripheral
-                &tx_buffer, // memory
-                .{ .enable = true, .mode = .circular, .priority = .High, .fifo_mode = 0, .size = self.transfer_size },
-            );
-            regs.SAI1.SAI_ACR1.modify_one("DMAEN", 1);
-            hal.clock.delay_ms(100);
-            // while (regs.SAI1.SAI_ASR.read().FLVL == 0) { // SAI_FIFOSTATUS_EMPTY
-            //     microzig.cpu.nop();
-            // }
-
-            while (regs.SAI1.SAI_ASR.read().FLVL == 0) {
-                cpu.dsb();
-                cpu.isb();
-                cpu.nop();
-            }
-
-            // var handlers = tx_chan.handlers();
-            // handlers.complete = SaiDriver.rx_dma_complete;
-            // handlers.half_complete = SaiDriver.rx_dma_half_complete;
-            // handlers.ctx = self;
-
-            // Enable SAI blocks (B first for slave, then A for master)
-            // regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 1 });
-            // hal.clock.delay_ms(100);
-        }
-
-        { // RX
-            // var rx_handlers = rx_chan.handlers();
-            // rx_handlers.complete = SaiDriver.rx_dma_complete;
-            // rx_handlers.half_complete = SaiDriver.rx_dma_half_complete;
-            // rx_handlers.ctx = self;
-            // Configure DMA for RX (peripheral -> memory)
-            try rx_chan.setup_transfer(
-                &rx_buffer, // memory
-                self.rx(), // peripheral
-                .{ .enable = true, .mode = .circular, .priority = .High, .fifo_mode = 0, .size = self.transfer_size },
-            );
-
-            regs.SAI1.SAI_BCR1.modify_one("DMAEN", 1);
-            hal.clock.delay_ms(100);
-
-            regs.SAI1.SAI_BCR1.modify(.{ .SAIXEN = 1 });
-            hal.clock.delay_ms(100);
-        }
-
-        regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 1 });
-        hal.clock.delay_ms(100);
-
-        // Enable SAI blocks
-        // try self.enable();
-        cpu.dsb();
-        cpu.isb();
-    }
-
-    // DMA complete handlers (second half of buffer)
-    pub fn rx_dma_complete(chan: Channel, ctx: *anyopaque) void {
+    fn rx_dma_complete(chan: Channel, ctx: *anyopaque) void {
         _ = chan;
-        rx_chan.clear_flags();
-        tx_chan.clear_flags();
         const self: *SaiDriver = @ptrCast(@alignCast(ctx));
         self.fillTxBuffer(self.transfer_size / 2);
     }
 
-    // DMA half complete handlers (first half of buffer)
-    pub fn rx_dma_half_complete(chan: Channel, ctx: *anyopaque) void {
+    fn rx_dma_half_complete(chan: Channel, ctx: *anyopaque) void {
         _ = chan;
-        rx_chan.clear_flags();
-        tx_chan.clear_flags();
         const self: *SaiDriver = @ptrCast(@alignCast(ctx));
         self.fillTxBuffer(0);
     }
 
+    // ------------------------------------------------------------------
+    // Audio Processing
+    // ------------------------------------------------------------------
+
     fn fillTxBuffer(self: *Self, offset: u32) void {
         const half_size = self.transfer_size / 2;
-        const buf_size = 200;
         std.debug.assert(half_size <= buf_size);
 
-        var f_in: [buf_size]f32 = undefined;
-        var f_out: [buf_size]f32 = undefined;
-
-        // Convert SAI input to floats and call user callback
-        switch (self.config.bit_depth) {
-            .@"24bit" => {
-                for (0..half_size) |i| {
-                    f_in[i] = s24tof(rx_buffer[offset + i]);
-                }
-            },
-            else => unreachable,
+        for (0..half_size) |i| {
+            S.f_in[i] = s24tof(rx_buffer[offset + i]);
         }
-
-        self.user_callback.?(&f_in, &f_out, half_size);
-
-        switch (self.config.bit_depth) {
-            .@"24bit" => {
-                for (0..half_size) |i| {
-                    tx_buffer[offset + i] = fto24(f_out[i]);
-                }
-            },
-            else => unreachable,
+        if (self.user_callback) |cb| {
+            cb(S.f_in[0..half_size], S.f_out[0..half_size], @intCast(half_size));
+        }
+        for (0..half_size) |i| {
+            tx_buffer[offset + i] = fto24(S.f_out[i]);
         }
     }
 
-    // Blocking transmit function
-    pub fn transmitBlocking(self: *Self, data: []const u32) !void {
-        if (!self.initialized) return error.NotInitialized;
+    // ------------------------------------------------------------------
+    // Clock Divider Calculation
+    // ------------------------------------------------------------------
 
-        for (data) |sample| {
-            // Wait for transmit FIFO to be ready
-            while (regs.SAI1.SAI_ASR.read().FLVL == 0b111) {} // Wait if FIFO full
-
-            // Write sample to data register
-            regs.SAI1.SAI_ADR.write_raw(sample);
-        }
-    }
-
-    // Blocking receive function
-    pub fn receiveBlocking(self: *Self, buffer: []u32) !void {
-        if (!self.initialized) return error.NotInitialized;
-
-        for (buffer) |*sample| {
-            // Wait for receive FIFO to have data
-            while (regs.SAI1.SAI_BSR.read().FLVL == 0b000) {} // Wait if FIFO empty
-
-            // Read sample from data register
-            sample.* = regs.SAI1.SAI_BDR.read_raw();
-        }
-    }
-
+    /// Compute MCKDIV matching the C HAL formula with *10 rounding precision.
+    /// Reference: stm32h7xx_hal_sai.c lines 614-660
     pub fn computeMckDiv(
-        sai_ck: u32, // SAI input clock frequency in Hz
-        audio_freq: u32, // Desired sample rate (FS)
-        frame_length: u32, // Frame length in bits
+        sai_ck: u32,
+        audio_freq: u32,
+        frame_length: u32,
         no_divider: bool,
-        oversampling: bool, // Only used if no_divider == false
+        oversampling: bool,
     ) u4 {
-        var tmpval: u32 = 0;
+        var tmpval: u32 = undefined;
 
         if (no_divider) {
-            // NODIV = 1
-            tmpval = sai_ck / (audio_freq * frame_length) - 1;
+            // NODIV = 1: MCKDIV = SAI_CK / (FS * FRL)
+            tmpval = (sai_ck * 10) / (audio_freq * frame_length);
         } else {
-            // NODIV = 0
+            // NODIV = 0: MCKDIV = SAI_CK / (FS * (OSR+1) * 256)
             const osr: u32 = if (oversampling) 2 else 1;
-            tmpval = (sai_ck) / (audio_freq * osr * 256);
+            tmpval = (sai_ck * 10) / (audio_freq * osr * 256);
         }
 
-        // Divide by 10 with rounding
-        var mckdiv: u32 = tmpval;
+        var mckdiv: u32 = tmpval / 10;
         if ((tmpval % 10) > 8) {
             mckdiv += 1;
         }
@@ -458,30 +475,26 @@ pub const SaiDriver = struct {
     }
 };
 
-/// Converts a float sample to a 24-bit signed integer (matches libdaisy)
-/// Input float should be in range [-1.0, 1.0]
+// ============================================================================
+// Sample Format Conversion (24-bit signed integer ↔ float)
+// ============================================================================
+
+/// Convert float [-1.0, 1.0] to 24-bit signed integer (as u32)
 pub fn fto24(sample: f32) u32 {
-    const FBIPMAX: f32 = 0.999985; // close to 1.0 - LSB at 24-bit
+    const FBIPMAX: f32 = 0.999985;
     const FBIPMIN: f32 = -FBIPMAX;
     const F2S24_SCALE: f32 = 8388608.0; // 2^23
 
-    // Clamp to prevent overflow
     const clamped = math.clamp(sample, FBIPMIN, FBIPMAX);
-
-    // Scale to 24-bit signed range
     const scaled: f64 = clamped * F2S24_SCALE;
-
-    // Convert to i32
     const as_i32 = @as(i32, @intFromFloat(scaled));
-
-    // Bitcast to u32 to preserve two's complement representation
     return @as(u32, @bitCast(as_i32));
 }
 
+/// Convert 24-bit signed integer (as u32) to float [-1.0, 1.0]
 pub fn s24tof(xx: u32) f32 {
-    const S242F_SCALE: f32 = 1.192092896e-07; // 1 / (2 ** 23)
-    // Use arithmetic shift for faster sign extension: shift left 8, then right 8
+    const S242F_SCALE: f32 = 1.192092896e-07; // 1 / 2^23
     const as_i32 = @as(i32, @bitCast(xx));
-    const sign_extended = as_i32 << 8 >> 8; // Sign-extend from 24-bit to 32-bit
+    const sign_extended = as_i32 << 8 >> 8; // Sign-extend from 24-bit
     return @as(f32, @floatFromInt(sign_extended)) * S242F_SCALE;
 }
