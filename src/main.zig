@@ -43,9 +43,12 @@ pub const microzig_options: microzig.Options = .{
 
         .DMA1_STR0 = .{ .c = ssai.dma1_0_handler },
         .DMA1_STR1 = .{ .c = ssai.dma1_1_handler },
-        .SAI1 = .{ .c = ssai.SaiDriver.sai1_irq_handler },
+        // .SAI1 = .{ .c = ssai.SaiDriver.sai1_irq_handler },
 
-        .DMA1_STR3 = .{ .c = hal.spi.dma1_str3_handler },
+        // RX
+        // .DMA2_STR2 = .{ .c = hal.spi.dma1_str3_handler },
+        // TX
+        .DMA2_STR3 = .{ .c = hal.spi.tx_dma_irq_handler },
         .SPI1 = .{ .c = hal.spi.spi1_irq_handler },
     },
 
@@ -113,7 +116,7 @@ var square = osc.SquareOsc.init(440.0, 48000, 0.02);
 pub fn main() !void {
     try hw.init();
 
-    try hw.startAudio(&myAudioCallback);
+    try hw.startAudio(myAudioCallback);
 
     // try example_ili9341_dma();
 
@@ -162,9 +165,6 @@ pub fn example_ili9341_dma() !void {
         .chip_select = .Software,
         .direction = .FullDuplex,
     };
-
-    // Try DMA1 Stream 3 instead of DMA2 Stream 3
-    // const dma_chan = comptime hal.dma.channel(3); // DMA1_STR3 (channel 3)
 
     // Initialize SPI with DMA support
     var spi1_display = try hal.spi.SPI_Device.init(.SPI1, spi_config);

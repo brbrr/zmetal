@@ -121,9 +121,13 @@ pub const Config = struct {
 
 // Single global instance pointer for IRQ handler
 pub var spi_instances: [1]?*SPI_Device = [_]?*SPI_Device{null};
-pub const tx_dma_channel: dma.Channel = dma.channel(3);
+// dma1_s2
+// pub const rx_dma_channel: dma.Channel = dma.channel(10);
+// dma1_s3
+pub const tx_dma_channel: dma.Channel = dma.channel(11);
+// [0, 7] = 8,
 
-pub fn dma1_str3_handler() callconv(.c) void {
+pub fn tx_dma_irq_handler() callconv(.c) void {
     dma.dma_irq_handler(tx_dma_channel);
 }
 

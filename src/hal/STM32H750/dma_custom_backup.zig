@@ -11,7 +11,7 @@ const DMA2 = regs.DMA2;
 pub const dmat = microzig.chip.types.peripherals.DMA;
 
 // 7 x 2
-const num_channels = 14;
+const num_channels = 16;
 var claimed_channels = microzig.concurrency.AtomicStaticBitSet(num_channels){};
 const MaskType = std.meta.Int(.unsigned, num_channels);
 
@@ -98,7 +98,7 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
     const ch_regs = chan.get_regs();
     const handlers = chan.handlers();
 
-    var ISR = if (info.is_high) dma.HISR else dma.LISR;
+    var ISR = if (info.is_high) &dma.HISR else &dma.LISR;
     const IFCR = if (comptime info.is_high) &dma.HIFCR else &dma.LIFCR;
 
     const status = ISR.read();
@@ -321,8 +321,8 @@ pub const Channel = enum(u4) {
         const dma2_regs = @as(*volatile [num_channels / 2]Regs, @ptrCast(&DMA2.S0CR));
 
         var ch_id: u8 = @intFromEnum(chan);
-        // [0, 6] :: [7, 13]
-        if (ch_id < 7) {
+        // [0, 7] :: [8, 13]
+        if (ch_id <= 7) {
             return &dma1_regs[ch_id];
         } else {
             ch_id -= num_channels / 2;
@@ -633,8 +633,8 @@ pub const Channel = enum(u4) {
         const index = @intFromEnum(chan);
 
         // 7 streams X 2 peripherals
-        const dma_index: u1 = if (index > 6) 1 else 0;
-        const local: u3 = if (index > 6) index - 7 else index;
+        const dma_index: u1 = if (index > 7) 1 else 0;
+        const local: u3 = if (index > 7) index - 8 else index;
 
         // low [0, 3] and high [4, 6]
         const is_high = local >= 4;
@@ -649,7 +649,7 @@ pub const Channel = enum(u4) {
             .is_high = is_high,
             .hisr_id = hisr_id,
             .reg = reg,
-            .suffix = std.fmt.comptimePrint("{}", .{hisr_id}),
+            .suffix = std.fmt.comptimePrint("{}", .{local}),
         };
     }
 

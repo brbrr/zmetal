@@ -200,6 +200,8 @@ pub const SaiDriver = struct {
         // ----- START SLAVE (Block B / RX) -----
         var rx_regs = rx_chan.get_regs();
         rx_regs.CR.modify_one("EN", 0);
+        while (rx_regs.CR.read().EN != 0) microzig.cpu.nop();
+
         rx_regs.NDTR.modify_one("NDT", self.transfer_size);
         rx_regs.CR.modify_one("EN", 1);
         // Enable DMA request on Block B
@@ -211,6 +213,7 @@ pub const SaiDriver = struct {
         // ----- START MASTER (Block A / TX) -----
         var tx_regs = tx_chan.get_regs();
         tx_regs.CR.modify_one("EN", 0);
+        while (tx_regs.CR.read().EN != 0) microzig.cpu.nop();
         tx_regs.NDTR.modify_one("NDT", self.transfer_size);
         tx_regs.CR.modify_one("EN", 1);
 
