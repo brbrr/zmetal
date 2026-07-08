@@ -24,6 +24,7 @@ const SaiDriver = ssai.SaiDriver;
 
 const osc = @import("dsp/osc.zig");
 const keyboard = @import("hid/keyboard.zig");
+const ili9341 = @import("drivers/ili9341.zig");
 
 // INTERNAL_ADDRESS = 0x08000000
 // FLASH_ADDRESS ?= $(INTERNAL_ADDRESS)
@@ -43,13 +44,13 @@ pub const microzig_options: microzig.Options = .{
 
         .DMA1_STR0 = .{ .c = ssai.dma1_0_handler },
         .DMA1_STR1 = .{ .c = ssai.dma1_1_handler },
-        // .SAI1 = .{ .c = ssai.SaiDriver.sai1_irq_handler },
+        .SAI1 = .{ .c = ssai.SaiDriver.sai1_irq_handler },
 
-        // RX
-        // .DMA2_STR2 = .{ .c = hal.spi.dma1_str3_handler },
-        // TX
-        .DMA2_STR3 = .{ .c = hal.spi.tx_dma_irq_handler },
         .SPI1 = .{ .c = hal.spi.spi1_irq_handler },
+        // SPI TX
+        .DMA2_STR3 = .{ .c = hal.spi.tx_dma_irq_handler },
+        // SPI RX
+        // .DMA2_STR2 = .{ .c = hal.spi.dma1_str3_handler },
     },
 
     .logFn = hal.uart.log,
@@ -80,32 +81,21 @@ fn sv_call_handler() callconv(.c) void {
     @panic("SVCall");
 }
 
-var count: u32 = 1;
-
 fn sys_tick_handler() callconv(.c) void {
     hal.clock.inc_tick();
-    count += 1;
-    if (count == 1_000) {
-        hw.led.toggle();
-    } else if (count == 1100) {
-        hw.led.toggle();
-    } else if (count == 1200) {
-        hw.led.toggle();
-    } else if (count == 1300) {
-        hw.led.toggle();
-        count = 0;
-    }
 }
 
 pub fn init() void {
     // FIXME: For SRAM build, no need to call below
-    // hal.init_vector_table();
+    hal.init_vector_table();
 }
 
 var hw: hal.daisy.Daisy = hal.daisy.Daisy.create() catch unreachable;
 
-var sine = osc.SineOsc.init(10, 48000, 0.02);
-var square = osc.SquareOsc.init(440.0, 48000, 0.02);
+// var sine = osc.SineOsc.init(440, 48000, 0.02);
+// var lfo = osc.SineOsc.init(2.0, 48000, 1); // 5 Hz LFO
+var sine = osc.WavetableOsc.init(440, 48000, 0.02);
+// var square = osc.SquareOsc.init(440.0, 48000, 0.02);
 
 // I2C device for keyboard (must be global/static for pointer stability)
 // var kbd_i2c: hal.i2c.I2C_Device = undefined;
@@ -113,113 +103,107 @@ var square = osc.SquareOsc.init(440.0, 48000, 0.02);
 // const KeyboardType = keyboard.KeyboardBuilder(kbd_i2c.i2c_device());
 // var kbd: KeyboardType = undefined;
 
+const display_spi_config = hal.spi.Config{
+    .mode = .Mode0,
+    .baud_prescaler = .PS_2,
+    .chip_select = .Software,
+    .direction = .FullDuplex,
+};
+
+const display_dc_pin = hal.gpio.Pin.init("A", "3", .{ .mode = .output, .speed = .VeryHighSpeed });
+const display_rst_pin = hal.gpio.Pin.init("A", "5", .{ .mode = .output, .speed = .VeryHighSpeed });
+const display_cs_pin = hal.gpio.Pin.init("G", "10", .{ .mode = .output, .speed = .VeryHighSpeed });
+const Display = ili9341.ILI9341_DMA(display_dc_pin, display_rst_pin, display_cs_pin);
+
+var display_spi: hal.spi.SPI_Device = undefined;
+var display: Display = undefined;
+var display_ready = false;
+var display_frame: u32 = 0;
+var display_prev_x: u16 = 0;
+
 pub fn main() !void {
     try hw.init();
-
-    try hw.startAudio(myAudioCallback);
-
-    // try example_ili9341_dma();
+    try hw.startAudio(&myAudioCallback);
+    try initDisplay();
 
     // var kbd = try keyboard.Keyboard.init(hw.i2c.i2c_device());
-    //
     // var tick_count: u32 = 0;
     while (true) {
-        //     // Process keyboard every 10ms (100Hz scan rate)
-        //     if (tick_count % 10 == 0) {
-        //         if (kbd.process()) |events| {
-        //             // Handle key events
-        //             for (events.slice()) |evt| {
-        //                 handle_key_event(evt);
-        //             }
-        //         } else |_| {
-        //             // Ignore keyboard errors
+        // Process keyboard every 10ms (100Hz scan rate)
+        // if (tick_count % 10 == 0) {
+        //     if (kbd.process()) |events| {
+        //         for (events.slice()) |evt| {
+        //             handle_key_event(evt);
         //         }
+        //     } else |_| {
+        //         // Ignore keyboard errors
         //     }
-        //
-        //     hal.clock.delay_ms(1);
-        //     tick_count += 1;
+        // }
+        // tick_count += 1;
+
+        serviceDisplay();
+        cpu.wfi();
     }
 }
 
 fn myAudioCallback(input: []const f32, output: []f32, size: u16) void {
     _ = input;
+
     var i: u32 = 0;
     while (i < size) : (i += 2) {
+        // const lfo_depth = 200;
+        // const lfo_value = lfo.nextSample(); // -1..1
+        // const mod_freq = 440.0 + lfo_value * lfo_depth;
+        // sine.setFreq(mod_freq); // update frequency
+
         const samp = sine.nextSample();
         output[i] = samp;
         output[i + 1] = samp;
     }
 }
 
-// Framebuffer in DMA-safe memory (SRAM - same as SAI buffers)
-// 320x240x2 = 153,600 bytes, aligned to 32-byte cache line
-var display_framebuffer: [320 * 240 * 2]u8 linksection(".sram1_bss") = undefined;
-
-pub fn example_ili9341_dma() !void {
-    const ili9341 = @import("drivers/ili9341.zig");
-
-    // Configure SPI1 for ILI9341 with DMA
-    const spi_config = hal.spi.Config{
-        .mode = .Mode0,
-        .baud_prescaler = .PS_2,
-        .chip_select = .Software,
-        .direction = .FullDuplex,
-    };
-
-    // Initialize SPI with DMA support
-    var spi1_display = try hal.spi.SPI_Device.init(.SPI1, spi_config);
-    // defer spi1_display.deinit();
-    spi1_display.apply();
-
+fn initDisplay() !void {
+    display_spi = try hal.spi.SPI_Device.init(.SPI1, display_spi_config);
+    display_spi.apply();
     hal.clock.delay_ms(100);
 
-    // Configure control pins (comptime)
-    const dc_pin = comptime hal.gpio.Pin.init("A", "3", .{ .mode = .output, .speed = .VeryHighSpeed });
-    const rst_pin = comptime hal.gpio.Pin.init("A", "5", .{ .mode = .output, .speed = .VeryHighSpeed });
-    const cs_pin = comptime hal.gpio.Pin.init("G", "10", .{ .mode = .output, .speed = .VeryHighSpeed });
-
-    // Create DMA-based display driver
-    const Display = ili9341.ILI9341_DMA(dc_pin, rst_pin, cs_pin);
-    var display = try Display.init(&spi1_display, &display_framebuffer);
-    // defer display.deinit();
-
-    // Set orientation
+    display = try Display.init(&display_spi, &ili9341.display_framebuffer);
     try display.set_orientation(.Landscape);
 
-    // Fill framebuffer with black
     display.fill_screen(ili9341.Colors.Black);
-
-    // Draw some test patterns to framebuffer
     display.fill_rect(10, 10, 50, 50, ili9341.Colors.Red);
     display.fill_rect(70, 10, 50, 50, ili9341.Colors.Green);
     display.fill_rect(130, 10, 50, 50, ili9341.Colors.Blue);
-
-    // Draw lines
     display.draw_line(10, 80, 180, 120, ili9341.Colors.White);
     display.draw_line(10, 120, 180, 80, ili9341.Colors.Yellow);
-
-    // Draw rectangles
     display.draw_rect(200, 80, 100, 60, ili9341.Colors.Cyan);
     display.fill_rect(210, 90, 80, 40, ili9341.Colors.Magenta);
+    try display.flush(null);
+    display_ready = true;
+}
 
-    // Flush framebuffer to display via DMA (blocking)
-    try display.flush_wait();
-
-    // Continuous update loop example
-    var frame: u32 = 0;
-    while (true) : (frame += 1) {
-        // Animate something
-        const x = @as(u16, @intCast((frame % 270)));
-        display.fill_rect(x, 180, 50, 30, ili9341.Colors.Orange);
-
-        // Flush and wait for DMA
-        try display.flush_wait();
-
-        // Clear the moving rectangle for next frame
-        display.fill_rect(x, 180, 50, 30, ili9341.Colors.Black);
-
-        hal.clock.delay_ms(16); // ~60 FPS
+var tast_f_time: u32 = 0;
+fn serviceDisplay() void {
+    if (!display_ready or !display.done) {
+        return;
     }
+
+    if (hal.clock.get_tick() - tast_f_time < 16) {
+        return;
+    }
+
+    const x = @as(u16, @intCast(display_frame % 270));
+    display.fill_rect(display_prev_x, 180, 50, 30, ili9341.Colors.Black);
+    display.fill_rect(x, 180, 50, 30, ili9341.Colors.Orange);
+    display_prev_x = x;
+    display_frame += 1;
+
+    display.flush(null) catch |err| switch (err) {
+        error.FlushInProgress => {},
+        else => @panic("display flush failed"),
+    };
+
+    tast_f_time = hal.clock.get_tick();
 }
 
 fn handle_key_event(evt: keyboard.KeyEventData) void {
@@ -228,16 +212,13 @@ fn handle_key_event(evt: keyboard.KeyEventData) void {
 
     switch (evt.event) {
         .pressed => {
-            // Example: Toggle LED on key 0 press
             if (evt.key == 0) {
                 hw.led.toggle();
             }
-            // Log key press (row, col)
             _ = row;
             _ = col;
         },
         .released => {
-            // Log key release (row, col)
             _ = row;
             _ = col;
         },

@@ -47,6 +47,7 @@ const ClockInitError = error{
     SysClkTimeout,
     ClockNotReady,
     ClockSetupError,
+    ClockConfigError,
     PllError,
 };
 
@@ -244,12 +245,16 @@ pub fn get_flag(flag: RccFlag) u1 {
 }
 
 pub fn wait_for_flag(flag: RccFlag, expected: u1, max_wait: u32) !void {
-    var ticks: usize = clock.get_tick();
+    const tick_start = clock.get_tick();
     while (get_flag(flag) != expected) {
-        if (ticks == max_wait - 1) return error.HSETimeout;
-        ticks = clock.get_tick();
-        asm volatile ("" ::: .{ .memory = true });
+        if (clock.get_tick() - tick_start > max_wait) return error.HSETimeout;
     }
+    // var ticks: usize = clock.get_tick();
+    // while (get_flag(flag) != expected) {
+    //     if (ticks == max_wait - 1) return error.HSETimeout;
+    //     ticks = clock.get_tick();
+    //     asm volatile ("" ::: .{ .memory = true });
+    // }
 }
 
 // NOTE: procedural style or loop through all elements of the struct?
@@ -257,11 +262,10 @@ pub fn wait_for_flag(flag: RccFlag, expected: u1, max_wait: u32) !void {
 /// NOTE: to configure the backup domain clocks (RTC) it is necessary to enable it through the power
 ///register before configuring the clocks
 pub fn apply_clock(comptime tree_out: ClockTree.Tree_Output, flash_latency: FLASH.LATENCY) ClockInitError!void {
-    hal_power.set_voltage_scalling(.Scale1);
     if (clock_outputs.SysCLKOutput == 400_000_000) {
         hal_power.set_voltage_scalling(.Scale1);
     } else if (clock_outputs.SysCLKOutput == 480_000_000) {
-        hal_power.set_voltage_scalling(.Scale1);
+        hal_power.set_voltage_scalling(.Scale0);
     } else {
         @panic("invalid sysclock?");
     }
@@ -270,60 +274,21 @@ pub fn apply_clock(comptime tree_out: ClockTree.Tree_Output, flash_latency: FLAS
         microzig.cpu.nop();
     }
 
-    // #define __HAL_RCC_PLL_PLLSOURCE_CONFIG(__PLLSOURCE__) MODIFY_REG(RCC->PLLCKSELR, RCC_PLLCKSELR_PLLSRC, (__PLLSOURCE__))
-
-    rcc.PLLCKSELR.modify_one("PLLSRC", @as(PLLSRC, @enumFromInt(tree_out.config.PLLSource.?.get())));
-
-    //rest all clock configs
-    // secure_enable();
-    // if (config.HSICalibrationValue) |val| {
-    //     config_HSI(@intFromEnum(val));
-    // }
+    const pllsrc: PLLSRC = @enumFromInt(tree_out.config.PLLSource.?.get());
+    rcc.PLLCKSELR.modify_one("PLLSRC", pllsrc);
 
     try osc_config(tree_out);
 
     // NOTE: this is needed to propagate the changes?
-    clock.delay_ms(100);
+    clock.delay_ms(10);
 
     try config_clocks(tree_out, flash_latency);
 
     try config_peripherals(tree_out);
     config_usb();
-    // config_MCO(config);
-
-    // const rcc = @intToPtr(*volatile RCC_TypeDef, 0x58024400); // base address
-    // std.debug.print("CR={x}\nCFGR={x}\nPLLCKSELR={x}\nPLL1DIVR={x}\nD1CFGR={x}\nD2CFGR={x}\nD3CFGR={x}\n",
-    //     .{ rcc.CR.read(), rcc.CFGR.read(), rcc.PLLCKSELR.read(),
-    //        rcc.PLL1DIVR.read(), rcc.D1CFGR.read(), rcc.D2CFGR.read(), rcc.D3CFGR.read() });
-
-    const cr = rcc.CR.read();
-    const cfgr = rcc.CFGR.read();
-    const pllckselr = rcc.PLLCKSELR.read();
-    const pll1divr = rcc.PLL1DIVR.read();
-    const d1cfgr = rcc.D1CFGR.read();
-    const d2cfgr = rcc.D2CFGR.read();
-    const d3cfgr = rcc.D3CFGR.read();
-    const divm1 = rcc.PLLCKSELR.read().DIVM1;
-    const divn1 = rcc.PLL1DIVR.read().DIVN1;
-    const divp1 = rcc.PLL1DIVR.read().DIVP1;
-    const divr1 = rcc.PLL1DIVR.read().DIVR1;
-    const divq1 = rcc.PLL1DIVR.read().DIVQ1;
-    _ = divm1;
-    _ = divn1;
-    _ = divp1;
-    _ = divr1;
-    _ = divq1;
-    _ = cr;
-    _ = cfgr;
-    _ = pllckselr;
-    _ = pll1divr;
-    _ = d1cfgr;
-    _ = d2cfgr;
-    _ = d3cfgr;
 }
 
 pub fn config_usb() void {
-
     // /* Enable the USB voltage detector */
     pwr.PWR_CR3.modify_one("USB33DEN", 1);
 }
@@ -366,15 +331,22 @@ pub fn config_clocks(comptime tree_out: ClockTree.Tree_Output, flash_latency: FL
     // (HCLK) and the supply voltage of the device.
 
     // Increasing the CPU frequency
-    if (@intFromEnum(flash_latency) > @intFromEnum(flash.ACR.read().LATENCY)) {
-        // Program the new number of wait states to the LATENCY bits in the FLASH_ACR register
-        flash.ACR.modify_one("LATENCY", flash_latency);
+    // if (@intFromEnum(flash_latency) > @intFromEnum(flash.ACR.read().LATENCY)) {
+    // Program the new number of wait states to the LATENCY bits in the FLASH_ACR register
+    // flash.ACR.modify_one("LATENCY", flash_latency);
+    flash.ACR.modify(.{
+        .LATENCY = flash_latency,
+        .WRHIGHFREQ = switch (daisy.SysConfig.freq) {
+            .boost => 3, // 480 MHz, VOS0
+            .default => 2, // 400 MHz, VOS1
+        },
+    });
 
-        // Check that the new number of wait states is taken into account to access the Flash memory by reading the FLASH_ACR register
-        if (flash.ACR.read().LATENCY != flash_latency) {
-            return error.FlashError;
-        }
+    // Check that the new number of wait states is taken into account to access the Flash memory by reading the FLASH_ACR register
+    if (flash.ACR.read().LATENCY != flash_latency) {
+        return error.FlashError;
     }
+    // }
 
     // Increasing the BUS frequency divider */
     //-------------------------- D1PCLK1/CDPCLK1 Configuration ---------------------------*/
@@ -450,15 +422,15 @@ pub fn config_clocks(comptime tree_out: ClockTree.Tree_Output, flash_latency: FL
     }
 
     // Decreasing the number of wait states because of lower CPU frequency */
-    if (@intFromEnum(flash_latency) < @intFromEnum(flash.ACR.read().LATENCY)) {
-        // Program the new number of wait states to the LATENCY bits in the FLASH_ACR register
-        flash.ACR.modify_one("LATENCY", flash_latency);
+    // if (@intFromEnum(flash_latency) < @intFromEnum(flash.ACR.read().LATENCY)) {
+    // Program the new number of wait states to the LATENCY bits in the FLASH_ACR register
+    // flash.ACR.modify_one("LATENCY", flash_latency);
 
-        // Check that the new number of wait states is taken into account to access the Flash memory by reading the FLASH_ACR register
-        if (flash.ACR.read().LATENCY != flash_latency) {
-            return error.FlashError;
-        }
-    }
+    // Check that the new number of wait states is taken into account to access the Flash memory by reading the FLASH_ACR register
+    // if (flash.ACR.read().LATENCY != flash_latency) {
+    //     return error.FlashError;
+    // }
+    // }
 
     clock.update_system_core_clock();
     clock.hal_init_tick(clock.uwTickPrio) catch {
@@ -528,9 +500,6 @@ fn config_PLL1(comptime tree_out: ClockTree.Tree_Output, clock_src: PLLSRC) !voi
         .PLL1VCOSEL = 0, // 0, //RCC_PLL1VCOWIDE
     });
 
-    // rcc.PLLCFGR.modify_one("PLL1RGE", 2);
-    // rcc.PLLCFGR.modify_one("PLL1VCOSEL", 0);
-
     rcc.PLLCFGR.modify(.{
         .DIVP1EN = 1, // Enable PLL System Clock output. */
         .DIVQ1EN = 1, // Enable PLL1Q Clock output. */
@@ -569,10 +538,10 @@ fn pll2_config(comptime tree_out: ClockTree.Tree_Output, comptime divider: DivUp
 
     // PLL2 VCI range: 16MHz/1 = 16MHz → Range 3 (8-16MHz) = RCC_PLL2VCIRANGE_3
     rcc.PLLCFGR.modify(.{
-        .PLL2RGE = @intFromEnum(config.PLL2_VCI_Range.?),
-        .PLL2VCOSEL = @intFromEnum(config.PLL2_VCO_SEL.?),
-        // .PLL2RGE = config.PLL2_VCI_Range, // RCC_PLL2VCIRANGE_3 for 16MHz VCI
-        // .PLL2VCOSEL = config.PLL2_VCO_SEL, // RCC_PLL2VCOWIDE
+        // .PLL2RGE = @intFromEnum(config.PLL2_VCI_Range.?),
+        // .PLL2VCOSEL = @intFromEnum(config.PLL2_VCO_SEL.?),
+        .PLL2RGE = 2,
+        .PLL2VCOSEL = 0,
     });
 
     // Disable PLL2FRACN.
@@ -622,11 +591,11 @@ fn pll3_config(comptime tree_out: ClockTree.Tree_Output, comptime divider: DivUp
 
     // PLL3 VCI range: 16MHz/6 = 2.67MHz → Range 1 (2-4MHz) = RCC_PLL3VCIRANGE_1
     rcc.PLLCFGR.modify(.{
-        // .PLL3RGE = config.PLL3_VCI_Range, // RCC_PLL2VCIRANGE_3 for 16MHz VCI
-        // .PLL3VCOSEL = config.PLL3_VCO_SEL, // RCC_PLL2VCOWIDE
+        // .PLL3RGE = @intFromEnum(config.PLL3_VCI_Range.?),
+        // .PLL3VCOSEL = @intFromEnum(config.PLL3_VCO_SEL.?),
 
-        .PLL3RGE = @intFromEnum(config.PLL3_VCI_Range.?),
-        .PLL3VCOSEL = @intFromEnum(config.PLL3_VCO_SEL.?),
+        .PLL3RGE = 1,
+        .PLL3VCOSEL = 0,
     });
 
     // Disable PLL3FRACN.
@@ -646,11 +615,11 @@ fn pll3_config(comptime tree_out: ClockTree.Tree_Output, comptime divider: DivUp
 
     rcc.PLLCFGR.modify_one(div_name, 1);
 
-    rcc.PLLCFGR.modify(.{
-        .DIVP3EN = 1, // Enable PLL System Clock output. */
-        .DIVQ3EN = 1, // Enable PLL1Q Clock output. */
-        .DIVR3EN = 1, // Enable PLL1R  Clock output. */
-    });
+    // rcc.PLLCFGR.modify(.{
+    //     .DIVP3EN = 1, // Enable PLL System Clock output. */
+    //     .DIVQ3EN = 1, // Enable PLL1Q Clock output. */
+    //     .DIVR3EN = 1, // Enable PLL1R  Clock output. */
+    // });
     // Enable  PLL3. */
     rcc.CR.modify_one("PLL3ON", 1);
 

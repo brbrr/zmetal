@@ -40,11 +40,9 @@ pub inline fn delay_ms(wait: u32) void {
     var _wait = wait;
 
     _wait += uwTickFreq;
-    var now = tickstart;
     //* Add a freq to guarantee minimum wait */
-    while ((now - tickstart) < _wait) {
-        now = get_tick();
-        cpu.wfi();
+    while ((get_tick() - tickstart) < _wait) {
+        // cpu.wfi();
         // asm volatile ("" ::: .{ .memory = true });
     }
 }
@@ -133,14 +131,16 @@ pub fn hal_init_tick(priority: cpu.interrupt.Priority) !void {
     }
     try init_systick(@intCast(ticks));
 
-    if (@intFromEnum(priority) < @intFromEnum(cpu.interrupt.Priority.highest)) {
-        cpu.interrupt.exception.set_priority(.SysTick, priority);
-        uwTickPrio = priority;
-    }
+    // Workaround: microzig set_priority writes raw 0-15 to priority byte,
+    // but Cortex-M7 only implements bits [7:4]. CMSIS encodes as: priority << 4.
+    // Without this shift, Priority.lowest (15 = 0x0F) becomes effective priority 0 (highest!).
+    const scb = cpu.peripherals.scb;
+    const prio_val: u8 = @as(u8, @intFromEnum(priority)) << 4;
+    scb.SHPR3.raw = (scb.SHPR3.raw & 0x00FFFFFF) | (@as(u32, prio_val) << 24);
+    uwTickPrio = priority;
 }
 
 fn init_systick(tick_limit: u24) !void {
-    // cpu.interrupt.exception.set_priority(.SysTick, .highest);
     uwTick = 0;
     systick.LOAD.modify(.{ .RELOAD = tick_limit });
     systick.VAL.modify(.{ .CURRENT = 0 });

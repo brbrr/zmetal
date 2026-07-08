@@ -346,7 +346,7 @@ pub const SPI_Device = struct {
         }
 
         // Clean D-cache for DMA
-        cache.clean_dcache_by_addr(@intFromPtr(data.ptr), data.len);
+        // cache.clean_dcache_by_addr(@intFromPtr(data.ptr), data.len);
 
         // Set busy flag and callback
         self.dma_busy = true;
@@ -379,7 +379,7 @@ pub const SPI_Device = struct {
                 .enable = true,
                 .mode = .normal,
                 .priority = .VeryHigh,
-                .fifo_mode = 0,
+                .fifo_mode = 3, // FIFO enabled, full threshold (libdaisy parity)
                 .size = null,
             },
         );

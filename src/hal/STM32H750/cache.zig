@@ -23,7 +23,7 @@ pub inline fn enableICache() void {
 pub fn disableICache() void {
     cpu.dsb();
     cpu.isb();
-    scb.CCR.modify_one("IC", 1);
+    scb.CCR.modify_one("IC", 0);
     // invalidate I-Cache
     cache_m.ICIALLU.raw = 0;
     cpu.dsb();
@@ -36,7 +36,7 @@ const SCB_DCISW_WAY_Pos = 30;
 const SCB_DCISW_WAY_Msk = (0x3 << SCB_DCISW_WAY_Pos);
 
 pub inline fn enableDCache() void {
-    if (scb.CCR.read().DC != 0) return; // already enabled
+    if (scb.CCR.read().DC != 0) unreachable; // already enabled
 
     scb.CSSELR = 0; // select Level 1 data cache
     cpu.dsb();

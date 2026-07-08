@@ -8,9 +8,44 @@ const PWR = microzig.chip.types.peripherals.PWR;
 
 const PWR_FLAG_SETTING_DELAY: u32 = 1000;
 
-pub inline fn set_voltage_scalling(scale: PWR.VOS) void {
-    pwr.PWR_D3CR.modify_one("VOS", scale);
-    _ = pwr.PWR_D3CR.read();
+pub const VoltageScale = enum {
+    Scale0, // 480MHz overdrive
+    Scale1, // 400MHz
+    Scale2,
+    Scale3,
+};
+
+// pub inline fn set_voltage_scalling(scale: PWR.VOS) void {
+//     pwr.PWR_D3CR.modify_one("VOS", scale);
+//     _ = pwr.PWR_D3CR.read();
+// }
+
+const syscfg = microzig.chip.peripherals.SYSCFG;
+pub fn set_voltage_scalling(scale: PWR.VOS) void {
+    if (scale == .Scale0) {
+        // First set Scale1, then enable overdrive
+        pwr.PWR_D3CR.modify_one("VOS", .Scale1); // Scale1 value
+        // Read back for delay (register write synchronization)
+        _ = pwr.PWR_D3CR.read().VOS;
+
+        // Enable PWR overdrive via SYSCFG
+        syscfg.PWRCR.modify_one("ODEN", 1);
+        // Read back for delay
+        _ = syscfg.PWRCR.read().ODEN;
+    } else {
+        // Disable overdrive first before scaling down
+        syscfg.PWRCR.modify_one("ODEN", 0);
+        _ = syscfg.PWRCR.read().ODEN;
+
+        // const vos_val: u2 = switch (scale) {
+        //     .Scale0 => unreachable,
+        //     .Scale1 => 3,
+        //     .Scale2 => 2,
+        //     .Scale3 => 1,
+        // };
+        pwr.PWR_D3CR.modify_one("VOS", scale);
+        _ = pwr.PWR_D3CR.read().VOS;
+    }
 }
 
 pub const PwrFlag = enum {

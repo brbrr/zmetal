@@ -84,7 +84,9 @@ fn init_fpu() void {
 
 /// Reset RCC (Reset and Clock Control) to default state
 fn reset_rcc() void {
-    RCC.CR.modify_one("HSION", 0);
+    // Match libdaisy reset behavior: keep HSI running during RCC reset.
+    RCC.CR.modify_one("HSION", 1);
+    while (RCC.CR.read().HSIRDY != 1) {}
     RCC.CFGR.raw = 0x00000000;
     RCC.CR.raw &= 0xEAF6ED7F;
     RCC.D1CFGR.raw = 0x00000000;
@@ -112,8 +114,6 @@ fn enable_sram_clocks() void {
 
     // Read-back to ensure write is complete
     _ = RCC.AHB2ENR.read();
-
-    errors.delay(1000);
 }
 
 /// Apply STM32H7 silicon revision Y workarounds
@@ -128,5 +128,5 @@ fn apply_h7_workarounds() void {
 
 /// Configure the vector table offset register
 fn configure_vector_table() void {
-    scb.VTOR = @intCast(@intFromPtr(&cpu.startup_logic._vector_table));
+    // scb.VTOR = @intCast(@intFromPtr(&cpu.startup_logic._vector_table));
 }

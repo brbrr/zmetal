@@ -30,13 +30,14 @@ pub const SystemConfig = struct {
     freq: SysFreq = .default,
 };
 
-// const SysConfig = SystemConfig{ .freq = .default };
-const SysConfig = SystemConfig{ .freq = .boost };
+// pub const SysConfig = SystemConfig{ .freq = .default };
+pub const SysConfig = SystemConfig{ .freq = .boost };
 
 const ClockTree = hal.rcc.ClockTree;
 
 pub const clk_config = ClockTree.Config{
     .HSE_VALUE = stm32.clock.HSE_VALUE,
+
     .PLLSource = .RCC_PLLSOURCE_HSE,
 
     // Values from libdaisy src
@@ -65,7 +66,7 @@ pub const clk_config = ClockTree.Config{
 
     .DIVN2 = 12, // libdaisy: PLL2N = 12 for FMC @ 100MHz
     .DIVM2 = 1,
-    .DIVP2 = 8,
+    .DIVP2 = 2, // libdaisy 8
     .DIVQ2 = 2,
     .DIVR2 = 1,
     .PLL2FRACN = 4096,
@@ -327,13 +328,13 @@ fn i2c_init() !void {
 
 fn sai_init() !void {
     // SAI1 global interrupt for error handling (OVRUDR, AFSDET, LFSDET, WCKCFG)
-    // cpu.interrupt.set_priority(.SAI1, .highest);
-    // cpu.interrupt.enable(.SAI1);
+    cpu.interrupt.enable(.SAI1);
+    cpu.interrupt.set_priority(.SAI1, .highest);
 }
 
 fn spi_init() !void {
-    microzig.cpu.interrupt.set_priority(.SPI1, .highest);
     microzig.cpu.interrupt.enable(.SPI1);
+    microzig.cpu.interrupt.set_priority(.SPI1, .highest);
 }
 
 fn uart_init() !void {
@@ -359,25 +360,20 @@ pub const Daisy = struct {
     }
 
     pub fn init(self: *Daisy) !void {
+        microzig.interrupt.enable_interrupts();
         try hal_init();
         try configure_clocks();
 
-        // Reconfigure SysTick for actual clock frequency (PLL1 instead of HSI)
-        // hal.clock.update_system_core_clock();
-        // try hal.clock.hal_init_tick(.highest);
-
         try configure_mpu();
+
+        hal.cache.enableICache();
+        hal.cache.enableDCache();
 
         try dma_init();
         try sai_init();
         try i2c_init();
         try spi_init();
         try uart_init();
-
-        microzig.interrupt.enable_interrupts();
-
-        hal.cache.enableDCache();
-        hal.cache.enableICache();
 
         self.led.configure();
 

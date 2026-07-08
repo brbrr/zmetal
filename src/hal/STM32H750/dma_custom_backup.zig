@@ -94,13 +94,9 @@ pub inline fn write_one_to_clear(
 
 pub fn dma_irq_handler(comptime chan: Channel) void {
     const info = comptime chan.info();
-    const dma = if (info.per_id == 1) DMA2 else DMA1;
-    const ch_regs = chan.get_regs();
-    const handlers = chan.handlers();
-
-    var ISR = if (info.is_high) &dma.HISR else &dma.LISR;
+    const dma = if (comptime info.per_id == 1) DMA2 else DMA1;
+    var ISR = if (comptime info.is_high) &dma.HISR else &dma.LISR;
     const IFCR = if (comptime info.is_high) &dma.HIFCR else &dma.LIFCR;
-
     const status = ISR.read();
 
     const feif = @field(status, "FEIF" ++ info.suffix);
@@ -109,122 +105,125 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
     const htif = @field(status, "HTIF" ++ info.suffix);
     const tcif = @field(status, "TCIF" ++ info.suffix);
 
+    const ch_regs = chan.get_regs();
+    const handlers = chan.handlers();
+    const cr = ch_regs.CR.read();
+    const fcr = ch_regs.FCR.read();
+    var cleared_irq_flag = false;
+
     // -------------------------------------------------------------------------
     // Transfer Error
     // -------------------------------------------------------------------------
-    if (teif == 1) {
-        // Check IT source enabled
-        if (ch_regs.CR.read().TEIE == 1) {
-            ch_regs.CR.modify_one("TEIE", 0); // disable TE interrupt
-            write_one_to_clear(IFCR, "CTEIF" ++ info.suffix);
-            handlers.error_code.te = true;
-        }
+    // Check IT source enabled
+    if (teif == 1 and cr.TEIE == 1) {
+        write_one_to_clear(IFCR, "CTEIF" ++ info.suffix);
+        cleared_irq_flag = true;
+        handlers.error_code.te = true;
     }
 
     // -------------------------------------------------------------------------
     // FIFO Error
     // -------------------------------------------------------------------------
-    if (feif == 1) {
-        if (ch_regs.FCR.read().FEIE == 1) {
-            write_one_to_clear(IFCR, "CFEIF" ++ info.suffix);
-            handlers.error_code.fe = true;
-        }
+    if (feif == 1 and fcr.FEIE == 1) {
+        write_one_to_clear(IFCR, "CFEIF" ++ info.suffix);
+        cleared_irq_flag = true;
+        handlers.error_code.fe = true;
     }
 
     // -------------------------------------------------------------------------
     // Direct Mode Error
     // -------------------------------------------------------------------------
-    if (dmeif == 1) {
-        if (ch_regs.CR.read().DMEIE == 1) {
-            write_one_to_clear(IFCR, "CDMEIF" ++ info.suffix);
-            handlers.error_code.dme = true;
-        }
+    if (dmeif == 1 and cr.DMEIE == 1) {
+        write_one_to_clear(IFCR, "CDMEIF" ++ info.suffix);
+        cleared_irq_flag = true;
+        handlers.error_code.dme = true;
     }
 
     // -------------------------------------------------------------------------
     // Half Transfer
     // -------------------------------------------------------------------------
-    if (htif == 1) {
-        if (ch_regs.CR.read().HTIE == 1) {
-            write_one_to_clear(IFCR, "CHTIF" ++ info.suffix);
+    if (htif == 1 and cr.HTIE == 1) {
+        write_one_to_clear(IFCR, "CHTIF" ++ info.suffix);
+        cleared_irq_flag = true;
 
-            const cr = ch_regs.CR.read();
-
-            if (cr.DBM == 1) {
-                // Double buffer mode: callbacks are swapped relative to CT bit
-                if (cr.CT == .Memory0) {
-                    // Currently filling Memory0 → half of Memory1 done
-                    if (handlers.half_complete) |cb|
-                        cb(chan, handlers.ctx.?);
-                } else {
-                    // Currently filling Memory1 → half of Memory0 done
-                    if (handlers.m1_half_complete) |cb|
-                        cb(chan, handlers.ctx.?);
-                }
-            } else {
-                // Non-circular: disable HT interrupt after firing
-                if (cr.CIRC == 0) {
-                    ch_regs.CR.modify_one("HTIE", 0);
-                }
+        if (cr.DBM == 1) {
+            // Double buffer mode: callbacks are swapped relative to CT bit
+            if (cr.CT == .Memory0) {
+                // Currently filling Memory0 → half of Memory1 done
                 if (handlers.half_complete) |cb|
                     cb(chan, handlers.ctx.?);
+            } else {
+                // Currently filling Memory1 → half of Memory0 done
+                if (handlers.m1_half_complete) |cb|
+                    cb(chan, handlers.ctx.?);
             }
+        } else {
+            // Non-circular: disable HT interrupt after firing
+            if (cr.CIRC == 0) {
+                ch_regs.CR.modify_one("HTIE", 0);
+            }
+            if (handlers.half_complete) |cb|
+                cb(chan, handlers.ctx.?);
         }
     }
 
     // -------------------------------------------------------------------------
     // Transfer Complete
     // -------------------------------------------------------------------------
-    if (tcif == 1) {
-        if (ch_regs.CR.read().TCIE == 1) {
-            write_one_to_clear(IFCR, "CTCIF" ++ info.suffix);
+    if (tcif == 1 and cr.TCIE == 1) {
+        write_one_to_clear(IFCR, "CTCIF" ++ info.suffix);
+        cleared_irq_flag = true;
 
-            // Abort flow
-            if (handlers.state == .abort) {
-                // Disable all interrupts
-                ch_regs.CR.modify(.{
-                    .TCIE = 0,
-                    .TEIE = 0,
-                    .DMEIE = 0,
-                    .HTIE = 0,
-                });
-                ch_regs.FCR.modify_one("FEIE", 0);
+        // Abort flow
+        if (handlers.state == .abort) {
+            // Disable all interrupts
+            ch_regs.CR.modify(.{
+                .TCIE = 0,
+                .TEIE = 0,
+                .DMEIE = 0,
+                .HTIE = 0,
+            });
+            ch_regs.FCR.modify_one("FEIE", 0);
 
-                // Clear all flags
-                chan.clear_flags();
+            // Clear all flags
+            chan.clear_flags();
+            cleared_irq_flag = true;
 
-                handlers.state = .ready;
+            handlers.state = .ready;
 
-                if (handlers.abort) |cb|
+            if (handlers.abort) |cb|
+                cb(chan, handlers.ctx.?);
+            @breakpoint();
+            @panic("ZZZ");
+            // return;
+        }
+
+        if (cr.DBM == 1) {
+            // Double buffer: CT has already flipped by hardware at TC
+            if (cr.CT == .Memory0) {
+                // Memory1 just finished (CT flipped to 0 meaning now filling Mem0)
+                if (handlers.m1_complete) |cb|
                     cb(chan, handlers.ctx.?);
-                @breakpoint();
-                @panic("ZZZ");
-                // return;
-            }
-
-            const cr = ch_regs.CR.read();
-
-            if (cr.DBM == 1) {
-                // Double buffer: CT has already flipped by hardware at TC
-                if (cr.CT == .Memory0) {
-                    // Memory1 just finished (CT flipped to 0 meaning now filling Mem0)
-                    if (handlers.m1_complete) |cb|
-                        cb(chan, handlers.ctx.?);
-                } else {
-                    // Memory0 just finished
-                    if (handlers.complete) |cb|
-                        cb(chan, handlers.ctx.?);
-                }
             } else {
-                if (cr.CIRC == 0) {
-                    // One-shot: disable TC, mark ready
-                    ch_regs.CR.modify_one("TCIE", 0);
-                    handlers.state = .ready;
-                }
+                // Memory0 just finished
                 if (handlers.complete) |cb|
                     cb(chan, handlers.ctx.?);
             }
+        } else {
+            if (cr.CIRC == 0) {
+                // One-shot: disable TC, mark ready
+                ch_regs.CR.modify_one("TCIE", 0);
+                handlers.state = .ready;
+            }
+            if (handlers.complete) |cb|
+                cb(chan, handlers.ctx.?);
         }
+    }
+
+    // Ensure all IFCR writes and tx_buffer stores are committed before ISR exit.
+    // Without this, the NVIC can observe stale pending state and retrigger.
+    if (cleared_irq_flag) {
+        microzig.cpu.dsb();
     }
 
     // -------------------------------------------------------------------------
@@ -381,7 +380,7 @@ pub const Channel = enum(u4) {
         chan.clear_flags();
 
         // Number of transfers (in words)
-        ch_regs.NDTR.modify_one("NDT", @intCast(count));
+        ch_regs.NDTR.raw = count;
 
         switch (config.dir) {
             .mem_to_perih => {
@@ -412,9 +411,6 @@ pub const Channel = enum(u4) {
             // .PSIZE = .Bits32,
             // .MSIZE = .Bits32,
 
-            // .PSIZE = config.dest.alignment,
-            // .MSIZE = config.src.alignment,
-            //
             .DIR = @as(dmat.DIR, @enumFromInt(@intFromEnum(config.dir))),
             .CIRC = @as(u1, if (config.mode == .circular) 1 else 0),
             .PFCTRL = @as(dmat.PFCTRL, if (config.mode == .pfctrl) .Peripheral else .DMA),
@@ -428,9 +424,20 @@ pub const Channel = enum(u4) {
         });
 
         if (config.fifo_mode == 0) {
-            ch_regs.FCR.raw = 0;
+            // Direct mode
+            ch_regs.FCR.modify(.{
+                .DMDIS = .Enabled,
+                .FTH = .Quarter,
+                .FEIE = 0,
+            });
         } else {
-            @panic("FIFO enabled is not supported for now!");
+            // FIFO mode; fifo_mode encodes threshold (0..3), clamped to valid range.
+            const fth: dmat.FTH = @enumFromInt(@min(config.fifo_mode, 3));
+            ch_regs.FCR.modify(.{
+                .DMDIS = .Disabled,
+                .FTH = fth,
+                .FEIE = 1,
+            });
         }
 
         chan.configure_dmamux(config.req);

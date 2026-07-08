@@ -215,6 +215,8 @@ pub fn ILI9341_Transport(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gp
     };
 }
 
+pub var display_framebuffer: [320 * 240 * 2]u8 linksection(".sram1_bss") = undefined;
+
 /// ILI9341 driver with chunked DMA framebuffer transfers
 pub fn ILI9341_DMA(
     comptime dc_pin: hal.gpio.Pin,
@@ -379,6 +381,7 @@ pub fn ILI9341_DMA(
                 return error.FlushInProgress;
             }
 
+            self.done = false;
             // Setup address window for full screen
             try self.transport.set_address_window(0, 0, WIDTH - 1, HEIGHT - 1);
 
@@ -404,6 +407,8 @@ pub fn ILI9341_DMA(
                 if (cs_pin) |cs| {
                     cs.write(.High);
                 }
+
+                self.done = true;
 
                 if (self.user_flush_callback) |cb| {
                     self.user_flush_callback = null;

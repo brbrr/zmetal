@@ -1,4 +1,5 @@
-const mmio = @import("mmio");
+const microzig = @import("microzig");
+const mmio = microzig.mmio;
 const types = @import("../../types.zig");
 
 /// System configuration controller
@@ -127,7 +128,11 @@ pub const SYSCFG = extern struct {
         padding: u24 = 0,
     }),
     /// offset: 0x2c
-    reserved44: [248]u8,
+    PWRCR: mmio.Mmio(packed struct(u32) {
+        ODEN: u1,
+        padding: u31 = 0,
+    }),
+    reserved44: [244]u8,
     /// SYSCFG package register
     /// offset: 0x124
     PKGR: mmio.Mmio(packed struct(u32) {

@@ -38,6 +38,7 @@ pub const SyncMode = enum {
 pub const SaiConfig = struct {
     sample_rate: SampleRate = .@"48khz",
     bit_depth: BitDepth = .@"24bit",
+    // bit_depth: BitDepth = .@"32bit",
     a_sync: SyncMode = .master,
     b_sync: SyncMode = .slave,
     a_dir: Direction = .transmit,
@@ -81,11 +82,7 @@ pub const SaiConfig = struct {
 
 pub const AudioCallback = fn (input: []const f32, output: []f32, size: u16) void;
 
-const buf_size = 200;
-const S = struct {
-    var f_in: [buf_size]f32 = undefined;
-    var f_out: [buf_size]f32 = undefined;
-};
+const buf_size = 400;
 
 // ============================================================================
 // DMA Channels (fixed for SAI1: Stream0=TX, Stream1=RX)
@@ -107,9 +104,8 @@ pub fn dma1_1_handler() callconv(.c) void {
 // ============================================================================
 
 const BufferSize: u32 = 1024;
-var tx_buffer: [BufferSize]u32 linksection(".sram1_bss") = undefined;
-var rx_buffer: [BufferSize]u32 linksection(".sram1_bss") = undefined;
-
+var tx_buffer: [BufferSize]i32 linksection(".sram1_bss") = undefined;
+var rx_buffer: [BufferSize]i32 linksection(".sram1_bss") = undefined;
 // ============================================================================
 // GPIO Pin Configuration (match libdaisy: AF6, PushPull, MediumSpeed, PullUp)
 // ============================================================================
@@ -117,15 +113,15 @@ var rx_buffer: [BufferSize]u32 linksection(".sram1_bss") = undefined;
 const sai_p_cfg: hal.gpio.PinConfig = .{
     .mode = .{ .alternate = .af6 },
     .otype = .PushPull,
-    .speed = .VeryHighSpeed,
+    .speed = .MediumSpeed,
     .pull = .PullUp,
 };
-
 const mclk = hal.gpio.Pin.init("E", "2", sai_p_cfg);
 const sb = hal.gpio.Pin.init("E", "3", sai_p_cfg);
 const fs = hal.gpio.Pin.init("E", "4", sai_p_cfg);
 const sck = hal.gpio.Pin.init("E", "5", sai_p_cfg);
 const sa = hal.gpio.Pin.init("E", "6", sai_p_cfg);
+
 const codec_reset = hal.gpio.Pin.init("B", "11", .{
     .mode = .output,
     .pull = .Floating,
@@ -138,8 +134,6 @@ const codec_reset = hal.gpio.Pin.init("B", "11", .{
 // ============================================================================
 
 pub const SaiDriver = struct {
-    const Self = @This();
-
     config: SaiConfig,
     transfer_size: u16 = 0,
     user_callback: ?*const AudioCallback = null,
@@ -151,8 +145,8 @@ pub const SaiDriver = struct {
     /// Create and initialize the SAI peripheral.
     /// Configures clocks, pins, codec, and SAI register blocks.
     /// Does NOT start audio — call start() for that.
-    pub fn init(config: SaiConfig) Self {
-        var self = Self{ .config = config };
+    pub fn init(config: SaiConfig) SaiDriver {
+        var self = SaiDriver{ .config = config };
 
         // Enable SAI1 clock
         hal.rcc.enable_clock(.SAI1);
@@ -176,8 +170,9 @@ pub const SaiDriver = struct {
 
         self.transfer_size = self.config.blocksize * 2 * 2; // blocksize * 2 channels * 2 halves
 
-        @memset(&tx_buffer, 0);
         @memset(&rx_buffer, 0);
+        @memset(&tx_buffer, 0);
+
         // Configure SAI register blocks
         self.initSaiBlocks();
 
@@ -186,23 +181,20 @@ pub const SaiDriver = struct {
 
     /// Start DMA audio streaming with the given callback.
     /// Follows libdaisy's start sequence: slave (RX) first, then master (TX).
-    pub fn start(self: *Self, callback: *const AudioCallback) !void {
+    pub fn start(self: *SaiDriver, callback: *const AudioCallback) !void {
         self.user_callback = callback;
 
-        // Pre-fill TX buffer with silence
-        // self.fillTxBuffer(0);
-
+        // Match libdaisy callback ownership: RX DMA HT/TC drives audio callback timing.
         const rx_hdl = rx_chan.handlers();
         rx_hdl.complete = rx_dma_complete;
         rx_hdl.half_complete = rx_dma_half_complete;
-        rx_hdl.ctx = @ptrCast(self);
+        rx_hdl.ctx = self;
 
         // ----- START SLAVE (Block B / RX) -----
         var rx_regs = rx_chan.get_regs();
         rx_regs.CR.modify_one("EN", 0);
         while (rx_regs.CR.read().EN != 0) microzig.cpu.nop();
-
-        rx_regs.NDTR.modify_one("NDT", self.transfer_size);
+        rx_regs.NDTR.raw = self.transfer_size;
         rx_regs.CR.modify_one("EN", 1);
         // Enable DMA request on Block B
         regs.SAI1.SAI_BCR1.modify(.{ .DMAEN = 1 });
@@ -214,7 +206,7 @@ pub const SaiDriver = struct {
         var tx_regs = tx_chan.get_regs();
         tx_regs.CR.modify_one("EN", 0);
         while (tx_regs.CR.read().EN != 0) microzig.cpu.nop();
-        tx_regs.NDTR.modify_one("NDT", self.transfer_size);
+        tx_regs.NDTR.raw = self.transfer_size;
         tx_regs.CR.modify_one("EN", 1);
 
         // Enable DMA request on Block A
@@ -234,7 +226,7 @@ pub const SaiDriver = struct {
     }
 
     /// Stop audio streaming. Disables SAI and DMA.
-    pub fn stop(self: *Self) void {
+    pub fn stop(self: *SaiDriver) void {
         _ = self;
 
         // Disable SAI error interrupts
@@ -258,44 +250,83 @@ pub const SaiDriver = struct {
     // ------------------------------------------------------------------
 
     pub fn sai1_irq_handler() callconv(.c) void {
+
         // Block A (master TX) errors
-        const a_sr = regs.SAI1.SAI_ASR.read();
-        const a_im = regs.SAI1.SAI_AIM.read();
+        {
+            const sr = regs.SAI1.SAI_ASR.read();
+            const im = regs.SAI1.SAI_AIM.read();
+            const clr_r = &regs.SAI1.SAI_ACLRFR;
 
-        if (a_sr.OVRUDR == 1 and a_im.OVRUDRIE == 1) {
-            regs.SAI1.SAI_ACLRFR.modify(.{ .COVRUDR = 1 });
-        }
-        if (a_sr.WCKCFG == 1 and a_im.WCKCFGIE == 1) {
-            regs.SAI1.SAI_ACLRFR.modify(.{ .CWCKCFG = 1 });
+            if (sr.OVRUDR == 1 and im.OVRUDRIE == 1) {
+                clr_r.modify(.{ .COVRUDR = 1 });
+                @panic("QQ");
+            }
+            if (sr.WCKCFG == 1 and im.WCKCFGIE == 1) {
+                clr_r.modify(.{ .CWCKCFG = 1 });
+                @panic("QQ");
+            }
+
+            if (sr.CNRDY == 1 and im.CNRDYIE == 1) {
+                clr_r.modify(.{ .CCNRDY = 1 });
+                @panic("QQ");
+            }
+            if (sr.AFSDET == 1 and im.AFSDETIE == 1) {
+                clr_r.modify(.{ .CAFSDET = 1 });
+                @panic("QQ");
+            }
+            if (sr.LFSDET == 1 and im.LFSDETIE == 1) {
+                clr_r.modify(.{ .CLFSDET = 1 });
+                @panic("QQ");
+            }
         }
 
-        // Block B (slave RX) errors
-        const b_sr = regs.SAI1.SAI_BSR.read();
-        const b_im = regs.SAI1.SAI_BIM.read();
+        {
+            const sr = regs.SAI1.SAI_BSR.read();
+            const im = regs.SAI1.SAI_BIM.read();
+            const clr_r = &regs.SAI1.SAI_BCLRFR;
 
-        if (b_sr.OVRUDR == 1 and b_im.OVRUDRIE == 1) {
-            regs.SAI1.SAI_BCLRFR.modify(.{ .COVRUDR = 1 });
+            if (sr.OVRUDR == 1 and im.OVRUDRIE == 1) {
+                clr_r.modify(.{ .COVRUDR = 1 });
+                @panic("QQ");
+            }
+            if (sr.WCKCFG == 1 and im.WCKCFGIE == 1) {
+                clr_r.modify(.{ .CWCKCFG = 1 });
+                @panic("QQ");
+            }
+
+            if (sr.CNRDY == 1 and im.CNRDYIE == 1) {
+                clr_r.modify(.{ .CCNRDY = 1 });
+                @panic("QQ");
+            }
+            if (sr.AFSDET == 1 and im.AFSDETIE == 1) {
+                clr_r.modify(.{ .CAFSDET = 1 });
+                @panic("QQ");
+            }
+            if (sr.LFSDET == 1 and im.LFSDETIE == 1) {
+                clr_r.modify(.{ .CLFSDET = 1 });
+                @panic("QQ");
+            }
+
+            // if (sr.FREQ == 1 and im.FREQIE == 1) {
+            //     clr_r.modify(.{ .CLFSDET = 1 });
+            //     @panic("QQ");
+            // }
         }
-        if (b_sr.AFSDET == 1 and b_im.AFSDETIE == 1) {
-            regs.SAI1.SAI_BCLRFR.modify(.{ .CAFSDET = 1 });
-        }
-        if (b_sr.LFSDET == 1 and b_im.LFSDETIE == 1) {
-            regs.SAI1.SAI_BCLRFR.modify(.{ .CLFSDET = 1 });
-        }
+        @panic("QQQ");
     }
 
     // ------------------------------------------------------------------
     // DMA Targets
     // ------------------------------------------------------------------
 
-    pub fn txTarget(self: Self) hal.dma.DMA_WriteTarget {
+    pub fn txTarget(self: SaiDriver) hal.dma.DMA_WriteTarget {
         return .{
             .dreq = if (self.config.a_dir == .transmit) .SAI1_A else .SAI1_B,
             .addr = if (self.config.a_dir == .transmit) @intFromPtr(&regs.SAI1.SAI_ADR) else @intFromPtr(&regs.SAI1.SAI_BDR),
         };
     }
 
-    pub fn rxTarget(self: Self) hal.dma.DMA_ReadTarget {
+    pub fn rxTarget(self: SaiDriver) hal.dma.DMA_ReadTarget {
         return .{
             .dreq = if (self.config.a_dir == .receive) .SAI1_A else .SAI1_B,
             .addr = if (self.config.a_dir == .receive) @intFromPtr(&regs.SAI1.SAI_ADR) else @intFromPtr(&regs.SAI1.SAI_BDR),
@@ -306,11 +337,11 @@ pub const SaiDriver = struct {
     // SAI Block Configuration
     // ------------------------------------------------------------------
 
-    fn initSaiBlocks(self: *Self) void {
+    fn initSaiBlocks(self: *SaiDriver) void {
         const data = self.config.getSaiRegFlags();
         const mck_div = computeMckDiv(daisy.clock_outputs.SAI1output, @intFromEnum(self.config.sample_rate), data.frame_length, false, false);
 
-        regs.SAI1.SAI_GCR.raw = 0;
+        // regs.SAI1.SAI_GCR.raw = 0;
 
         // ---- Block A: Master Transmitter ----
         regs.SAI1.SAI_ACR1.raw = 0;
@@ -319,7 +350,7 @@ pub const SaiDriver = struct {
             .PRTCFG = 0, // Free protocol
             .DS = data.data_size,
             .LSBFIRST = 0, // MSB first
-            .CKSTR = 1, // Clock strobing on falling edge
+            .CKSTR = 1, // TX: match libdaisy
             .SYNCEN = 0, // Asynchronous (master generates clocks)
             .MONO = 0, // Stereo
             .OUTDRIV = 0, // Output drive disabled
@@ -328,17 +359,6 @@ pub const SaiDriver = struct {
         });
 
         regs.SAI1.SAI_ACR2.raw = 0;
-        // NOTE: libdaisy don't do that
-        // regs.SAI1.SAI_ACR2.modify(.{
-        //     .FTH = 0, // FIFO threshold = 1/4
-        //     .FFLUSH = 1, // Flush FIFO
-        //     .TRIS = 0, // No high-Z state
-        //     .MUTE = 0, // No mute
-        //     .MUTEVAL = 0,
-        //     .MUTECNT = 0,
-        //     .CPL = 0, // No complement
-        //     .COMP = 0b00, // No companding
-        // });
 
         regs.SAI1.SAI_AFRCR.raw = 0;
         regs.SAI1.SAI_AFRCR.modify(.{
@@ -357,21 +377,23 @@ pub const SaiDriver = struct {
             .SLOTEN = 0xffff, // Enable all
         });
 
-        try rx_chan.setup_transfer(&rx_buffer, self.rxTarget(), .{
+        try rx_chan.setup_transfer(rx_buffer[0..self.transfer_size], self.rxTarget(), .{
             .enable = true,
             .mode = .circular,
             .priority = .High,
             .fifo_mode = 0,
             .size = self.transfer_size,
+            // .enable_interrupts = false,
         });
 
-        // Enable SAI error interrupts for slave
+        // Enable SAI error interrupts for slave (match libdaisy: BIM = 0x61)
         regs.SAI1.SAI_BIM.modify(.{
             .OVRUDRIE = 1,
-            .WCKCFGIE = 1,
-            .CNRDYIE = 1,
+            .WCKCFGIE = 0,
+            .CNRDYIE = 0,
             .AFSDETIE = 1,
             .LFSDETIE = 1,
+            // .FREQIE = 1,
         });
 
         // ---- Block B: Slave Receiver ----
@@ -390,17 +412,6 @@ pub const SaiDriver = struct {
         });
 
         regs.SAI1.SAI_BCR2.raw = 0;
-        // NOTE: libdaisy doesn't do that
-        // regs.SAI1.SAI_BCR2.modify(.{
-        //     .FTH = 0, // FIFO threshold
-        //     .FFLUSH = 1, // Flush FIFO
-        //     .TRIS = 0, // No high-Z state
-        //     .MUTE = 0, // No mute
-        //     .MUTEVAL = 0,
-        //     .MUTECNT = 0,
-        //     .CPL = 0, // No complement
-        //     .COMP = 0b00, // No companding
-        // });
 
         regs.SAI1.SAI_BFRCR.raw = 0;
         regs.SAI1.SAI_BFRCR.modify(.{
@@ -422,21 +433,23 @@ pub const SaiDriver = struct {
         // Disable PDM
         regs.SAI1.SAI_PDMCR.raw = 0;
 
-        try tx_chan.setup_transfer(self.txTarget(), &tx_buffer, .{
+        try tx_chan.setup_transfer(self.txTarget(), tx_buffer[0..self.transfer_size], .{
             .enable = true,
             .mode = .circular,
             .priority = .High,
             .fifo_mode = 0,
             .size = self.transfer_size,
+            .enable_interrupts = false,
         });
 
-        // Enable SAI error interrupts for master
+        // Enable SAI error interrupts for master (match libdaisy: AIM = 0x05)
         regs.SAI1.SAI_AIM.modify(.{
             .OVRUDRIE = 1,
             .WCKCFGIE = 1,
-            .CNRDYIE = 1,
-            .AFSDETIE = 1,
-            .LFSDETIE = 1,
+            .CNRDYIE = 0,
+            .AFSDETIE = 0,
+            .LFSDETIE = 0,
+            // .FREQIE = 1,
         });
 
         cpu.dsb();
@@ -467,7 +480,7 @@ pub const SaiDriver = struct {
     }
 
     // ------------------------------------------------------------------
-    // DMA Callbacks (driven by RX DMA half/complete interrupts)
+    // DMA Callbacks
     // ------------------------------------------------------------------
 
     fn rx_dma_complete(chan: Channel, ctx: *anyopaque) void {
@@ -482,37 +495,63 @@ pub const SaiDriver = struct {
         self.fillTxBuffer(0);
     }
 
+    pub fn processPendingAudio(self: *SaiDriver) void {
+        _ = self;
+    }
+
     // ------------------------------------------------------------------
     // Audio Processing
     // ------------------------------------------------------------------
 
-    fn fillTxBuffer(self: *Self, offset: u32) void {
+    pub fn fillTxBuffer(self: *SaiDriver, offset: u32) void {
         const half_size = self.transfer_size / 2;
         std.debug.assert(half_size <= buf_size);
 
-        // Convert SAI input to floats
+        // All intermediate buffers live on the stack (DTCM, 0x20000000).
+        // DTCM is zero-wait-state on a dedicated bus — CPU accesses here
+        // do NOT contend with DMA accessing SRAM1 on the D2 bus matrix.
+        var f_in: [buf_size]f32 = undefined;
+        var f_out: [buf_size]f32 = undefined;
+        // var tx_staging: [buf_size]i32 = undefined;
+
+        // --- Read rx_buffer (SRAM1) into stack-local f_in (DTCM) ---
         switch (self.config.bit_depth) {
             .@"24bit" => {
                 for (0..half_size) |i| {
-                    S.f_in[i] = s24tof(rx_buffer[offset + i]);
+                    f_in[i] = s24tof(rx_buffer[offset + i]);
+                }
+            },
+            .@"32bit" => {
+                for (0..half_size) |i| {
+                    f_in[i] = s32tof(rx_buffer[offset + i]);
                 }
             },
             else => unreachable,
         }
 
+        // --- User callback: DTCM → DTCM (no SRAM1 access) ---
         if (self.user_callback) |cb| {
-            cb(S.f_in[0..half_size], S.f_out[0..half_size], @intCast(half_size));
+            cb(f_in[0..half_size], f_out[0..half_size], @intCast(half_size));
         }
 
-        // Convert floats back to SAI output
+        // --- Convert to i32 in staging buffer (DTCM, no SRAM1 access) ---
         switch (self.config.bit_depth) {
             .@"24bit" => {
                 for (0..half_size) |i| {
-                    tx_buffer[offset + i] = fto24(S.f_out[i]);
+                    tx_buffer[offset + i] = fto24(f_out[i]);
+                }
+            },
+            .@"32bit" => {
+                for (0..half_size) |i| {
+                    tx_buffer[offset + i] = fto32(f_out[i]);
                 }
             },
             else => unreachable,
         }
+
+        // Ensure stores to SRAM1 are visible before DMA consumes this half.
+        cpu.dsb();
+        cpu.dmb();
     }
 
     // ------------------------------------------------------------------
@@ -551,22 +590,32 @@ pub const SaiDriver = struct {
 // Sample Format Conversion (24-bit signed integer ↔ float)
 // ============================================================================
 
-/// Convert float [-1.0, 1.0] to 24-bit signed integer (as u32)
-pub fn fto24(sample: f32) u32 {
-    const FBIPMAX: f32 = 0.999985;
-    const FBIPMIN: f32 = -FBIPMAX;
+const FBIPMAX: f32 = 0.999985;
+const FBIPMIN: f32 = -FBIPMAX;
+/// Convert float [-1.0, 1.0] to 24-bit signed integer
+pub inline fn fto24(sample: f32) i32 {
     const F2S24_SCALE: f32 = 8388608.0; // 2^23
 
     const clamped = math.clamp(sample, FBIPMIN, FBIPMAX);
-    const scaled: f64 = clamped * F2S24_SCALE;
-    const as_i32 = @as(i32, @intFromFloat(scaled));
-    return @as(u32, @bitCast(as_i32));
+    const scaled: f32 = clamped * F2S24_SCALE;
+    return @as(i32, @intFromFloat(scaled));
 }
 
-/// Convert 24-bit signed integer (as u32) to float [-1.0, 1.0]
-pub fn s24tof(xx: u32) f32 {
+/// Convert 24-bit signed integer to float [-1.0, 1.0]
+pub inline fn s24tof(xx: i32) f32 {
     const S242F_SCALE: f32 = 1.192092896e-07; // 1 / 2^23
-    const as_i32 = @as(i32, @bitCast(xx));
-    const sign_extended = as_i32 << 8 >> 8; // Sign-extend from 24-bit
+    const sign_extended = xx << 8 >> 8; // Sign-extend from 24-bit
     return @as(f32, @floatFromInt(sign_extended)) * S242F_SCALE;
+}
+
+pub inline fn fto32(s: f32) i32 {
+    const scale: f32 = 2147483647.0;
+    const clamped = math.clamp(s, FBIPMIN, FBIPMAX);
+    const scaled: f32 = clamped * scale;
+    return @as(i32, @intFromFloat(scaled));
+}
+
+pub inline fn s32tof(s: i32) f32 {
+    const scale: f32 = 4.6566129e-10;
+    return @as(f32, @floatFromInt(s)) * scale;
 }

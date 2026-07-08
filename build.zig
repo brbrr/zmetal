@@ -73,6 +73,7 @@ fn buildTargetVariant(
     mz_dep: *std.Build.Dependency,
     clockhelper_dep: *std.Build.Module,
     config: TargetConfig,
+    optimize: std.builtin.OptimizeMode,
 ) *std.Build.Step {
     const stm32_common_mod = b.createModule(.{
         .root_source_file = b.path("lib/microzig/port/stmicro/stm32/src/hals/common.zig"),
@@ -80,11 +81,11 @@ fn buildTargetVariant(
 
     const target = createSTM32Target(b, mz_dep, config.linker_script, stm32_common_mod, clockhelper_dep);
 
+    _ = optimize;
     const firmware = mb.add_firmware(.{
         .name = config.name,
         .target = target,
-        // .optimize = .ReleaseSmall,
-        .optimize = .Debug,
+        .optimize = .ReleaseFast,
         .root_source_file = b.path("src/main.zig"),
     });
 
@@ -117,20 +118,21 @@ pub fn build(b: *std.Build) void {
     const mz_dep = b.dependency("microzig", .{});
     const mb = MicroBuild.init(b, mz_dep) orelse return;
     const clockhelper_dep = b.dependency("ClockHelper", .{}).module("clockhelper");
+    const optimize = b.standardOptimizeOption(.{});
 
     const sram_report = buildTargetVariant(b, mb, mz_dep, clockhelper_dep, .{
         .name = "blinky-sram",
         .linker_script = "src/ld/daisy_sram.ld",
         .step_name = "sram",
         .step_description = "Build firmware for SRAM (bootloader mode)",
-    });
+    }, optimize);
 
     _ = buildTargetVariant(b, mb, mz_dep, clockhelper_dep, .{
         .name = "blinky-flash",
         .linker_script = "src/ld/daisy_flash.ld",
         .step_name = "flash",
         .step_description = "Build firmware for internal flash (direct mode)",
-    });
+    }, optimize);
 
     b.getInstallStep().dependOn(sram_report);
 }
