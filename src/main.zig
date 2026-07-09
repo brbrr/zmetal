@@ -9,6 +9,12 @@ const microzig = @import("microzig");
 const cpu = microzig.cpu;
 const chip = microzig.chip;
 
+// microzig now requires the root source file to explicitly export the startup logic
+// (defines the `microzig_main` symbol the reset handler jumps to).
+comptime {
+    _ = microzig.export_startup();
+}
+
 const chip_peri = chip.peripherals;
 const RCC = chip_peri.RCC;
 const time = microzig.drivers.time;
@@ -52,9 +58,11 @@ pub const microzig_options: microzig.Options = .{
         // SPI RX
         // .DMA2_STR2 = .{ .c = hal.spi.dma1_str3_handler },
     },
-
-    .logFn = hal.uart.log,
 };
+
+// Logging moved out of microzig.Options into the standard Zig `std_options`.
+// microzig.std_options() builds an embedded-friendly std.Options from the given overrides.
+pub const std_options = microzig.std_options(.{ .logFn = hal.uart.log });
 
 fn hw_handler() callconv(.c) void {
     @breakpoint();
@@ -121,6 +129,11 @@ var display_ready = false;
 var display_frame: u32 = 0;
 var display_prev_x: u16 = 0;
 
+// FPS counter state (measures display flushes per second)
+var fps_frame_count: u32 = 0;
+var fps_window_start: u32 = 0;
+var fps_value: u32 = 0;
+
 pub fn main() !void {
     try hw.init();
     try hw.startAudio(&myAudioCallback);
@@ -157,7 +170,7 @@ fn myAudioCallback(input: []const f32, output: []f32, size: u16) void {
         // sine.setFreq(mod_freq); // update frequency
 
         const samp = sine.nextSample();
-        output[i] = samp;
+        output[i] = 0;
         output[i + 1] = samp;
     }
 }
@@ -192,18 +205,35 @@ fn serviceDisplay() void {
         return;
     }
 
-    const x = @as(u16, @intCast(display_frame % 270));
+    const x: u16 = @intCast(display_frame % 270);
+    display.fill_screen(ili9341.Colors.Green);
     display.fill_rect(display_prev_x, 180, 50, 30, ili9341.Colors.Black);
     display.fill_rect(x, 180, 50, 30, ili9341.Colors.Orange);
     display_prev_x = x;
     display_frame += 1;
+
+    // Update FPS once per second based on flushes in the elapsed window.
+    fps_frame_count += 1;
+    const now = hal.clock.get_tick();
+    const elapsed = now - fps_window_start;
+    if (elapsed >= 1000) {
+        fps_value = fps_frame_count * 1000 / elapsed;
+        fps_frame_count = 0;
+        fps_window_start = now;
+    }
+
+    // Draw "FPS:NNN" in the top-right corner.
+    var fps_buf: [8]u8 = undefined;
+    const fps_str = std.fmt.bufPrint(&fps_buf, "FPS:{d:>3}", .{fps_value}) catch "FPS:???";
+    const fps_w: u16 = @intCast(fps_str.len * ili9341.font.font6x8.width);
+    _ = display.draw_string(ili9341.WIDTH - fps_w - 2, 2, fps_str, ili9341.font.font6x8, ili9341.Colors.White, ili9341.Colors.Black);
 
     display.flush(null) catch |err| switch (err) {
         error.FlushInProgress => {},
         else => @panic("display flush failed"),
     };
 
-    tast_f_time = hal.clock.get_tick();
+    tast_f_time = now;
 }
 
 fn handle_key_event(evt: keyboard.KeyEventData) void {

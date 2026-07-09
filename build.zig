@@ -96,7 +96,7 @@ fn buildTargetVariant(
         "python3",
         "build_tools/memory_report.py",
     });
-    report.addFileArg(firmware.artifact.getEmittedBin());
+    report.addFileArg(firmware.get_emitted_elf());
     report.addArg(config.name);
     report.addArg(config.linker_script);
     report.step.dependOn(&install.step);

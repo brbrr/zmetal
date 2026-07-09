@@ -2,6 +2,9 @@ const std = @import("std");
 const microzig = @import("microzig");
 const hal = microzig.hal;
 
+pub const font = @import("font.zig");
+pub const Font = font.Font;
+
 pub const WIDTH = 320;
 pub const HEIGHT = 240;
 pub const Color = u16;
@@ -369,6 +372,40 @@ pub fn ILI9341_DMA(
 
         fn draw_vline(self: *Self, x: u16, y: u16, h: u16, color: Color) void {
             self.fill_rect(x, y, 1, h, color);
+        }
+
+        // ============================================================
+        // Text Rendering
+        // ============================================================
+
+        /// Draw a single character with the given font. Foreground pixels use
+        /// `fg`; the rest of the glyph cell is filled with `bg` so previously
+        /// drawn text at the same position is overwritten.
+        pub fn draw_char(self: *Self, x: u16, y: u16, ch: u8, f: Font, fg: Color, bg: Color) void {
+            if (ch < f.first) return;
+            const glyph = (@as(usize, ch - f.first)) * f.height;
+            if (glyph + f.height > f.data.len) return;
+
+            var row: u16 = 0;
+            while (row < f.height) : (row += 1) {
+                const bits = f.data[glyph + row];
+                var col: u16 = 0;
+                while (col < f.width) : (col += 1) {
+                    const on = (bits << @intCast(col)) & 0x8000 != 0;
+                    self.draw_pixel(x + col, y + row, if (on) fg else bg);
+                }
+            }
+        }
+
+        /// Draw a string starting at (x, y), advancing by the font width per
+        /// character. Returns the x coordinate just past the last glyph.
+        pub fn draw_string(self: *Self, x: u16, y: u16, str: []const u8, f: Font, fg: Color, bg: Color) u16 {
+            var cx = x;
+            for (str) |ch| {
+                self.draw_char(cx, y, ch, f, fg, bg);
+                cx += f.width;
+            }
+            return cx;
         }
 
         // ============================================================

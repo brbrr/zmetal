@@ -16,12 +16,10 @@ const hal = @import("hal.zig");
 const stm32 = hal;
 const rcc_hal = stm32.rcc;
 
-const plln_val = 200; //boost or 200 for default
-
 pub const SystemConfig = struct {
-    pub const SysFreq = enum {
-        default,
-        boost,
+    pub const SysFreq = enum(u16) {
+        default = 200,
+        boost = 240,
     };
 
     use_dcache: bool = true,
@@ -41,7 +39,7 @@ pub const clk_config = ClockTree.Config{
     .PLLSource = .RCC_PLLSOURCE_HSE,
 
     // Values from libdaisy src
-    .DIVN1 = if (SysConfig.freq == .boost) 240 else 200,
+    .DIVN1 = @intFromEnum(SysConfig.freq),
     .DIVM1 = 4,
     .DIVP1 = .@"2",
     .DIVQ1 = 5,
@@ -151,20 +149,6 @@ pub const clk_config = ClockTree.Config{
 
 pub const clock_outputs = clocktree_outputs.clock;
 pub const clocktree_outputs: ClockTree.Tree_Output = ClockTree.get_clocks(clk_config) catch unreachable;
-
-// Clock diagnostics - values verified via @compileLog
-// PLL1: SYSCLK = 480MHz (boost mode) ✓
-// PLL2: VCO = 200MHz for FMC/SDMMC ✓
-// PLL3: VCO = 787MHz for SAI/ADC ✓
-// HCLK = 240MHz, APBx = 120MHz ✓
-//
-// Peripheral clock selections verified at compile time:
-// PLL2 triggers: FMC, SPI123, SDMMC1 ✓
-// PLL3 triggers: SAI1, SAI23, I2C4, ADC ✓
-// PLL1: SYSCLK = 480MHz (boost mode) ✓
-// PLL2: VCO = 200MHz for FMC/SDMMC ✓
-// PLL3: VCO = 787MHz for SAI/ADC ✓
-// HCLK = 240MHz, APBx = 120MHz ✓
 
 const NVICPriorityGroup = enum(u3) {
     Group0 = 7,

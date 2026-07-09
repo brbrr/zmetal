@@ -124,15 +124,47 @@ pub const UART = enum(u8) {
 
     // NOTE: Hardcoded UART_PRESCALER_DIV2 from dsy config
     const clock_prescaler = 1;
-    pub const Writer = std.io.GenericWriter(UART, TransmitError, generic_writer_fn);
-    pub const Reader = std.io.GenericReader(UART, ReceiveBlockingError, generic_reader_fn);
+    /// std.Io.Writer adapter over blocking UART transmit.
+    /// Zig 0.16 replaced std.io.GenericWriter with the vtable-based std.Io.Writer.
+    pub const Writer = struct {
+        uart: UART,
+        interface: std.Io.Writer,
 
-    pub fn writer(uart: UART) Writer {
-        return .{ .context = uart };
-    }
+        pub fn init(uart: UART, buffer: []u8) Writer {
+            return .{
+                .uart = uart,
+                .interface = .{ .buffer = buffer, .vtable = &.{ .drain = drain } },
+            };
+        }
 
-    pub fn reader(uart: UART) Reader {
-        return .{ .context = uart };
+        fn drain(io_w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+            const self: *Writer = @fieldParentPtr("interface", io_w);
+            // Consume the internal buffer first, then each data slice in order.
+            const buffered = io_w.buffer[0..io_w.end];
+            if (buffered.len != 0) {
+                self.uart.write_blocking(buffered, null) catch return error.WriteFailed;
+                io_w.end = 0;
+            }
+            var written: usize = 0;
+            for (data[0 .. data.len - 1]) |bytes| {
+                if (bytes.len != 0)
+                    self.uart.write_blocking(bytes, null) catch return error.WriteFailed;
+                written += bytes.len;
+            }
+            // The last slice is repeated `splat` times.
+            const last = data[data.len - 1];
+            var n: usize = 0;
+            while (n < splat) : (n += 1) {
+                if (last.len != 0)
+                    self.uart.write_blocking(last, null) catch return error.WriteFailed;
+                written += last.len;
+            }
+            return written;
+        }
+    };
+
+    pub fn writer(uart: UART, buffer: []u8) Writer {
+        return Writer.init(uart, buffer);
     }
 
     pub inline fn get_reg(uart: UART) *volatile UartReg {
@@ -312,12 +344,6 @@ pub const UART = enum(u8) {
         }
     }
 
-    /// Wraps write_blocking() for use as a GenericWriter
-    fn generic_writer_fn(uart: UART, buffer: []const u8) TransmitError!usize {
-        try uart.write_blocking(buffer, null);
-        return buffer.len;
-    }
-
     /// Returns a struct with the current status of UART errors.
     pub fn get_errors(uart: UART) ErrorStates {
         const uart_regs = uart.get_reg();
@@ -406,12 +432,6 @@ pub const UART = enum(u8) {
         return try uart.read_rx_fifo_with_error_check();
     }
 
-    /// Wraps read_blocking() for use as a GenericReader
-    fn generic_reader_fn(uart: UART, buffer: []u8) ReceiveBlockingError!usize {
-        try uart.read_blocking(buffer, null);
-        return buffer.len;
-    }
-
     pub fn set_format(
         uart: UART,
         word_bits: u8,
@@ -458,17 +478,22 @@ pub const UART = enum(u8) {
     }
 };
 
+// Backing buffer for the logger's std.Io.Writer. The Writer is stored in a
+// global so the address of its `interface` field (used by drain via
+// @fieldParentPtr) stays stable across log calls.
+var log_tx_buffer: [256]u8 = undefined;
 var uart_logger: ?UART.Writer = null;
 
 /// Set a specific uart instance to be used for logging.
 ///
 /// Allows system logging over uart via:
-/// pub const microzig_options = .{
-///     .logFn = hal.uart.log,
-/// };
+/// pub const std_options = microzig.std_options(.{ .logFn = hal.uart.log });
 pub fn init_logger(uart: UART) void {
-    uart_logger = uart.writer();
-    uart_logger.?.writeAll("\r\n================ STARTING NEW LOGGER ================\r\n") catch {};
+    uart_logger = uart.writer(&log_tx_buffer);
+    if (uart_logger) |*lg| {
+        lg.interface.writeAll("\r\n================ STARTING NEW LOGGER ================\r\n") catch {};
+        lg.interface.flush() catch {};
+    }
 }
 
 /// Disables logging via the uart instance.
@@ -488,12 +513,13 @@ pub fn log(
         else => " (" ++ @tagName(scope) ++ "): ",
     };
 
-    if (uart_logger) |uart| {
+    if (uart_logger) |*lg| {
         const current_time = time.get_time_since_boot();
         const seconds = current_time.to_us() / std.time.us_per_s;
         const microseconds = current_time.to_us() % std.time.us_per_s;
 
-        uart.print(prefix ++ format ++ "\r\n", .{ seconds, microseconds } ++ args) catch {};
+        lg.interface.print(prefix ++ format ++ "\r\n", .{ seconds, microseconds } ++ args) catch {};
+        lg.interface.flush() catch {};
     }
 }
 

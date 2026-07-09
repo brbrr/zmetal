@@ -30,13 +30,13 @@ pub fn create_peripheral_enum(comptime base_name: []const u8, match_type: ?[]con
         else => unreachable,
     }
 
-    const peri_enum = std.builtin.Type{ .@"enum" = .{
-        .tag_type = usize,
-        .is_exhaustive = true,
-        .decls = &[_]std.builtin.Type.Declaration{},
-        .fields = names[0..names_index],
-    } };
-    return @Type(peri_enum);
+    var enum_names: [names.len][:0]const u8 = undefined;
+    var enum_values: [names.len]usize = undefined;
+    for (names[0..names_index], 0..) |ef, i| {
+        enum_names[i] = ef.name;
+        enum_values[i] = ef.value;
+    }
+    return @Enum(usize, .exhaustive, enum_names[0..names_index], enum_values[0..names_index]);
 }
 
 pub fn set_reg_field(reg: anytype, comptime field_name: anytype, value: anytype) void {

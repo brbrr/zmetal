@@ -93,32 +93,23 @@ fn PinDescription(comptime spec: []const u8) type {
 /// ```
 pub fn Pins(comptime config: GlobalConfiguration) type {
     comptime {
-        var fields: []const StructField = &.{};
+        var field_names: []const [:0]const u8 = &.{};
+        var field_types: []const type = &.{};
+        var field_attrs: []const std.builtin.Type.StructField.Attributes = &.{};
         for (@typeInfo(GlobalConfiguration).@"struct".fields) |port_field| {
             if (@field(config, port_field.name)) |port_config| {
                 for (@typeInfo(PortConfiguration()).@"struct".fields) |field| {
                     if (@field(port_config, field.name)) |pin_config| {
                         const D = PinDescription(field.name);
-                        fields = fields ++ &[_]StructField{.{
-                            .is_comptime = false,
-                            .name = pin_config.name orelse field.name,
-                            .type = GPIO(D.gpio_port_id, D.gpio_pin_number_str, pin_config.mode orelse .{ .input = .floating }),
-                            .default_value_ptr = null,
-                            .alignment = @alignOf(field.type),
-                        }};
+                        field_names = field_names ++ &[_][:0]const u8{pin_config.name orelse field.name};
+                        field_types = field_types ++ &[_]type{GPIO(D.gpio_port_id, D.gpio_pin_number_str, pin_config.mode orelse .{ .input = .floating })};
+                        field_attrs = field_attrs ++ &[_]std.builtin.Type.StructField.Attributes{.{ .@"align" = @alignOf(field.type) }};
                     }
                 }
             }
         }
 
-        return @Type(.{
-            .@"struct" = .{
-                .layout = .auto,
-                .is_tuple = false,
-                .fields = fields,
-                .decls = &.{},
-            },
-        });
+        return @Struct(.auto, null, field_names, field_types, field_attrs);
     }
 }
 
@@ -134,28 +125,22 @@ pub fn Pins(comptime config: GlobalConfiguration) type {
 /// ```
 fn PortConfiguration() type {
     @setEvalBranchQuota(200000);
-    var fields: []const StructField = &.{};
+    var field_names: []const [:0]const u8 = &.{};
+    var field_types: []const type = &.{};
+    var field_attrs: []const std.builtin.Type.StructField.Attributes = &.{};
     // STM32H7 has GPIO ports A through K
     for ("ABCDEFGHIJK") |gpio_port_id| {
         for (0..16) |gpio_pin_number_int| {
-            fields = fields ++ &[_]StructField{.{
-                .is_comptime = false,
-                .name = std.fmt.comptimePrint("P{c}{d}", .{ gpio_port_id, gpio_pin_number_int }),
-                .type = ?PinConfiguration,
+            field_names = field_names ++ &[_][:0]const u8{std.fmt.comptimePrint("P{c}{d}", .{ gpio_port_id, gpio_pin_number_int })};
+            field_types = field_types ++ &[_]type{?PinConfiguration};
+            field_attrs = field_attrs ++ &[_]std.builtin.Type.StructField.Attributes{.{
                 .default_value_ptr = &@as(?PinConfiguration, null),
-                .alignment = @alignOf(?PinConfiguration),
+                .@"align" = @alignOf(?PinConfiguration),
             }};
         }
     }
 
-    return @Type(.{
-        .@"struct" = .{
-            .layout = .auto,
-            .is_tuple = false,
-            .fields = fields,
-            .decls = &.{},
-        },
-    });
+    return @Struct(.auto, null, field_names, field_types, field_attrs);
 }
 /// Global pin configuration structure
 /// Allows compile-time configuration of all GPIO ports
