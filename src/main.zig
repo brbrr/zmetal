@@ -32,11 +32,6 @@ const osc = @import("dsp/osc.zig");
 const keyboard = @import("hid/keyboard.zig");
 const ili9341 = @import("drivers/ili9341.zig");
 
-// INTERNAL_ADDRESS = 0x08000000
-// FLASH_ADDRESS ?= $(INTERNAL_ADDRESS)
-// dfu-util -a 0 -s 0x08000000:leave -D zig-out/firmware/blinky.bin -d ,0483:df11
-// openocd -s /usr/local/share/openocd/scripts -f interface/stlink.cfg -f target/stm32h7x.cfg -c "program ./zig-out/firmware/blinky.elf verify reset exit"
-
 pub const microzig_options: microzig.Options = .{
     .interrupts = .{
         .SysTick = .{ .c = sys_tick_handler },
@@ -127,7 +122,6 @@ var display_spi: hal.spi.SPI_Device = undefined;
 var display: Display = undefined;
 var display_ready = false;
 var display_frame: u32 = 0;
-var display_prev_x: u16 = 0;
 
 // FPS counter state (measures display flushes per second)
 var fps_frame_count: u32 = 0;
@@ -139,20 +133,20 @@ pub fn main() !void {
     try hw.startAudio(&myAudioCallback);
     try initDisplay();
 
-    // var kbd = try keyboard.Keyboard.init(hw.i2c.i2c_device());
-    // var tick_count: u32 = 0;
+    var kbd = try keyboard.Keyboard.init(hw.i2c.i2c_device());
+    var tick_count: u32 = 0;
     while (true) {
         // Process keyboard every 10ms (100Hz scan rate)
-        // if (tick_count % 10 == 0) {
-        //     if (kbd.process()) |events| {
-        //         for (events.slice()) |evt| {
-        //             handle_key_event(evt);
-        //         }
-        //     } else |_| {
-        //         // Ignore keyboard errors
-        //     }
-        // }
-        // tick_count += 1;
+        if (tick_count % 10 == 0) {
+            if (kbd.process()) |events| {
+                for (events.slice()) |evt| {
+                    handle_key_event(evt);
+                }
+            } else |_| {
+                // Ignore keyboard errors
+            }
+        }
+        tick_count += 1;
 
         serviceDisplay();
         cpu.wfi();
@@ -196,20 +190,32 @@ fn initDisplay() !void {
 }
 
 var tast_f_time: u32 = 0;
+var last_dirty_tiles: u32 = 0;
 fn serviceDisplay() void {
-    if (!display_ready or !display.done) {
+    if (!display_ready) return;
+
+    // A partial flush spanning multiple tiles is advanced here, in the
+    // foreground (the completion ISR only flags that more tiles are pending).
+    if (!display.done) {
+        display.pump();
         return;
     }
 
     if (hal.clock.get_tick() - tast_f_time < 16) {
-        return;
+        // return;
     }
 
-    const x: u16 = @intCast(display_frame % 270);
+    // Full immediate redraw every frame. The checksum-diff flush transmits only
+    // the tiles that actually changed (the green background hashes identically
+    // and is skipped), so the redraw-everything cost stays off the SPI bus.
+    const box_speed = 6; // pixels per frame
+    const x: u16 = @intCast((display_frame * box_speed) % 270);
+    const y: u16 = @intCast((display_frame * box_speed) % 350);
     display.fill_screen(ili9341.Colors.Green);
-    display.fill_rect(display_prev_x, 180, 50, 30, ili9341.Colors.Black);
     display.fill_rect(x, 180, 50, 30, ili9341.Colors.Orange);
-    display_prev_x = x;
+    display.fill_rect(x, 100, 50, 30, ili9341.Colors.Black);
+
+    display.fill_rect(100, y, 50, 30, ili9341.Colors.White);
     display_frame += 1;
 
     // Update FPS once per second based on flushes in the elapsed window.
@@ -222,16 +228,17 @@ fn serviceDisplay() void {
         fps_window_start = now;
     }
 
-    // Draw "FPS:NNN" in the top-right corner.
-    var fps_buf: [8]u8 = undefined;
-    const fps_str = std.fmt.bufPrint(&fps_buf, "FPS:{d:>3}", .{fps_value}) catch "FPS:???";
+    // Draw "FPS:NNN T:NN" (T = dirty tiles sent last frame) in the top-right.
+    var fps_buf: [16]u8 = undefined;
+    const fps_str = std.fmt.bufPrint(&fps_buf, "FPS:{d:>3} T:{d:>2}", .{ fps_value, last_dirty_tiles }) catch "FPS:???";
     const fps_w: u16 = @intCast(fps_str.len * ili9341.font.font6x8.width);
     _ = display.draw_string(ili9341.WIDTH - fps_w - 2, 2, fps_str, ili9341.font.font6x8, ili9341.Colors.White, ili9341.Colors.Black);
 
-    display.flush(null) catch |err| switch (err) {
+    display.flush_diff(null) catch |err| switch (err) {
         error.FlushInProgress => {},
         else => @panic("display flush failed"),
     };
+    last_dirty_tiles = @intCast(display.dirty_count);
 
     tast_f_time = now;
 }

@@ -13,7 +13,7 @@
 //! var i2c_dev = try hal.i2c.I2C_Device.init(.I2C1, .{});
 //! i2c_dev.apply();
 //! var kbd = try keyboard.Keyboard.init(i2c_dev.i2c_device());
-//! 
+//!
 //! while (true) {
 //!     const events = try kbd.process();
 //!     for (events.slice()) |evt| {
@@ -30,7 +30,7 @@ const mcp_digital_io = @import("mcp_digital_io.zig");
 const debounce = @import("debounce.zig");
 
 const drivers = microzig.drivers;
-const Keyboard_Matrix = drivers.input.Keyboard_Matrix;
+const Keyboard_Matrix = drivers.input.KeyboardMatrix;
 const Key = drivers.input.Key;
 const Digital_IO = drivers.base.Digital_IO;
 
@@ -61,25 +61,25 @@ const MCP_I2C_ADDRESS: u8 = 0x21;
 
 pub const Keyboard = struct {
     const Self = @This();
-    
+
     const Matrix = Keyboard_Matrix(.{
         .rows = ROWS,
         .columns = COLS,
     });
-    
+
     pub const Set = Matrix.Set;
-    
+
     const DebouncerType = debounce.Debouncer(Matrix, KEY_COUNT, ROWS, COLS);
 
     mcp: MCP23017,
-    
+
     // Matrix fields - directly embedded, no wrapper
     col_pins: [COLS]McpPin,
     row_pins: [ROWS]McpPin,
     col_ios: [COLS]Digital_IO,
     row_ios: [ROWS]Digital_IO,
     matrix: Matrix,
-    
+
     debouncer: DebouncerType,
 
     /// Initialize the keyboard
