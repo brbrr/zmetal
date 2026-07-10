@@ -82,14 +82,22 @@ fn buildTargetVariant(
     const target = createSTM32Target(b, mz_dep, config.linker_script, stm32_common_mod, clockhelper_dep);
 
     _ = optimize;
+    // Use microzig's built-in STM32H750IB chip (register definitions) but keep
+    // our own HAL, custom SRAM/flash linker script, and _estack-based stack.
     const firmware = mb.add_firmware(.{
         .name = config.name,
-        .target = target,
-        .optimize = .ReleaseFast,
+        .target = mb.ports.stm32.chips.STM32H750IB.derive(.{
+            .hal = target.hal,
+            .linker_script = .{ .generate = .none, .file = b.path(config.linker_script) },
+            .stack = .{ .symbol_name = "_estack" },
+        }),
+        .optimize = .Debug,
         .root_source_file = b.path("src/main.zig"),
     });
 
     const install = mb.add_install_firmware(firmware, .{ .format = .elf });
+    const install_bin = mb.add_install_firmware(firmware, .{ .format = .binary });
+
     stm32_common_mod.addImport("microzig", firmware.core_mod);
 
     const report = b.addSystemCommand(&.{
@@ -97,9 +105,11 @@ fn buildTargetVariant(
         "build_tools/memory_report.py",
     });
     report.addFileArg(firmware.get_emitted_elf());
+    // report.addFileArg(firmware.get_emitted_bin(.binary));
     report.addArg(config.name);
     report.addArg(config.linker_script);
     report.step.dependOn(&install.step);
+    report.step.dependOn(&install_bin.step);
 
     const build_step = b.step(config.step_name, config.step_description);
     build_step.dependOn(&report.step);

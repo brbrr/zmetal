@@ -259,7 +259,7 @@ pub fn ILI9341_DMA(
         dma_src: []const u8 = &.{},
 
         // Tile checksum-diff state (partial flush)
-        tile_hash: [TILE_COUNT]u32 = [_]u32{0} ** TILE_COUNT,
+        tile_hash: [TILE_COUNT]u32 = @splat(TILE_COUNT),
         hashes_valid: bool = false, // first flush_diff paints every tile
         dirty_tiles: [TILE_COUNT]u16 = undefined,
         dirty_count: usize = 0,

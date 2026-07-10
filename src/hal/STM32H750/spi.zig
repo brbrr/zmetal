@@ -9,7 +9,8 @@ const dma = @import("dma_custom_backup.zig");
 const dma_utils = @import("dma_utils.zig");
 const cache = @import("cache.zig");
 
-const SPI_Peripheral = chip.types.peripherals.SPI1;
+const spi_types = chip.types.peripherals.spi_v3;
+const SPI_Peripheral = spi_types.SPI;
 
 pub const Peripheral = enum {
     SPI1,
@@ -257,8 +258,8 @@ pub const SPI_Device = struct {
         self.spi.CFG1.raw = 0;
         self.spi.CFG1.modify(.{
             .DSIZE = dsize,
-            .FTHVL = 0,
-            .MBR = @intFromEnum(self.config.baud_prescaler),
+            .FTHLV = @as(spi_types.FTHLV, @enumFromInt(0)),
+            .MBR = @as(spi_types.MBR, @enumFromInt(@intFromEnum(self.config.baud_prescaler))),
             .CRCEN = 0,
         });
 
@@ -270,10 +271,10 @@ pub const SPI_Device = struct {
         self.spi.CFG2.modify(.{
             .MSSI = 0,
             .MIDI = 0,
-            .COMM = self.config.direction.reg(),
-            .MASTER = 1,
-            .CPHA = self.config.mode.get_cpha(),
-            .CPOL = self.config.mode.get_cpol(),
+            .COMM = @as(spi_types.COMM, @enumFromInt(self.config.direction.reg())),
+            .MASTER = @as(spi_types.MASTER, @enumFromInt(1)),
+            .CPHA = @as(spi_types.CPHA, @enumFromInt(self.config.mode.get_cpha())),
+            .CPOL = @as(spi_types.CPOL, @enumFromInt(self.config.mode.get_cpol())),
             .SSM = ssm,
             .SSOE = ssoe,
             .AFCNTR = 1,
@@ -285,12 +286,12 @@ pub const SPI_Device = struct {
         if (data.len == 0) return;
 
         self.spi.CR1.modify(.{ .SPE = 0 });
-        self.spi.CFG2.modify(.{ .COMM = 0b01 }); // TX only
+        self.spi.CFG2.modify(.{ .COMM = @as(spi_types.COMM, @enumFromInt(0b01)) }); // TX only
         self.spi.CR2.modify(.{ .TSIZE = @as(u16, @intCast(data.len)) });
         self.spi.CR1.modify(.{ .SPE = 1 });
         self.spi.CR1.modify(.{ .CSTART = 1 });
 
-        const txdr_ptr: *volatile u8 = @ptrCast(&self.spi.TXDR);
+        const txdr_ptr: *volatile u8 = @ptrCast(&self.spi.TXDR8);
         for (data) |byte| {
             while (self.spi.SR.read().TXP == 0) {}
             txdr_ptr.* = byte;
@@ -362,7 +363,7 @@ pub const SPI_Device = struct {
         self.spi.IFCR.raw = 0x1FF;
 
         // Set TX-only mode
-        self.spi.CFG2.modify(.{ .COMM = 0b01 });
+        self.spi.CFG2.modify(.{ .COMM = @as(spi_types.COMM, @enumFromInt(0b01)) });
 
         // Set transfer size
         self.spi.CR2.modify(.{ .TSIZE = @as(u16, @intCast(data.len)) });
@@ -429,7 +430,7 @@ pub const SPI_Device = struct {
 
         return .{
             .dreq = dreq,
-            .addr = @intFromPtr(&self.spi.TXDR),
+            .addr = @intFromPtr(&self.spi.TXDR8),
         };
     }
 
@@ -445,7 +446,7 @@ pub const SPI_Device = struct {
             .EOTIE = 0,
             .TXPIE = 0,
             .RXPIE = 0,
-            .DPXPIE = 0,
+            .DXPIE = 0,
             .UDRIE = 0,
             .OVRIE = 0,
             .TIFREIE = 0,

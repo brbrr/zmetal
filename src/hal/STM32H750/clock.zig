@@ -71,16 +71,16 @@ pub fn get_sys_clock_freq() u32 {
         .PLL1_P => blk: {
             // PLL1 used as system clock
             const pllsource = rcc.PLLCKSELR.read().PLLSRC;
-            const pllm = @intFromEnum(rcc.PLLCKSELR.read().DIVM1);
-            const pllfracen = rcc.PLLCFGR.read().PLL1FRACEN;
+            const pllm = @intFromEnum(rcc.PLLCKSELR.read().@"DIVM[0]");
+            const pllfracen = rcc.PLLCFGR.read().@"PLLFRACEN[0]";
             const fracn1: f32 = if (pllfracen != 0)
-                @floatFromInt((rcc.PLL1FRACR.read().FRACN1 >> 3))
+                @floatFromInt((rcc.@"PLLFRACR[0]".read().FRACN >> 3))
             else
                 0.0;
 
             if (pllm == 0) break :blk 0;
 
-            const n1 = @intFromEnum(rcc.PLL1DIVR.read().DIVN1);
+            const n1 = @intFromEnum(rcc.@"PLLDIVR[0]".read().PLLN);
             const vco_mul = @as(f32, @floatFromInt(n1)) + (fracn1 / 0x2000) + 1.0;
 
             const pll_input: f32 = switch (pllsource) {
@@ -97,7 +97,7 @@ pub fn get_sys_clock_freq() u32 {
             };
 
             const pllvco = (pll_input / @as(f32, @floatFromInt(pllm))) * vco_mul;
-            const pllp = @intFromEnum(rcc.PLL1DIVR.read().DIVP1) + 1;
+            const pllp = @intFromEnum(rcc.@"PLLDIVR[0]".read().PLLP) + 1;
             // pllp = (((RCC->PLL1DIVR & RCC_PLL1DIVR_P1) >> 9) + 1U) ;
             break :blk @intFromFloat(pllvco / @as(f32, @floatFromInt(pllp)));
         },

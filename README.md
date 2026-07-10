@@ -19,6 +19,13 @@ zig build
 
 # Flash via USB DFU
 dfu-util -a 0 -s 0x90040000:leave -D zig-out/firmware/blinky-sram.bin -d ,0483:df11
+
+
+// INTERNAL_ADDRESS = 0x08000000
+// FLASH_ADDRESS ?= $(INTERNAL_ADDRESS)
+// dfu-util -a 0 -s 0x08000000:leave -D zig-out/firmware/blinky.bin -d ,0483:df11
+// openocd -s /usr/local/share/openocd/scripts -f interface/stlink.cfg -f target/stm32h7x.cfg -c "program ./zig-out/firmware/blinky.elf verify reset exit"
+
 ```
 
 ## Build Commands

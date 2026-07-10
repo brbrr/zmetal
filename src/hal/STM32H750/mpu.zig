@@ -3,7 +3,13 @@ const std = @import("std");
 const microzig = @import("microzig");
 const peri = microzig.chip.peripherals;
 const cpu_peri = microzig.cpu.peripherals;
-const mpu = cpu_peri.mpu;
+// microzig gates `cpu_peri.mpu` behind chip.properties.has_mpu, which the
+// built-in STM32H750IB chip leaves null. The Cortex-M7 always has the MPU at the
+// standard address, so point microzig's MPU type there directly.
+const mpu: *volatile microzig.cpu.types.peripherals.MemoryProtectionUnit = @ptrFromInt(0xE000ED90);
+
+// SCB SHCSR bit for the MemManage fault enable (MEMFAULTENA).
+const SHCSR_MEMFAULTENA: u32 = 0x0001_0000;
 
 pub const IsEnabled = enum(u1) {
     Disabled = 0,
@@ -106,8 +112,10 @@ pub const MPU_Region_Config = struct {
 pub fn enable() void {
     // Enable the MPU
     set_MPU_control(.PrivilegedDefault);
-    // Enable fault exceptions
-    microzig.cpu.interrupt.exception.enable(.MemManageFault);
+    // Enable the MemManage fault exception directly via SCB.SHCSR. microzig's
+    // exception.enable() for cortex_m7 uses chip.peripherals.SCB, which the
+    // built-in chip does not provide; use the cpu's own SCB instead.
+    cpu_peri.scb.SHCSR.raw |= SHCSR_MEMFAULTENA;
     // Ensure MPU setting take effects
     microzig.cpu.dsb();
     microzig.cpu.isb();
@@ -127,9 +135,9 @@ pub fn disable() void {
     // Make sure outstanding transfers are done
     microzig.cpu.dmb();
     // Disable fault exceptions */
-    microzig.cpu.interrupt.exception.disable(.MemManageFault);
+    cpu_peri.scb.SHCSR.raw &= ~SHCSR_MEMFAULTENA;
     // Disable the MPU and clear the control register
-    cpu_peri.mpu.CTRL.raw = 0;
+    mpu.CTRL.raw = 0;
 }
 
 pub fn config_region(config: MPU_Region_Config) !void {

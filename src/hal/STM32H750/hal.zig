@@ -35,6 +35,7 @@ pub const clock = @import("clock.zig");
 pub const mpu = @import("mpu.zig");
 pub const time = @import("time.zig");
 pub const cache = @import("cache.zig");
+pub const fault = @import("fault.zig");
 
 // Daisy-specific modules
 pub const daisy = @import("daisy.zig");
@@ -68,14 +69,16 @@ pub fn init_vector_table() void {
     init_fpu();
     reset_rcc();
     enable_sram_clocks();
+    init_sram1_ecc();
     apply_h7_workarounds();
     configure_vector_table();
 }
 
 /// Enable FPU (Floating Point Unit) with full access to CP10 and CP11
 fn init_fpu() void {
-    const fpu = microzig.chip.peripherals.FPU_CPACR;
-    fpu.CPACR.modify_one("CP", 0xF);
+    // microzig exposes CPACR as a plain u32 field of the SCB (not a separate
+    // FPU_CPACR peripheral). Set CP10 and CP11 to full access: bits [23:20] = 0xF.
+    scb.CPACR = scb.CPACR | (@as(u32, 0xF) << 20);
 
     // Data & Instruction Synchronization Barriers
     cpu.dmb();
@@ -94,12 +97,12 @@ fn reset_rcc() void {
     RCC.D3CFGR.raw = 0x00000000;
     RCC.PLLCKSELR.raw = 0x00000000;
     RCC.PLLCFGR.raw = 0x00000000;
-    RCC.PLL1DIVR.raw = 0x00000000;
-    RCC.PLL1FRACR.raw = 0x00000000;
-    RCC.PLL2DIVR.raw = 0x00000000;
-    RCC.PLL2FRACR.raw = 0x00000000;
-    RCC.PLL3DIVR.raw = 0x00000000;
-    RCC.PLL3FRACR.raw = 0x00000000;
+    RCC.@"PLLDIVR[0]".raw = 0x00000000;
+    RCC.@"PLLFRACR[0]".raw = 0x00000000;
+    RCC.@"PLLDIVR[1]".raw = 0x00000000;
+    RCC.@"PLLFRACR[1]".raw = 0x00000000;
+    RCC.@"PLLDIVR[2]".raw = 0x00000000;
+    RCC.@"PLLFRACR[2]".raw = 0x00000000;
     RCC.CR.raw &= 0xFFFBFFFF;
     RCC.CIER.raw = 0x00000000;
 }
@@ -114,6 +117,35 @@ fn enable_sram_clocks() void {
 
     // Read-back to ensure write is complete
     _ = RCC.AHB2ENR.read();
+}
+
+// Linker-provided bounds of the D2 SRAM .sram1_bss section (NOLOAD:
+// framebuffer + audio DMA buffers). Both are word-aligned by the linker.
+extern var _ssram1_bss: u8;
+extern var _esram1_bss: u8;
+
+/// Zero-initialize the D2 SRAM `.sram1_bss` section with word-width writes.
+///
+/// This section is `(NOLOAD)` in the linker script, so neither the loader nor
+/// microzig's C-runtime startup ever touches it — on power-up its contents and
+/// ECC syndrome are random. STM32H7 SRAM is ECC-protected on a per-word granule:
+/// a byte/halfword store forces a read-modify-write that first *reads* the
+/// containing word to recompute ECC. Reading a word whose ECC was never
+/// initialized reads as a double-bit error, so the AXI slave returns SLVERR,
+/// which surfaces as an (imprecise, buffered-store) BusFault. This is why the
+/// byte-addressed framebuffer faulted intermittently while the word-addressed
+/// i32 audio buffers were always fine.
+///
+/// Writing full 32-bit words writes a fresh, valid ECC syndrome with no RMW
+/// read, so this both clears the region and makes it safe for later byte stores.
+/// Must run after `enable_sram_clocks()` and before anything touches D2 SRAM.
+fn init_sram1_ecc() void {
+    const start = @intFromPtr(&_ssram1_bss);
+    const end = @intFromPtr(&_esram1_bss);
+    var addr = start;
+    while (addr < end) : (addr += 4) {
+        @as(*volatile u32, @ptrFromInt(addr)).* = 0;
+    }
 }
 
 /// Apply STM32H7 silicon revision Y workarounds

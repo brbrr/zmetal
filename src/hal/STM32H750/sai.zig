@@ -4,6 +4,7 @@ const microzig = @import("microzig");
 const hal = @import("hal.zig");
 const daisy = @import("daisy.zig");
 const regs = microzig.chip.peripherals;
+const sai_types = microzig.chip.types.peripherals.sai_v3_4pdm;
 const cpu = microzig.cpu;
 const Channel = hal.dma.Channel;
 
@@ -104,8 +105,8 @@ pub fn dma1_1_handler() callconv(.c) void {
 // ============================================================================
 
 const BufferSize: u32 = 1024;
-var tx_buffer: [BufferSize]i32 linksection(".sram1_bss") = undefined;
-var rx_buffer: [BufferSize]i32 linksection(".sram1_bss") = undefined;
+var tx_buffer: [BufferSize]i32 align(4) linksection(".sram1_bss") = undefined;
+var rx_buffer: [BufferSize]i32 align(4) linksection(".sram1_bss") = undefined;
 // ============================================================================
 // GPIO Pin Configuration (match libdaisy: AF6, PushPull, MediumSpeed, PullUp)
 // ============================================================================
@@ -197,10 +198,10 @@ pub const SaiDriver = struct {
         rx_regs.NDTR.raw = self.transfer_size;
         rx_regs.CR.modify_one("EN", 1);
         // Enable DMA request on Block B
-        regs.SAI1.SAI_BCR1.modify(.{ .DMAEN = 1 });
+        regs.SAI1.CH[1].CR1.modify(.{ .DMAEN = 1 });
 
         // Enable Block B (slave — waits for master clock before actually receiving)
-        regs.SAI1.SAI_BCR1.modify(.{ .SAIXEN = 1 });
+        regs.SAI1.CH[1].CR1.modify(.{ .SAIEN = 1 });
 
         // ----- START MASTER (Block A / TX) -----
         var tx_regs = tx_chan.get_regs();
@@ -210,16 +211,16 @@ pub const SaiDriver = struct {
         tx_regs.CR.modify_one("EN", 1);
 
         // Enable DMA request on Block A
-        regs.SAI1.SAI_ACR1.modify(.{ .DMAEN = 1 });
+        regs.SAI1.CH[0].CR1.modify(.{ .DMAEN = 1 });
 
         // Wait for TX FIFO to have data (DMA fills it from tx_buffer)
         var timeout: u32 = hal.clock.SystemCoreClock / 1000;
-        while (regs.SAI1.SAI_ASR.read().FLVL == 0) {
+        while (@intFromEnum(regs.SAI1.CH[0].SR.read().FLVL) == 0) {
             if (timeout == 0) return error.Timeout;
             timeout -= 1;
         }
         // Enable Block A (master — starts clocking, slave syncs)
-        regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 1 });
+        regs.SAI1.CH[0].CR1.modify(.{ .SAIEN = 1 });
 
         cpu.dsb();
         cpu.isb();
@@ -230,12 +231,12 @@ pub const SaiDriver = struct {
         _ = self;
 
         // Disable SAI error interrupts
-        regs.SAI1.SAI_AIM.raw = 0;
-        regs.SAI1.SAI_BIM.raw = 0;
+        regs.SAI1.CH[0].IM.raw = 0;
+        regs.SAI1.CH[1].IM.raw = 0;
 
         // Disable DMA requests
-        regs.SAI1.SAI_ACR1.modify(.{ .DMAEN = 0 });
-        regs.SAI1.SAI_BCR1.modify(.{ .DMAEN = 0 });
+        regs.SAI1.CH[0].CR1.modify(.{ .DMAEN = 0 });
+        regs.SAI1.CH[1].CR1.modify(.{ .DMAEN = 0 });
 
         // Disable SAI blocks
         disableSai();
@@ -253,20 +254,20 @@ pub const SaiDriver = struct {
 
         // Block A (master TX) errors
         {
-            const sr = regs.SAI1.SAI_ASR.read();
-            const im = regs.SAI1.SAI_AIM.read();
-            const clr_r = &regs.SAI1.SAI_ACLRFR;
+            const sr = regs.SAI1.CH[0].SR.read();
+            const im = regs.SAI1.CH[0].IM.read();
+            const clr_r = &regs.SAI1.CH[0].CLRFR;
 
             if (sr.OVRUDR == 1 and im.OVRUDRIE == 1) {
                 clr_r.modify(.{ .COVRUDR = 1 });
                 @panic("QQ");
             }
-            if (sr.WCKCFG == 1 and im.WCKCFGIE == 1) {
+            if (@intFromEnum(sr.WCKCFG) == 1 and im.WCKCFGIE == 1) {
                 clr_r.modify(.{ .CWCKCFG = 1 });
                 @panic("QQ");
             }
 
-            if (sr.CNRDY == 1 and im.CNRDYIE == 1) {
+            if (@intFromEnum(sr.CNRDY) == 1 and im.CNRDYIE == 1) {
                 clr_r.modify(.{ .CCNRDY = 1 });
                 @panic("QQ");
             }
@@ -281,20 +282,20 @@ pub const SaiDriver = struct {
         }
 
         {
-            const sr = regs.SAI1.SAI_BSR.read();
-            const im = regs.SAI1.SAI_BIM.read();
-            const clr_r = &regs.SAI1.SAI_BCLRFR;
+            const sr = regs.SAI1.CH[1].SR.read();
+            const im = regs.SAI1.CH[1].IM.read();
+            const clr_r = &regs.SAI1.CH[1].CLRFR;
 
             if (sr.OVRUDR == 1 and im.OVRUDRIE == 1) {
                 clr_r.modify(.{ .COVRUDR = 1 });
                 @panic("QQ");
             }
-            if (sr.WCKCFG == 1 and im.WCKCFGIE == 1) {
+            if (@intFromEnum(sr.WCKCFG) == 1 and im.WCKCFGIE == 1) {
                 clr_r.modify(.{ .CWCKCFG = 1 });
                 @panic("QQ");
             }
 
-            if (sr.CNRDY == 1 and im.CNRDYIE == 1) {
+            if (@intFromEnum(sr.CNRDY) == 1 and im.CNRDYIE == 1) {
                 clr_r.modify(.{ .CCNRDY = 1 });
                 @panic("QQ");
             }
@@ -322,14 +323,14 @@ pub const SaiDriver = struct {
     pub fn txTarget(self: SaiDriver) hal.dma.DMA_WriteTarget {
         return .{
             .dreq = if (self.config.a_dir == .transmit) .SAI1_A else .SAI1_B,
-            .addr = if (self.config.a_dir == .transmit) @intFromPtr(&regs.SAI1.SAI_ADR) else @intFromPtr(&regs.SAI1.SAI_BDR),
+            .addr = if (self.config.a_dir == .transmit) @intFromPtr(&regs.SAI1.CH[0].DR) else @intFromPtr(&regs.SAI1.CH[1].DR),
         };
     }
 
     pub fn rxTarget(self: SaiDriver) hal.dma.DMA_ReadTarget {
         return .{
             .dreq = if (self.config.a_dir == .receive) .SAI1_A else .SAI1_B,
-            .addr = if (self.config.a_dir == .receive) @intFromPtr(&regs.SAI1.SAI_ADR) else @intFromPtr(&regs.SAI1.SAI_BDR),
+            .addr = if (self.config.a_dir == .receive) @intFromPtr(&regs.SAI1.CH[0].DR) else @intFromPtr(&regs.SAI1.CH[1].DR),
         };
     }
 
@@ -341,40 +342,40 @@ pub const SaiDriver = struct {
         const data = self.config.getSaiRegFlags();
         const mck_div = computeMckDiv(daisy.clock_outputs.SAI1output, @intFromEnum(self.config.sample_rate), data.frame_length, false, false);
 
-        // regs.SAI1.SAI_GCR.raw = 0;
+        // regs.SAI1.GCR.raw = 0;
 
         // ---- Block A: Master Transmitter ----
-        regs.SAI1.SAI_ACR1.raw = 0;
-        regs.SAI1.SAI_ACR1.modify(.{
-            .MODE = 0, // Master transmitter
-            .PRTCFG = 0, // Free protocol
-            .DS = data.data_size,
-            .LSBFIRST = 0, // MSB first
-            .CKSTR = 1, // TX: match libdaisy
-            .SYNCEN = 0, // Asynchronous (master generates clocks)
-            .MONO = 0, // Stereo
-            .OUTDRIV = 0, // Output drive disabled
-            .NOMCK = 0, // Master clock divider enabled
+        regs.SAI1.CH[0].CR1.raw = 0;
+        regs.SAI1.CH[0].CR1.modify(.{
+            .MODE = @as(sai_types.MODE, @enumFromInt(0)), // Master transmitter
+            .PRTCFG = @as(sai_types.PRTCFG, @enumFromInt(0)), // Free protocol
+            .DS = @as(sai_types.DS, @enumFromInt(data.data_size)),
+            .LSBFIRST = @as(sai_types.LSBFIRST, @enumFromInt(0)), // MSB first
+            .CKSTR = @as(sai_types.CKSTR, @enumFromInt(1)), // TX: match libdaisy
+            .SYNCEN = @as(sai_types.SYNCEN, @enumFromInt(0)), // Asynchronous (master generates clocks)
+            .MONO = @as(sai_types.MONO, @enumFromInt(0)), // Stereo
+            .OUTDRIV = @as(sai_types.OUTDRIV, @enumFromInt(0)), // Output drive disabled
+            .NODIV = @as(sai_types.NODIV, @enumFromInt(0)), // Master clock divider enabled
             .MCKDIV = mck_div,
         });
 
-        regs.SAI1.SAI_ACR2.raw = 0;
+        regs.SAI1.CH[0].CR2.raw = 0;
 
-        regs.SAI1.SAI_AFRCR.raw = 0;
-        regs.SAI1.SAI_AFRCR.modify(.{
+        regs.SAI1.CH[0].FRCR.raw = 0;
+        regs.SAI1.CH[0].FRCR.modify(.{
             .FRL = data.frame_length - 1, // Frame length
             .FSALL = data.frame_length / 2 - 1, // Frame sync length
-            .FSPOL = data.f_pol,
-            .FSOFF = data.f_off,
+            .FSPOL = @as(sai_types.FSPOL, @enumFromInt(data.f_pol)),
+            .FSOFF = @as(sai_types.FSOFF, @enumFromInt(data.f_off)),
             .FSDEF = 1, // FS = channel identification
         });
 
-        regs.SAI1.SAI_ASLOTR.raw = 0;
-        regs.SAI1.SAI_ASLOTR.modify(.{
+        regs.SAI1.CH[0].SLOTR.raw = 0;
+        regs.SAI1.CH[0].SLOTR.modify(.{
             .FBOFF = 0, // First bit offset
-            .SLOTSZ = 0b10, // 32-bit slot size
+            .SLOTSZ = @as(sai_types.SLOTSZ, @enumFromInt(0b10)), // 32-bit slot size
             .NBSLOT = 1, // 2 slots - 1
-            .SLOTEN = 0xffff, // Enable all
+            .SLOTEN = @as(sai_types.SLOTEN, @enumFromInt(0xffff)), // Enable all
         });
 
         try rx_chan.setup_transfer(rx_buffer[0..self.transfer_size], self.rxTarget(), .{
@@ -387,7 +388,7 @@ pub const SaiDriver = struct {
         });
 
         // Enable SAI error interrupts for slave (match libdaisy: BIM = 0x61)
-        regs.SAI1.SAI_BIM.modify(.{
+        regs.SAI1.CH[1].IM.modify(.{
             .OVRUDRIE = 1,
             .WCKCFGIE = 0,
             .CNRDYIE = 0,
@@ -397,41 +398,41 @@ pub const SaiDriver = struct {
         });
 
         // ---- Block B: Slave Receiver ----
-        regs.SAI1.SAI_BCR1.raw = 0;
-        regs.SAI1.SAI_BCR1.modify(.{
-            .MODE = 3, // Slave receiver
-            .PRTCFG = 0, // Free protocol
-            .DS = data.data_size,
-            .LSBFIRST = 0, // MSB first
-            .CKSTR = 1, // Clock strobing on rising edge
-            .SYNCEN = 1, // Synchronous with other sub-block (Block A)
-            .MONO = 0, // Stereo
-            .OUTDRIV = 0, // Output drive disabled
-            .NOMCK = 0,
+        regs.SAI1.CH[1].CR1.raw = 0;
+        regs.SAI1.CH[1].CR1.modify(.{
+            .MODE = @as(sai_types.MODE, @enumFromInt(3)), // Slave receiver
+            .PRTCFG = @as(sai_types.PRTCFG, @enumFromInt(0)), // Free protocol
+            .DS = @as(sai_types.DS, @enumFromInt(data.data_size)),
+            .LSBFIRST = @as(sai_types.LSBFIRST, @enumFromInt(0)), // MSB first
+            .CKSTR = @as(sai_types.CKSTR, @enumFromInt(1)), // Clock strobing on rising edge
+            .SYNCEN = @as(sai_types.SYNCEN, @enumFromInt(1)), // Synchronous with other sub-block (Block A)
+            .MONO = @as(sai_types.MONO, @enumFromInt(0)), // Stereo
+            .OUTDRIV = @as(sai_types.OUTDRIV, @enumFromInt(0)), // Output drive disabled
+            .NODIV = @as(sai_types.NODIV, @enumFromInt(0)),
             .MCKDIV = mck_div, // Slave ignores MCKDIV
         });
 
-        regs.SAI1.SAI_BCR2.raw = 0;
+        regs.SAI1.CH[1].CR2.raw = 0;
 
-        regs.SAI1.SAI_BFRCR.raw = 0;
-        regs.SAI1.SAI_BFRCR.modify(.{
+        regs.SAI1.CH[1].FRCR.raw = 0;
+        regs.SAI1.CH[1].FRCR.modify(.{
             .FRL = data.frame_length - 1, // Frame length
             .FSALL = data.frame_length / 2 - 1, // Frame sync length
-            .FSPOL = data.f_pol,
-            .FSOFF = data.f_off,
+            .FSPOL = @as(sai_types.FSPOL, @enumFromInt(data.f_pol)),
+            .FSOFF = @as(sai_types.FSOFF, @enumFromInt(data.f_off)),
             .FSDEF = 1, // FS = channel identification
         });
 
-        regs.SAI1.SAI_BSLOTR.raw = 0;
-        regs.SAI1.SAI_BSLOTR.modify(.{
+        regs.SAI1.CH[1].SLOTR.raw = 0;
+        regs.SAI1.CH[1].SLOTR.modify(.{
             .FBOFF = 0, // First bit offset
-            .SLOTSZ = 0b10, // 32-bit slot size
+            .SLOTSZ = @as(sai_types.SLOTSZ, @enumFromInt(0b10)), // 32-bit slot size
             .NBSLOT = 1, // 2 slots - 1
-            .SLOTEN = 0xffff, // Enable all
+            .SLOTEN = @as(sai_types.SLOTEN, @enumFromInt(0xffff)), // Enable all
         });
 
         // Disable PDM
-        regs.SAI1.SAI_PDMCR.raw = 0;
+        regs.SAI1.PDMCR.raw = 0;
 
         try tx_chan.setup_transfer(self.txTarget(), tx_buffer[0..self.transfer_size], .{
             .enable = true,
@@ -443,7 +444,7 @@ pub const SaiDriver = struct {
         });
 
         // Enable SAI error interrupts for master (match libdaisy: AIM = 0x05)
-        regs.SAI1.SAI_AIM.modify(.{
+        regs.SAI1.CH[0].IM.modify(.{
             .OVRUDRIE = 1,
             .WCKCFGIE = 1,
             .CNRDYIE = 0,
@@ -473,10 +474,10 @@ pub const SaiDriver = struct {
     // ------------------------------------------------------------------
 
     fn disableSai() void {
-        regs.SAI1.SAI_ACR1.modify(.{ .SAIXEN = 0 });
-        while (regs.SAI1.SAI_ACR1.read().SAIXEN != 0) cpu.nop();
-        regs.SAI1.SAI_BCR1.modify(.{ .SAIXEN = 0 });
-        while (regs.SAI1.SAI_BCR1.read().SAIXEN != 0) cpu.nop();
+        regs.SAI1.CH[0].CR1.modify(.{ .SAIEN = 0 });
+        while (regs.SAI1.CH[0].CR1.read().SAIEN != 0) cpu.nop();
+        regs.SAI1.CH[1].CR1.modify(.{ .SAIEN = 0 });
+        while (regs.SAI1.CH[1].CR1.read().SAIEN != 0) cpu.nop();
     }
 
     // ------------------------------------------------------------------

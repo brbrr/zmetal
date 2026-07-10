@@ -35,23 +35,23 @@ const ili9341 = @import("drivers/ili9341.zig");
 pub const microzig_options: microzig.Options = .{
     .interrupts = .{
         .SysTick = .{ .c = sys_tick_handler },
-        .HardFault = .{ .c = hw_handler },
+        .HardFault = .{ .naked = hal.fault.hard_fault },
         .NMI = .{ .c = nmi_handler },
-        .MemManageFault = .{ .c = mem_manage_fault_handler },
-        .BusFault = .{ .c = bus_fault_handler },
-        .UsageFault = .{ .c = usage_fault_handler },
+        .MemManageFault = .{ .naked = hal.fault.mem_manage_fault },
+        .BusFault = .{ .naked = hal.fault.bus_fault },
+        .UsageFault = .{ .naked = hal.fault.usage_fault },
         .SVCall = .{ .c = sv_call_handler },
         .PendSV = .{ .c = hw_handler },
 
-        .DMA1_STR0 = .{ .c = ssai.dma1_0_handler },
-        .DMA1_STR1 = .{ .c = ssai.dma1_1_handler },
+        .DMA1_Stream0 = .{ .c = ssai.dma1_0_handler },
+        .DMA1_Stream1 = .{ .c = ssai.dma1_1_handler },
         .SAI1 = .{ .c = ssai.SaiDriver.sai1_irq_handler },
 
         .SPI1 = .{ .c = hal.spi.spi1_irq_handler },
         // SPI TX
-        .DMA2_STR3 = .{ .c = hal.spi.tx_dma_irq_handler },
+        .DMA2_Stream3 = .{ .c = hal.spi.tx_dma_irq_handler },
         // SPI RX
-        // .DMA2_STR2 = .{ .c = hal.spi.dma1_str3_handler },
+        // .DMA2_Stream2 = .{ .c = hal.spi.dma1_str3_handler },
     },
 };
 
@@ -84,8 +84,14 @@ fn sv_call_handler() callconv(.c) void {
     @panic("SVCall");
 }
 
+var blink_ctr: u32 = 0;
 fn sys_tick_handler() callconv(.c) void {
     hal.clock.inc_tick();
+    blink_ctr +%= 1;
+    if (blink_ctr >= 500) { // 1 kHz tick -> ~1 Hz blink
+        blink_ctr = 0;
+        hw.led.toggle();
+    }
 }
 
 pub fn init() void {
@@ -133,20 +139,20 @@ pub fn main() !void {
     try hw.startAudio(&myAudioCallback);
     try initDisplay();
 
-    var kbd = try keyboard.Keyboard.init(hw.i2c.i2c_device());
-    var tick_count: u32 = 0;
+    // var kbd = try keyboard.Keyboard.init(hw.i2c.i2c_device());
+    // var tick_count: u32 = 0;
     while (true) {
         // Process keyboard every 10ms (100Hz scan rate)
-        if (tick_count % 10 == 0) {
-            if (kbd.process()) |events| {
-                for (events.slice()) |evt| {
-                    handle_key_event(evt);
-                }
-            } else |_| {
-                // Ignore keyboard errors
-            }
-        }
-        tick_count += 1;
+        // if (tick_count % 10 == 0) {
+        //     if (kbd.process()) |events| {
+        //         for (events.slice()) |evt| {
+        //             handle_key_event(evt);
+        //         }
+        //     } else |_| {
+        //         // Ignore keyboard errors
+        //     }
+        // }
+        // tick_count += 1;
 
         serviceDisplay();
         cpu.wfi();

@@ -8,7 +8,7 @@ const regs = microzig.chip.peripherals;
 const DMA1 = regs.DMA1;
 const DMA2 = regs.DMA2;
 
-pub const dmat = microzig.chip.types.peripherals.DMA;
+pub const dmat = microzig.chip.types.peripherals.dma_v1;
 
 // 7 x 2
 const num_channels = 16;
@@ -46,7 +46,7 @@ pub const TransferConfig = struct {
     enable_interrupts: bool = true,
 };
 
-var chan_handlers: [num_channels]ChHandlers = [_]ChHandlers{ChHandlers{}} ** num_channels;
+var chan_handlers: [num_channels]ChHandlers = @splat(.{});
 
 pub const DmaState = enum {
     ready,
@@ -95,8 +95,8 @@ pub inline fn write_one_to_clear(
 pub fn dma_irq_handler(comptime chan: Channel) void {
     const info = comptime chan.info();
     const dma = if (comptime info.per_id == 1) DMA2 else DMA1;
-    var ISR = if (comptime info.is_high) &dma.HISR else &dma.LISR;
-    const IFCR = if (comptime info.is_high) &dma.HIFCR else &dma.LIFCR;
+    var ISR = if (comptime info.is_high) &dma.ISR[1] else &dma.ISR[0];
+    const IFCR = if (comptime info.is_high) &dma.IFCR[1] else &dma.IFCR[0];
     const status = ISR.read();
 
     const feif = @field(status, "FEIF" ++ info.suffix);
@@ -116,7 +116,7 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
     // -------------------------------------------------------------------------
     // Check IT source enabled
     if (teif == 1 and cr.TEIE == 1) {
-        write_one_to_clear(IFCR, "CTEIF" ++ info.suffix);
+        write_one_to_clear(IFCR, "TEIF" ++ info.suffix);
         cleared_irq_flag = true;
         handlers.error_code.te = true;
     }
@@ -125,7 +125,7 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
     // FIFO Error
     // -------------------------------------------------------------------------
     if (feif == 1 and fcr.FEIE == 1) {
-        write_one_to_clear(IFCR, "CFEIF" ++ info.suffix);
+        write_one_to_clear(IFCR, "FEIF" ++ info.suffix);
         cleared_irq_flag = true;
         handlers.error_code.fe = true;
     }
@@ -134,7 +134,7 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
     // Direct Mode Error
     // -------------------------------------------------------------------------
     if (dmeif == 1 and cr.DMEIE == 1) {
-        write_one_to_clear(IFCR, "CDMEIF" ++ info.suffix);
+        write_one_to_clear(IFCR, "DMEIF" ++ info.suffix);
         cleared_irq_flag = true;
         handlers.error_code.dme = true;
     }
@@ -143,7 +143,7 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
     // Half Transfer
     // -------------------------------------------------------------------------
     if (htif == 1 and cr.HTIE == 1) {
-        write_one_to_clear(IFCR, "CHTIF" ++ info.suffix);
+        write_one_to_clear(IFCR, "HTIF" ++ info.suffix);
         cleared_irq_flag = true;
 
         if (cr.DBM == 1) {
@@ -171,7 +171,7 @@ pub fn dma_irq_handler(comptime chan: Channel) void {
     // Transfer Complete
     // -------------------------------------------------------------------------
     if (tcif == 1 and cr.TCIE == 1) {
-        write_one_to_clear(IFCR, "CTCIF" ++ info.suffix);
+        write_one_to_clear(IFCR, "TCIF" ++ info.suffix);
         cleared_irq_flag = true;
 
         // Abort flow
@@ -294,7 +294,7 @@ pub const ChannelInfo = struct {
     is_high: bool,
     /// 0–3 inside ISR half
     hisr_id: u2,
-    reg: *volatile dmat.DMA1,
+    reg: *volatile dmat.DMA,
     suffix: []const u8,
 };
 
@@ -307,7 +307,7 @@ pub const Channel = enum(u4) {
         return &chan_handlers[@intFromEnum(chan)];
     }
 
-    pub fn dma_reg(chan: Channel) *volatile dmat.DMA1 {
+    pub fn dma_reg(chan: Channel) *volatile dmat.DMA {
         const stream_num: u4 = @intFromEnum(chan);
         const is_dma2 = stream_num > 6;
 
@@ -316,16 +316,14 @@ pub const Channel = enum(u4) {
     }
 
     pub inline fn get_regs(chan: Channel) *volatile Regs {
-        const dma1_regs = @as(*volatile [num_channels / 2]Regs, @ptrCast(&DMA1.S0CR));
-        const dma2_regs = @as(*volatile [num_channels / 2]Regs, @ptrCast(&DMA2.S0CR));
-
+        // microzig exposes the per-stream registers as a native ST[8] array.
         var ch_id: u8 = @intFromEnum(chan);
         // [0, 7] :: [8, 13]
         if (ch_id <= 7) {
-            return &dma1_regs[ch_id];
+            return &DMA1.ST[ch_id];
         } else {
             ch_id -= num_channels / 2;
-            return &dma2_regs[ch_id];
+            return &DMA2.ST[ch_id];
         }
     }
 
@@ -354,11 +352,11 @@ pub const Channel = enum(u4) {
         if (stream_num < 4) {
             // Streams 0-3 use LIFCR
             const shift: u5 = @intCast(stream_num * 6 + (if (stream_num > 1) 4 else 0));
-            dma_r.LIFCR.write_raw(@as(u32, 0x3D) << shift);
+            dma_r.IFCR[0].write_raw(@as(u32, 0x3D) << shift);
         } else {
             // Streams 4-7 use HIFCR
             const shift: u5 = @intCast((stream_num - 4) * 6 + (if (stream_num > 5) 4 else 0));
-            dma_r.HIFCR.write_raw(@as(u32, 0x3D) << shift);
+            dma_r.IFCR[1].write_raw(@as(u32, 0x3D) << shift);
         }
     }
 
@@ -656,7 +654,10 @@ pub const Channel = enum(u4) {
             .is_high = is_high,
             .hisr_id = hisr_id,
             .reg = reg,
-            .suffix = std.fmt.comptimePrint("{}", .{local}),
+            // microzig ISR/IFCR flag fields are indexed within the low/high
+            // register (0-3), e.g. TCIF[0..3], so use the hisr_id, not the
+            // absolute stream number.
+            .suffix = std.fmt.comptimePrint("[{}]", .{hisr_id}),
         };
     }
 
@@ -665,25 +666,9 @@ pub const Channel = enum(u4) {
         const inf = comptime chan.info();
         // const channel = self.stream.to_dmamux_channel(self.controller);
 
-        // DMAMUX has 16 channels (0-7 for DMA1, 8-15 for DMA2)
-        const dmamux_cr = comptime switch (inf.global_index) {
-            0 => &dmamux.DMAMUX1_C0CR,
-            1 => &dmamux.DMAMUX1_C1CR,
-            2 => &dmamux.DMAMUX1_C2CR,
-            3 => &dmamux.DMAMUX1_C3CR,
-            4 => &dmamux.DMAMUX1_C4CR,
-            5 => &dmamux.DMAMUX1_C5CR,
-            6 => &dmamux.DMAMUX1_C6CR,
-            7 => &dmamux.DMAMUX1_C7CR,
-            8 => &dmamux.DMAMUX1_C8CR,
-            9 => &dmamux.DMAMUX1_C9CR,
-            10 => &dmamux.DMAMUX1_C10CR,
-            11 => &dmamux.DMAMUX1_C11CR,
-            12 => &dmamux.DMAMUX1_C12CR,
-            13 => &dmamux.DMAMUX1_C13CR,
-            14 => &dmamux.DMAMUX1_C14CR,
-            15 => &dmamux.DMAMUX1_C15CR,
-        };
+        // DMAMUX has 16 channels (0-7 for DMA1, 8-15 for DMA2).
+        // microzig exposes them as a native CCR[16] array.
+        const dmamux_cr = &dmamux.CCR[inf.global_index];
 
         // Configure DMAMUX channel
         dmamux_cr.modify(.{
@@ -711,20 +696,20 @@ pub fn wait_for_finish_blocking(chan: Channel) void {
 /// Get interrupt enum for this channel (for enabling NVIC)
 pub fn get_interrupt(chan: Channel) microzig.interrupt.Interrupt {
     return switch (@intFromEnum(chan)) {
-        0 => microzig.interrupt.DMA1_STR0,
-        1 => microzig.interrupt.DMA1_STR1,
-        2 => microzig.interrupt.DMA1_STR2,
-        3 => microzig.interrupt.DMA1_STR3,
-        4 => microzig.interrupt.DMA1_STR4,
-        5 => microzig.interrupt.DMA1_STR5,
-        6 => microzig.interrupt.DMA1_STR6,
-        7 => microzig.interrupt.DMA2_STR0,
-        8 => microzig.interrupt.DMA2_STR1,
-        9 => microzig.interrupt.DMA2_STR2,
-        10 => microzig.interrupt.DMA2_STR3,
-        11 => microzig.interrupt.DMA2_STR4,
-        12 => microzig.interrupt.DMA2_STR5,
-        13 => microzig.interrupt.DMA2_STR6,
+        0 => microzig.interrupt.DMA1_Stream0,
+        1 => microzig.interrupt.DMA1_Stream1,
+        2 => microzig.interrupt.DMA1_Stream2,
+        3 => microzig.interrupt.DMA1_Stream3,
+        4 => microzig.interrupt.DMA1_Stream4,
+        5 => microzig.interrupt.DMA1_Stream5,
+        6 => microzig.interrupt.DMA1_Stream6,
+        7 => microzig.interrupt.DMA2_Stream0,
+        8 => microzig.interrupt.DMA2_Stream1,
+        9 => microzig.interrupt.DMA2_Stream2,
+        10 => microzig.interrupt.DMA2_Stream3,
+        11 => microzig.interrupt.DMA2_Stream4,
+        12 => microzig.interrupt.DMA2_Stream5,
+        13 => microzig.interrupt.DMA2_Stream6,
         else => unreachable,
     };
 }

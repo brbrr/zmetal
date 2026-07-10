@@ -4,7 +4,7 @@ const microzig = @import("microzig");
 const hal = @import("hal.zig");
 
 var pwr = microzig.chip.peripherals.PWR;
-const PWR = microzig.chip.types.peripherals.PWR;
+const PWR = microzig.chip.types.peripherals.pwr_h7rm0433;
 
 const PWR_FLAG_SETTING_DELAY: u32 = 1000;
 
@@ -16,17 +16,21 @@ pub const VoltageScale = enum {
 };
 
 // pub inline fn set_voltage_scalling(scale: PWR.VOS) void {
-//     pwr.PWR_D3CR.modify_one("VOS", scale);
-//     _ = pwr.PWR_D3CR.read();
+//     pwr.D3CR.modify_one("VOS", scale);
+//     _ = pwr.D3CR.read();
 // }
 
 const syscfg = microzig.chip.peripherals.SYSCFG;
-pub fn set_voltage_scalling(scale: PWR.VOS) void {
+// Note: microzig's PWR.VOS enum has no Scale0 — on the H7, VOS0 (480 MHz
+// overdrive) is reached by selecting the highest VOS (Scale1) and enabling the
+// SYSCFG overdrive bit. So this takes the local VoltageScale enum (which has
+// Scale0) and maps the rest to PWR.VOS.
+pub fn set_voltage_scalling(scale: VoltageScale) void {
     if (scale == .Scale0) {
-        // First set Scale1, then enable overdrive
-        pwr.PWR_D3CR.modify_one("VOS", .Scale1); // Scale1 value
+        // First set the highest VOS, then enable overdrive
+        pwr.D3CR.modify_one("VOS", .Scale1);
         // Read back for delay (register write synchronization)
-        _ = pwr.PWR_D3CR.read().VOS;
+        _ = pwr.D3CR.read().VOS;
 
         // Enable PWR overdrive via SYSCFG
         syscfg.PWRCR.modify_one("ODEN", 1);
@@ -37,14 +41,14 @@ pub fn set_voltage_scalling(scale: PWR.VOS) void {
         syscfg.PWRCR.modify_one("ODEN", 0);
         _ = syscfg.PWRCR.read().ODEN;
 
-        // const vos_val: u2 = switch (scale) {
-        //     .Scale0 => unreachable,
-        //     .Scale1 => 3,
-        //     .Scale2 => 2,
-        //     .Scale3 => 1,
-        // };
-        pwr.PWR_D3CR.modify_one("VOS", scale);
-        _ = pwr.PWR_D3CR.read().VOS;
+        const vos: PWR.VOS = switch (scale) {
+            .Scale0 => unreachable,
+            .Scale1 => .Scale1,
+            .Scale2 => .Scale2,
+            .Scale3 => .Scale3,
+        };
+        pwr.D3CR.modify_one("VOS", vos);
+        _ = pwr.D3CR.read().VOS;
     }
 }
 
@@ -68,21 +72,21 @@ pub const PwrFlag = enum {
 
 pub fn get_flag(flag: PwrFlag) bool {
     return switch (flag) {
-        .PVDO => pwr.PWR_CSR1.read().PVDO == 1,
-        .AVDO => pwr.PWR_CSR1.read().AVDO == 1,
-        .ACTVOSRDY => pwr.PWR_CSR1.read().ACTVOSRDY == 1,
-        .SCUEN => pwr.PWR_CR3.read().SCUEN == 1,
-        .USB33RDY => pwr.PWR_CR3.read().USB33RDY == 1,
-        .VOSRDY => pwr.PWR_D3CR.read().VOSRDY == 1,
-        .SB => pwr.PWR_CPUCR.read().SBF == 1,
-        .STOP => pwr.PWR_CPUCR.read().STOPF == 1,
-        .SB_D1 => pwr.PWR_CPUCR.read().SBF_D1 == 1,
-        .SB_D2 => pwr.PWR_CPUCR.read().SBF_D2 == 1,
-        .BRR => pwr.PWR_CR2.read().BRRDY == 1,
-        .TEMPH => pwr.PWR_CR2.read().TEMPH == 1,
-        .TEMPL => pwr.PWR_CR2.read().TEMPL == 1,
-        .VBATH => pwr.PWR_CR2.read().VBATH == 1,
-        .VBATL => pwr.PWR_CR2.read().VBATL == 1,
+        .PVDO => pwr.CSR1.read().PVDO == 1,
+        .AVDO => pwr.CSR1.read().AVDO == 1,
+        .ACTVOSRDY => pwr.CSR1.read().ACTVOSRDY == 1,
+        .SCUEN => pwr.CR3.read().SCUEN == 1,
+        .USB33RDY => pwr.CR3.read().USB33RDY == 1,
+        .VOSRDY => pwr.D3CR.read().VOSRDY == 1,
+        .SB => pwr.CPUCR.read().SBF == 1,
+        .STOP => pwr.CPUCR.read().STOPF == 1,
+        .SB_D1 => pwr.CPUCR.read().SBF_D1 == 1,
+        .SB_D2 => pwr.CPUCR.read().SBF_D2 == 1,
+        .BRR => pwr.CR2.read().BRRDY == 1,
+        .TEMPH => pwr.CR2.read().TEMPH == 1,
+        .TEMPL => pwr.CR2.read().TEMPL == 1,
+        .VBATH => pwr.CR2.read().VBATH == 1,
+        .VBATL => pwr.CR2.read().VBATL == 1,
     };
 }
 
@@ -98,7 +102,7 @@ pub const PwrSupplyMode = union(enum) {
 };
 
 fn isSupplySourceMatch(mode: PwrSupplyMode) bool {
-    const cr3 = pwr.PWR_CR3.read(); // Read register once
+    const cr3 = pwr.CR3.read(); // Read register once
     const vals = mode.get();
     return cr3.LDOEN == vals[0] and cr3.BYPASS == vals[1] and cr3.SCUEN == vals[2];
     // return switch (mode) {
@@ -123,7 +127,7 @@ pub fn config_ext_power_supply(mode: PwrSupplyMode) bool {
     }
 
     const vals = mode.get();
-    pwr.PWR_CR3.modify(.{
+    pwr.CR3.modify(.{
         .LDOEN = vals[0],
         .BYPASS = vals[1],
         .SCUEN = vals[2],

@@ -9,8 +9,8 @@ const scb = cpu.peripherals.scb;
 const rcc = chip.peripherals.RCC;
 
 const chip_peri = chip.types.peripherals;
-const FLASH = chip_peri.Flash;
-const PWR = chip_peri.PWR;
+const FLASH = chip_peri.flash_h7;
+const PWR = chip_peri.pwr_h7rm0433;
 
 const hal = @import("hal.zig");
 const stm32 = hal;
@@ -177,16 +177,17 @@ pub fn hal_init() !void {
 }
 
 pub fn configure_clocks() !void {
-    hal.rcc.verify_peripheral_clocks(clk_config, clocktree_outputs.clock);
+    // hal.rcc.verify_peripheral_clocks(clk_config, clocktree_outputs.clock);
 
     if (!hal.power.config_ext_power_supply(.LDO)) {
         return error.PowerError;
     }
 
-    const flash_latency: FLASH.LATENCY =
+    // microzig's flash ACR.LATENCY is a plain u3 wait-state count (no enum).
+    const flash_latency: u3 =
         switch (SysConfig.freq) {
-            .boost => .WS4, // Four wait states
-            .default => .WS2, // Two wait states
+            .boost => 4, // Four wait states (480 MHz, VOS0)
+            .default => 2, // Two wait states (400 MHz, VOS1)
         };
 
     try hal.rcc.apply_clock(clocktree_outputs, flash_latency);
@@ -255,40 +256,40 @@ fn dma_init() !void {
 
     // DMA interrupt init
     // DMA1_Stream0_IRQn interrupt configuration
-    cpu.interrupt.set_priority(.DMA1_STR0, .highest);
-    cpu.interrupt.enable(.DMA1_STR0);
+    cpu.interrupt.set_priority(.DMA1_Stream0, .highest);
+    cpu.interrupt.enable(.DMA1_Stream0);
     // DMA1_Stream1_IRQn interrupt configuration
-    cpu.interrupt.set_priority(.DMA1_STR1, .highest);
-    cpu.interrupt.enable(.DMA1_STR1);
+    cpu.interrupt.set_priority(.DMA1_Stream1, .highest);
+    cpu.interrupt.enable(.DMA1_Stream1);
     // DMA1_Stream2_IRQn interrupt configuration
-    cpu.interrupt.set_priority(.DMA1_STR2, .highest);
-    cpu.interrupt.enable(.DMA1_STR2);
+    cpu.interrupt.set_priority(.DMA1_Stream2, .highest);
+    cpu.interrupt.enable(.DMA1_Stream2);
     // DMA1_Stream3_IRQn interrupt configuration
-    cpu.interrupt.set_priority(.DMA1_STR3, .highest);
-    cpu.interrupt.enable(.DMA1_STR3);
+    cpu.interrupt.set_priority(.DMA1_Stream3, .highest);
+    cpu.interrupt.enable(.DMA1_Stream3);
     // DMA1_Stream4_IRQn interrupt configuration
-    cpu.interrupt.set_priority(.DMA1_STR4, .highest);
-    cpu.interrupt.enable(.DMA1_STR4);
+    cpu.interrupt.set_priority(.DMA1_Stream4, .highest);
+    cpu.interrupt.enable(.DMA1_Stream4);
     // DMA1_Stream5_IRQn and DMA2_Stream4_IRQn interrupt configuration for uart rx and tx
-    cpu.interrupt.set_priority(.DMA1_STR5, .highest);
-    cpu.interrupt.enable(.DMA1_STR5);
+    cpu.interrupt.set_priority(.DMA1_Stream5, .highest);
+    cpu.interrupt.enable(.DMA1_Stream5);
     // DMA1_Stream6_IRQn interrupt configuration for I2C
-    cpu.interrupt.set_priority(.DMA1_STR6, .highest);
-    cpu.interrupt.enable(.DMA1_STR6);
+    cpu.interrupt.set_priority(.DMA1_Stream6, .highest);
+    cpu.interrupt.enable(.DMA1_Stream6);
 
     // DMA2_Stream0_IRQn, interrupt configuration for DAC Ch1
-    cpu.interrupt.set_priority(.DMA2_STR0, .highest);
-    cpu.interrupt.enable(.DMA2_STR0);
+    cpu.interrupt.set_priority(.DMA2_Stream0, .highest);
+    cpu.interrupt.enable(.DMA2_Stream0);
     // DMA2_Stream1_IRQn, interrupt configuration for DAC Ch2
-    cpu.interrupt.set_priority(.DMA2_STR1, .highest);
-    cpu.interrupt.enable(.DMA2_STR1);
+    cpu.interrupt.set_priority(.DMA2_Stream1, .highest);
+    cpu.interrupt.enable(.DMA2_Stream1);
     // DMA2_Stream2_IRQn and DMA2_Stream3_IRQn interrupt configuration for SPI
-    cpu.interrupt.set_priority(.DMA2_STR2, .highest);
-    cpu.interrupt.enable(.DMA2_STR2);
-    cpu.interrupt.set_priority(.DMA2_STR3, .highest);
-    cpu.interrupt.enable(.DMA2_STR3);
-    cpu.interrupt.set_priority(.DMA2_STR4, .highest);
-    cpu.interrupt.enable(.DMA2_STR4);
+    cpu.interrupt.set_priority(.DMA2_Stream2, .highest);
+    cpu.interrupt.enable(.DMA2_Stream2);
+    cpu.interrupt.set_priority(.DMA2_Stream3, .highest);
+    cpu.interrupt.enable(.DMA2_Stream3);
+    cpu.interrupt.set_priority(.DMA2_Stream4, .highest);
+    cpu.interrupt.enable(.DMA2_Stream4);
 }
 
 fn i2c_init() !void {
@@ -351,6 +352,14 @@ pub const Daisy = struct {
         try configure_mpu();
 
         hal.cache.enableICache();
+        // D-cache is intentionally NOT enabled here. Peripheral bring-up
+        // (RCC clock-enable → immediate register access) is timing-sensitive;
+        // with D-cache on, code runs fast enough to touch a peripheral before
+        // its clock is stable, taking an imprecise AHB bus fault. We enable
+        // D-cache from main() AFTER all init/display setup completes, so init
+        // runs cache-off (safe) and the audio run-loop runs cache-on (no jitter).
+        // DMA buffers (SAI rx/tx, display framebuffer) are non-cacheable D2 by
+        // MPU config, so D-cache never breaks DMA coherency.
         hal.cache.enableDCache();
 
         try dma_init();

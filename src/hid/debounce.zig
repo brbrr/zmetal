@@ -49,19 +49,19 @@ const KeyState = struct {
     is_pressed: bool = false,
 };
 
-/// Keyboard debouncer - generic over matrix type  
+/// Keyboard debouncer - generic over matrix type
 pub fn Debouncer(comptime MatrixType: type, comptime key_count: usize, comptime num_rows: usize, comptime num_cols: usize) type {
     _ = num_rows; // Used in process() method
     return struct {
         const Self = @This();
-        
+
         matrix: *MatrixType,
         states: [key_count]KeyState,
 
         pub fn init(matrix: *MatrixType) Self {
             return Self{
                 .matrix = matrix,
-                .states = [_]KeyState{.{}} ** key_count,
+                .states = @splat(.{}),
             };
         }
 

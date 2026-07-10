@@ -47,10 +47,10 @@ pub const COLS = 6;
 pub const KEY_COUNT = ROWS * COLS; // 48 keys
 
 /// Column pins: Port A pins 0-5
-const COL_PINS = [_]u8{ 0, 1, 2, 3, 4, 5 };
+const COL_PINS = [COLS]u8{ 0, 1, 2, 3, 4, 5 };
 
 /// Row pins: Port B pins 8-15
-const ROW_PINS = [_]u8{ 8, 9, 10, 11, 12, 13, 14, 15 };
+const ROW_PINS = [ROWS]u8{ 8, 9, 10, 11, 12, 13, 14, 15 };
 
 pub const KeyEvent = debounce.KeyEvent;
 pub const KeyEventData = debounce.KeyEventData;
