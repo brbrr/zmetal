@@ -1,7 +1,8 @@
-// TODO:
-// - test current code: play around with lower values of reload Reg
-// - Test that val reg is incrementing correctly
-// - test that COUNTFLAG is flipped at all
+//! Application entry point for the Daisy Seed (STM32H750) audio platform.
+//!
+//! Wires the board bring-up (`hal.daisy`), the audio engine (`synth`), the
+//! display scene (`ui`), and the matrix keyboard (`hid.keyboard`) together, and
+//! owns the microzig root config (panic/std_options/interrupt vector table).
 
 const std = @import("std");
 
@@ -28,6 +29,8 @@ const ssai = hal.sai;
 const SaiDriver = ssai.SaiDriver;
 
 const keyboard = @import("hid/keyboard.zig");
+const encoders_mod = @import("hid/encoders.zig");
+const midi_input = @import("hid/midi_input.zig");
 const synth = @import("synth.zig");
 const ui = @import("ui.zig");
 
@@ -49,6 +52,9 @@ pub const microzig_options: microzig.Options = .{
         .SPI1 = .{ .c = hal.spi.spi1_irq_handler },
         // SPI TX
         .DMA2_Stream3 = .{ .c = hal.spi.tx_dma_irq_handler },
+
+        // MIDI IN (USART1 RX)
+        .USART1 = .{ .c = midi_input.usart1_irq_handler },
         // SPI RX
         // .DMA2_Stream2 = .{ .c = hal.spi.dma1_str3_handler },
     },
@@ -103,18 +109,51 @@ pub fn main() !void {
 
     var kbd: keyboard.Keyboard = undefined;
     try kbd.init(hw.i2c.i2c_device());
+
+    var encoders: encoders_mod.Encoders = undefined;
+    try encoders.init(hw.i2c.i2c_device());
+
+    midi_input.init();
+
+    // SD card bring-up (Phase 1: identify). Non-fatal so init_stage/card can be
+    // inspected over the debugger even if a later step fails.
+    try hal.sdmmc.init();
+
     var tick_count: u32 = 0;
     while (true) {
-        // Process keyboard every 10ms (100Hz scan rate)
+        // Drain received MIDI (interrupt-buffered) and play it on the synth.
+        while (midi_input.poll()) |msg| {
+            switch (msg.kind) {
+                .note_on => synth.midiNoteOn(msg.data1, msg.data2),
+                .note_off => synth.midiNoteOff(msg.data1),
+                else => {},
+            }
+        }
+
+        // Process keyboard every 10ms (100Hz scan rate).
         if (tick_count % 10 == 0) {
             if (kbd.process()) |events| {
                 for (events.slice()) |evt| {
                     synth.handleKey(keyboard.logicalKey(evt.key), evt.event == .pressed);
                 }
             } else |_| {
-                // Ignore keyboard errors
+                // Ignore transient keyboard I2C errors.
             }
         }
+
+        // Poll encoders every ~2ms so detents aren't missed. ENC0 = volume,
+        // ENC1 = octave; ENC2/ENC3 and all switches are decoded but unmapped.
+        if (tick_count % 2 == 0) {
+            if (encoders.poll()) |_| {
+                const vol = encoders.get(0).inc;
+                if (vol != 0) synth.adjustVolume(vol);
+                const oct = encoders.get(1).inc;
+                if (oct != 0) synth.shiftOctave(oct);
+            } else |_| {
+                // Ignore transient encoder I2C errors.
+            }
+        }
+
         tick_count += 1;
 
         ui.service();

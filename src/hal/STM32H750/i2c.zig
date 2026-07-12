@@ -423,17 +423,6 @@ pub const I2C_Device = struct {
     }
 };
 
-/// Bring-up diagnostic for `recover_bus`, readable over the debugger
-/// (`p i2c.recover_stats`): whether SDA was already released on entry, how many
-/// SCL pulses it took to free it, and whether SDA ended up high.
-pub const RecoverStats = extern struct {
-    ran: u32 = 0,
-    initial_sda_high: u32 = 0,
-    pulses: u32 = 0,
-    final_sda_high: u32 = 0,
-};
-pub var recover_stats: RecoverStats = .{};
-
 /// Recover a stuck I2C bus before the peripheral takes over the pins.
 ///
 /// A CPU reset resets the I2C peripheral but NOT the bus or the slaves. A slave
@@ -463,8 +452,6 @@ fn recover_bus(comptime pin_cfg: PinConfig) void {
     sda.write(.High);
     bit_delay();
 
-    const initial_sda_high = sda.read() == .High;
-
     // Clock SCL until the slave releases SDA (bus is idle-high when free).
     var pulses: u8 = 0;
     while (pulses < 9 and sda.read() == .Low) : (pulses += 1) {
@@ -473,17 +460,6 @@ fn recover_bus(comptime pin_cfg: PinConfig) void {
         scl.write(.High);
         bit_delay();
     }
-
-    // Diagnostic (read over the debugger: `p i2c.recover_stats`). Written
-    // through a volatile pointer so the optimizer can't dead-store-eliminate it
-    // (nothing in firmware reads recover_stats; only the debugger does).
-    const out: *volatile RecoverStats = &recover_stats;
-    out.* = .{
-        .ran = recover_stats.ran + 1,
-        .initial_sda_high = @intFromBool(initial_sda_high),
-        .pulses = pulses,
-        .final_sda_high = @intFromBool(sda.read() == .High),
-    };
 
     // Only if we actually had to clock (bus was stuck), issue a STOP —
     // SDA low->high while SCL is high — to leave the bus cleanly idle.

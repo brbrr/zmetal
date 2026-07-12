@@ -74,6 +74,53 @@ pub fn shiftOctave(steps: i8) void {
     }
 }
 
+// === MIDI note input =============================================
+//
+// Shares the single mono oscillator with the matrix keyboard — whichever played
+// most recently wins (a proper voice mixer is future work). MIDI notes are
+// tracked in their own last-note-priority stack, pitched via midiToFreq.
+
+const MAX_MIDI_NOTES = 8;
+var midi_notes: [MAX_MIDI_NOTES]u8 = undefined;
+var midi_count: usize = 0;
+
+/// MIDI Note On. Velocity 0 is treated as Note Off (the running-status idiom).
+pub fn midiNoteOn(note: u8, velocity: u8) void {
+    if (velocity == 0) return midiNoteOff(note);
+    for (midi_notes[0..midi_count]) |n| {
+        if (n == note) return retuneMidi(); // already held
+    }
+    if (midi_count < MAX_MIDI_NOTES) {
+        midi_notes[midi_count] = note;
+        midi_count += 1;
+    }
+    retuneMidi();
+}
+
+/// MIDI Note Off. Falls back to the most-recently-pressed still-held note, or
+/// gates the oscillator off when none remain.
+pub fn midiNoteOff(note: u8) void {
+    var i: usize = 0;
+    while (i < midi_count) : (i += 1) {
+        if (midi_notes[i] == note) {
+            var j = i;
+            while (j + 1 < midi_count) : (j += 1) midi_notes[j] = midi_notes[j + 1];
+            midi_count -= 1;
+            break;
+        }
+    }
+    retuneMidi();
+}
+
+fn retuneMidi() void {
+    if (midi_count > 0) {
+        engine.sine.setFreq(mono_voice.midiToFreq(@as(i32, midi_notes[midi_count - 1])));
+        engine.gate = true;
+    } else {
+        engine.gate = false;
+    }
+}
+
 /// Push the current voice state (pitch + gate) into the oscillator.
 fn applyVoice() void {
     if (engine.voice.active()) {
