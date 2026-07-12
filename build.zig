@@ -89,6 +89,7 @@ fn buildTargetVariant(
     mb: *MicroBuild,
     mz_dep: *std.Build.Dependency,
     clockhelper_dep: *std.Build.Module,
+    zfat_mod: *std.Build.Module,
     config: TargetConfig,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Step {
@@ -131,6 +132,24 @@ fn buildTargetVariant(
         setTreeOptimize(firmware.core_mod, .ReleaseSafe, &visited);
     }
 
+    // FatFs bindings (zfat) for the SD card. Imported into the application root
+    // module; the module carries the vendored FatFs C compilation.
+    firmware.exe.root_module.addImport("zfat", zfat_mod);
+
+    // Display driver (ui.zig + ili9341 + font tables) as its own module, built
+    // optimized even in Debug app builds. Its pixel loops and font tables are
+    // large when unoptimized; keeping them ReleaseSafe lets the Debug app + the
+    // display + FatFs file I/O all fit the 128 KB internal flash. It only depends
+    // on std + microzig, so it shares the app's microzig instance for ABI parity.
+    const display_optimize: std.builtin.OptimizeMode = if (optimize == .Debug) .ReleaseSafe else optimize;
+    const ui_mod = b.createModule(.{
+        .root_source_file = b.path("src/ui.zig"),
+        .target = firmware.exe.root_module.resolved_target,
+        .optimize = display_optimize,
+    });
+    ui_mod.addImport("microzig", firmware.exe.root_module.import_table.get("microzig").?);
+    firmware.exe.root_module.addImport("ui", ui_mod);
+
     const install = mb.add_install_firmware(firmware, .{ .format = .elf });
     const install_bin = mb.add_install_firmware(firmware, .{ .format = .binary });
 
@@ -166,14 +185,39 @@ pub fn build(b: *std.Build) void {
     const clockhelper_dep = b.dependency("ClockHelper", .{}).module("clockhelper");
     const optimize = b.standardOptimizeOption(.{});
 
-    const flash_report = buildTargetVariant(b, mb, mz_dep, clockhelper_dep, .{
+    // FatFs bindings; the module compiles the vendored FatFs C for the firmware
+    // target when imported. Config is spelled out rather than left to defaults:
+    //   - ReleaseSafe keeps the FatFs C compact.
+    //   - static RTC: the board has no wall clock, and it keeps zfat off the
+    //     removed std.time.timestamp() path (get_fattime returns a fixed date).
+    //   - long_file_name = false: 8.3 names only.
+    //   - no mkfs/exfat/find/chmod: unused APIs, kept out of flash.
+    const zfat_mod = b.dependency("zfat", .{
+        .optimize = .ReleaseSafe,
+        .@"static-rtc" = @as([]const u8, "2026-01-01"),
+        .read_only = false, // we create/write files
+        .long_file_name = false, // 8.3 only — no Unicode tables
+        .mkfs = false, // no on-device formatting
+        .exfat = false, // FAT/FAT32 only
+        .find = false, // no f_findfirst/next
+    }).module("zfat");
+    // Trap on C UB instead of linking the UBSan runtime (see zfat/build.zig):
+    // the runtime's value formatter would drag ~90 KB of float formatting into
+    // the 128 KB internal flash. `.trap` keeps UB detection at ~zero size.
+    zfat_mod.sanitize_c = .trap;
+    // Freestanding (no libc): supply the <string.h> + strchr/strlen the FatFs C
+    // needs. mem* come from compiler_rt; malloc/free aren't used at FF_USE_LFN=0.
+    zfat_mod.addIncludePath(b.path("lib/zfat_shim"));
+    zfat_mod.addCSourceFile(.{ .file = b.path("lib/zfat_shim/shim.c"), .flags = &.{"-std=c99"} });
+
+    const flash_report = buildTargetVariant(b, mb, mz_dep, clockhelper_dep, zfat_mod, .{
         .name = "blinky-flash",
         .linker_script = "src/ld/daisy_flash.ld",
         .step_name = "flash",
         .step_description = "Build firmware for internal flash (direct mode)",
     }, optimize);
 
-    const sram_report = buildTargetVariant(b, mb, mz_dep, clockhelper_dep, .{
+    const sram_report = buildTargetVariant(b, mb, mz_dep, clockhelper_dep, zfat_mod, .{
         .name = "blinky-sram",
         .linker_script = "src/ld/daisy_sram.ld",
         .step_name = "sram",

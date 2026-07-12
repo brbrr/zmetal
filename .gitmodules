@@ -1,3 +1,7 @@
 [submodule "lib/microzig"]
 	path = lib/microzig
 	url = git@github.com:ZigEmbeddedGroup/microzig.git
+[submodule "lib/zfat"]
+	path = lib/zfat
+	url = git@github.com:brbrr/zfat.git
+	branch = zig-0.17

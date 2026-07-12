@@ -1,28 +1,32 @@
 //! SDMMC1 + SD-card block driver for STM32H750 (sdmmc_v2 peripheral).
 //!
-//! Ported from the libdaisy / ST HAL reference (stm32h7xx_hal_sd.c,
-//! stm32h7xx_ll_sdmmc.c, libdaisy src/per/sdmmc.cpp). Phase 1 = clock/pins +
-//! peripheral init + SD identification (CMD0..CMD7, ACMD6 4-bit); block read/
-//! write via the peripheral's internal DMA (IDMA) is layered on in Phase 2.
-//!
-//! Bring-up aids (temporary): `init_stage` advances step-by-step and `card`
-//! fills in as identification proceeds, so progress is inspectable over SWD even
-//! if a later step fails.
+//! Hand-rolled register-level driver. The identification and IDMA transfer
+//! sequences follow ST's SD driver; `readBlock`/`writeBlock` transfer
+//! 512-byte blocks via the peripheral's internal DMA (IDMA). SDHC/SDXC only.
 
 const std = @import("std");
 const microzig = @import("microzig");
 const chip = microzig.chip;
 const clock = @import("clock.zig");
 const gpio = @import("gpio.zig");
+const cache = @import("cache.zig");
+const daisy = @import("daisy.zig");
 
 const regs = chip.peripherals.SDMMC1;
 const rcc = chip.peripherals.RCC;
 
-/// SDMMC kernel clock = PLL2R, 200 MHz on the daisy clock config.
-/// SDMMC_CK = KERNEL_CLK / (2 * CLKDIV).
-const KERNEL_CLK_HZ: u32 = 200_000_000;
-const CLKDIV_INIT: u10 = 250; // -> 400 kHz identification clock
-const CLKDIV_XFER: u10 = 4; //   -> 25 MHz transfer clock
+/// SDMMC1 kernel clock (SDMMCSEL = PLL2R), read from the computed clock tree —
+/// the same mechanism SAI/SPI use. Rounded to the nearest MHz to shed the f32
+/// noise in the tree's value (PLL outputs are MHz-granular): 200000976 -> 200MHz.
+const KERNEL_CLK_HZ: u32 = @intFromFloat(@round(@as(f64, daisy.clock_outputs.DIVR2output) / 1_000_000.0) * 1_000_000.0);
+
+/// SDMMC_CK = KERNEL_CLK / (2 * CLKDIV). Choose the smallest divider whose bus
+/// clock does not exceed `target_hz` (ceil-divide so we never overshoot).
+fn clkdivFor(comptime target_hz: u32) u10 {
+    return @intCast((KERNEL_CLK_HZ + 2 * target_hz - 1) / (2 * target_hz));
+}
+const CLKDIV_INIT: u10 = clkdivFor(400_000); // <= 400 kHz identification clock
+const CLKDIV_XFER: u10 = clkdivFor(25_000_000); // <= 25 MHz transfer clock
 
 /// ICR mask that clears all static command+data status flags (CMSIS
 /// SDMMC_STATIC_FLAGS).
@@ -38,6 +42,10 @@ pub const Error = error{
     CardUnresponsive,
     UnsupportedCard,
     PollTimeout,
+    DataTimeout,
+    DataCrcFail,
+    DataError,
+    OutOfRange,
 };
 
 pub const CardType = enum { sdsc, sdhc };
@@ -50,10 +58,18 @@ pub const CardInfo = struct {
     csd: [4]u32 = .{ 0, 0, 0, 0 },
 };
 
-/// Populated as identification proceeds; readable over the debugger.
-pub var card: CardInfo = .{};
-/// Advances step-by-step during init (bring-up aid).
-pub var init_stage: u32 = 0;
+/// Filled in by `init()`; read via `cardInfo()` / `blockCount()`.
+var card: CardInfo = .{};
+
+/// Card description from the last successful `init()`.
+pub fn cardInfo() CardInfo {
+    return card;
+}
+
+/// Card capacity in 512-byte logical blocks (0 until `init()` succeeds).
+pub fn blockCount() u32 {
+    return card.block_count;
+}
 
 const Resp = enum {
     none, // no response (CMD0)
@@ -133,7 +149,6 @@ fn parseCsdV2() void {
 /// Bring up SDMMC1 and identify the inserted SD card (SDHC assumed). On success,
 /// `card` describes the card and the bus is in 4-bit mode at the transfer clock.
 pub fn init() Error!void {
-    init_stage = 0;
     card = .{};
 
     // --- Clock + pins ---
@@ -141,20 +156,15 @@ pub fn init() Error!void {
     rcc.AHB3ENR.modify(.{ .SDMMC1EN = 1 });
     _ = rcc.AHB3ENR.read(); // RCC settle readback
     configurePins();
-    init_stage = 1;
 
     // --- Peripheral: 400 kHz, 1-bit, power on ---
     regs.CLKCR.write_raw(@as(u32, CLKDIV_INIT)); // CLKDIV, WIDBUS=1-bit, rest 0
     regs.POWER.modify(.{ .PWRCTRL = 0b11 }); // power on
     clock.delay_ms(2); // >= 74 SD-clock cycles (~185us at 400kHz)
-    init_stage = 2;
 
     // --- Identification ---
     try sendCmd(0, 0, .none); // CMD0 GO_IDLE_STATE
-    init_stage = 3;
-
     try sendCmd(8, 0x1AA, .short); // CMD8 SEND_IF_COND (SDHC/v2 required)
-    init_stage = 4;
 
     // ACMD41 loop (CMD55 then ACMD41) until the OCR busy bit clears.
     var ocr: u32 = 0;
@@ -168,30 +178,121 @@ pub fn init() Error!void {
     if (ocr & 0x8000_0000 == 0) return Error.CardUnresponsive;
     card.card_type = if (ocr & 0x4000_0000 != 0) .sdhc else .sdsc; // CCS
     if (card.card_type != .sdhc) return Error.UnsupportedCard;
-    init_stage = 5;
 
     try sendCmd(2, 0, .long); // CMD2 ALL_SEND_CID
     card.cid = readResp4();
-    init_stage = 6;
 
     try sendCmd(3, 0, .short); // CMD3 SEND_RELATIVE_ADDR
     card.rca = @intCast(resp1() >> 16);
-    init_stage = 7;
 
     try sendCmd(9, @as(u32, card.rca) << 16, .long); // CMD9 SEND_CSD
     card.csd = readResp4();
     parseCsdV2();
-    init_stage = 8;
 
     try sendCmd(7, @as(u32, card.rca) << 16, .short); // CMD7 SELECT_CARD
     try sendCmd(16, 512, .short); // CMD16 SET_BLOCKLEN
-    init_stage = 9;
 
     // --- Switch to 4-bit bus + transfer clock ---
     try sendCmd(55, @as(u32, card.rca) << 16, .short); // APP_CMD with RCA
     try sendCmd(6, 2, .short); // ACMD6 SET_BUS_WIDTH = 4-bit
     regs.CLKCR.write_raw(@as(u32, CLKDIV_XFER) | (@as(u32, 1) << 14)); // CLKDIV + WIDBUS=4-bit
-    init_stage = 10;
+}
+
+// === Block I/O (IDMA) ============================================
+//
+// The caller's buffer may be in DTCM (not DMA-reachable) and SDMMC1's IDMA is a
+// D1-domain master that also can't reach D2 SRAM, so transfers go through a
+// bounce buffer in AXI SRAM (D1, `.axi_sram`), then are memcpy'd to/from the
+// caller. AXI SRAM is cacheable, so readBlock/writeBlock do cache maintenance
+// around the DMA. 32-byte aligned for the cache-by-address ops.
+var bounce: [512]u8 align(32) linksection(".axi_sram") = undefined;
+
+fn dataCleanup() void {
+    regs.DLENR.write_raw(0);
+    regs.DCTRL.write_raw(0);
+    regs.IDMACTRLR.write_raw(0);
+}
+
+/// Run one 512-byte data transfer for `cmd_index` (CMD17 read / CMD24 write)
+/// via IDMA into/out of `bounce`. `dctrl` selects direction (DTDIR).
+fn transferBlock(cmd_index: u6, sector: u32, dctrl: u32) Error!void {
+    clearFlags();
+    regs.DCTRL.write_raw(0);
+    regs.DTIMER.write_raw(0xFFFF_FFFF);
+    regs.DLENR.write_raw(512);
+    regs.IDMABASE0R.write_raw(@intFromPtr(&bounce));
+    regs.IDMACTRLR.write_raw(1); // IDMAEN, single buffer
+    regs.DCTRL.write_raw(dctrl);
+    regs.ARGR.write_raw(sector); // SDHC: block index (no *512)
+    // short response, CPSMEN, CMDTRANS (data transfer command)
+    regs.CMDR.write_raw(@as(u32, cmd_index) | (1 << 8) | (1 << 12) | (1 << 6));
+
+    var spins: u32 = 0;
+    while (true) {
+        const s = regs.STAR.read();
+        if (s.CTIMEOUT == 1) {
+            dataCleanup();
+            clearFlags();
+            return Error.CmdTimeout;
+        }
+        if (s.DTIMEOUT == 1) {
+            dataCleanup();
+            clearFlags();
+            return Error.DataTimeout;
+        }
+        if (s.DCRCFAIL == 1) {
+            dataCleanup();
+            clearFlags();
+            return Error.DataCrcFail;
+        }
+        if (s.RXOVERR == 1 or s.TXUNDERR == 1) {
+            dataCleanup();
+            clearFlags();
+            return Error.DataError;
+        }
+        if (s.DATAEND == 1) break;
+        spins += 1;
+        if (spins >= POLL_LIMIT) {
+            dataCleanup();
+            clearFlags();
+            return Error.PollTimeout;
+        }
+    }
+    dataCleanup();
+    clearFlags();
+}
+
+/// Poll CMD13 until the card returns to the TRANSFER (ready) state.
+fn waitCardReady() Error!void {
+    var spins: u32 = 0;
+    while (true) {
+        try sendCmd(13, @as(u32, card.rca) << 16, .short);
+        const state = (resp1() >> 9) & 0xF; // CURRENT_STATE
+        if (state == 4) return; // TRAN
+        spins += 1;
+        if (spins >= POLL_LIMIT) return Error.PollTimeout;
+    }
+}
+
+/// Read one 512-byte block at `sector` (block index) into `dst`.
+pub fn readBlock(sector: u32, dst: *[512]u8) Error!void {
+    if (sector >= card.block_count) return Error.OutOfRange;
+    // Clean so no stale dirty lines linger over the DMA target, run the DMA,
+    // then invalidate so the CPU reads the freshly-DMA'd data (not cache).
+    cache.clean_dcache_by_addr(@intFromPtr(&bounce), 512);
+    try transferBlock(17, sector, (9 << 4) | (1 << 1)); // DBLOCKSIZE=512, DTDIR=read
+    cache.invalidate_dcache_by_addr(@intFromPtr(&bounce), 512);
+    @memcpy(dst, &bounce);
+}
+
+/// Write one 512-byte block `src` to `sector` (block index).
+pub fn writeBlock(sector: u32, src: *const [512]u8) Error!void {
+    if (sector >= card.block_count) return Error.OutOfRange;
+    @memcpy(&bounce, src);
+    // Clean so the IDMA reads the just-written data from RAM, not stale cache.
+    cache.clean_dcache_by_addr(@intFromPtr(&bounce), 512);
+    try transferBlock(24, sector, (9 << 4)); // DBLOCKSIZE=512, DTDIR=write
+    try waitCardReady(); // wait out card programming before returning
 }
 
 fn configurePins() void {

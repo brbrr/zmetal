@@ -32,18 +32,19 @@ const keyboard = @import("hid/keyboard.zig");
 const encoders_mod = @import("hid/encoders.zig");
 const midi_input = @import("hid/midi_input.zig");
 const synth = @import("synth.zig");
-const ui = @import("ui.zig");
+const ui = @import("ui");
+const fat = @import("fat.zig");
 
 pub const microzig_options: microzig.Options = .{
     .interrupts = .{
         .SysTick = .{ .c = sys_tick_handler },
         .HardFault = .{ .naked = hal.fault.hard_fault },
-        .NMI = .{ .c = nmi_handler },
+        .NMI = .{ .c = hal.fault.nmi_handler },
         .MemManageFault = .{ .naked = hal.fault.mem_manage_fault },
         .BusFault = .{ .naked = hal.fault.bus_fault },
         .UsageFault = .{ .naked = hal.fault.usage_fault },
-        .SVCall = .{ .c = sv_call_handler },
-        .PendSV = .{ .c = hw_handler },
+        .SVCall = .{ .c = hal.fault.sv_call_handler },
+        .PendSV = .{ .c = hal.fault.hw_handler },
 
         .DMA1_Stream0 = .{ .c = ssai.dma1_0_handler },
         .DMA1_Stream1 = .{ .c = ssai.dma1_1_handler },
@@ -52,38 +53,12 @@ pub const microzig_options: microzig.Options = .{
         .SPI1 = .{ .c = hal.spi.spi1_irq_handler },
         // SPI TX
         .DMA2_Stream3 = .{ .c = hal.spi.tx_dma_irq_handler },
-
-        // MIDI IN (USART1 RX)
-        .USART1 = .{ .c = midi_input.usart1_irq_handler },
         // SPI RX
         // .DMA2_Stream2 = .{ .c = hal.spi.dma1_str3_handler },
+        // MIDI IN (USART1 RX)
+        .USART1 = .{ .c = midi_input.usart1_irq_handler },
     },
 };
-
-fn hw_handler() callconv(.c) void {
-    @breakpoint();
-    @panic("HardFault");
-}
-fn nmi_handler() callconv(.c) void {
-    @breakpoint();
-    @panic("NMI");
-}
-fn mem_manage_fault_handler() callconv(.c) void {
-    @breakpoint();
-    @panic("MemManageFault");
-}
-fn bus_fault_handler() callconv(.c) void {
-    @breakpoint();
-    @panic("BusFault");
-}
-fn usage_fault_handler() callconv(.c) void {
-    @breakpoint();
-    @panic("UsageFault");
-}
-fn sv_call_handler() callconv(.c) void {
-    @breakpoint();
-    @panic("SVCall");
-}
 
 var blink_ctr: u32 = 0;
 fn sys_tick_handler() callconv(.c) void {
@@ -115,9 +90,9 @@ pub fn main() !void {
 
     midi_input.init();
 
-    // SD card bring-up (Phase 1: identify). Non-fatal so init_stage/card can be
-    // inspected over the debugger even if a later step fails.
+    // SD card: identify (4-bit + IDMA) and mount the FAT filesystem.
     try hal.sdmmc.init();
+    try fat.mount();
 
     var tick_count: u32 = 0;
     while (true) {

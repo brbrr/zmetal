@@ -119,6 +119,17 @@ SECTIONS
 		PROVIDE(__sram1_bss_end__ = _esram1_bss);
 	} > RAM_D2_DMA
 
+	/* AXI-SRAM (D1). Reachable by D1-domain DMA masters such as the SDMMC1
+	 * IDMA (which cannot reach the D2 RAM_D2_DMA region). Cacheable via the
+	 * default MPU map, so users must do cache maintenance around DMA. */
+	.axi_sram (NOLOAD) :
+	{
+		. = ALIGN(32);
+		*(.axi_sram)
+		*(.axi_sram*)
+		. = ALIGN(32);
+	} > SRAM
+
 	/* Initialized data in DTCMRAM */
 	.data :
 	{

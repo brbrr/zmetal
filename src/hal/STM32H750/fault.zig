@@ -223,3 +223,28 @@ pub fn usage_fault() callconv(.naked) void {
         \\ b fault_report
     );
 }
+
+pub fn hw_handler() callconv(.c) void {
+    @breakpoint();
+    @panic("HardFault");
+}
+pub fn nmi_handler() callconv(.c) void {
+    @breakpoint();
+    @panic("NMI");
+}
+fn mem_manage_fault_handler() callconv(.c) void {
+    @breakpoint();
+    @panic("MemManageFault");
+}
+fn bus_fault_handler() callconv(.c) void {
+    @breakpoint();
+    @panic("BusFault");
+}
+fn usage_fault_handler() callconv(.c) void {
+    @breakpoint();
+    @panic("UsageFault");
+}
+pub fn sv_call_handler() callconv(.c) void {
+    @breakpoint();
+    @panic("SVCall");
+}
