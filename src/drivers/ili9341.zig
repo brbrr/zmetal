@@ -259,7 +259,7 @@ pub fn ILI9341_DMA(
         dma_src: []const u8 = &.{},
 
         // Tile checksum-diff state (partial flush)
-        tile_hash: [TILE_COUNT]u32 = @splat(TILE_COUNT),
+        tile_hash: [TILE_COUNT]u32 = @splat(0),
         hashes_valid: bool = false, // first flush_diff paints every tile
         dirty_tiles: [TILE_COUNT]u16 = undefined,
         dirty_count: usize = 0,
@@ -277,7 +277,7 @@ pub fn ILI9341_DMA(
                 .transport = transport,
                 .spi = spi,
                 .orientation = .Portrait,
-                .framebuffer = framebuffer[0..FB_SIZE],
+                .framebuffer = framebuffer,
             };
 
             try self.transport.init_display();

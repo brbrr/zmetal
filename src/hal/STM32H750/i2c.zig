@@ -40,6 +40,7 @@ const enums = stm32_common.enums;
 const rcc = @import("rcc.zig");
 const gpio = @import("gpio.zig");
 const pins = @import("pins.zig");
+const clock = @import("clock.zig");
 
 /// Re-export I2C_Device types from microzig
 pub const Address = drivers.base.I2C_Device.Address;
@@ -166,7 +167,9 @@ pub const I2C_Device = struct {
             .I2C4 => daisy_pin_configs.I2C4,
         };
 
-        // Configure GPIO pins for I2C function
+        // Recover a bus left stuck by a reset mid-transfer, THEN switch the pins
+        // to the I2C alternate function.
+        recover_bus(pin_cfg);
         configure_pins(pin_cfg);
 
         return I2C_Device{ .inner = inner };
@@ -178,10 +181,174 @@ pub const I2C_Device = struct {
         self.inner.apply();
     }
 
-    /// Get the I2C_Device interface for use with microzig drivers
-    /// This returns a drivers.base.I2C_Device with vtable for runtime dispatch
+    /// Get the I2C_Device interface for use with microzig drivers.
+    ///
+    /// Returns a drivers.base.I2C_Device backed by THIS module's robust transfer
+    /// routines (see `robust_vtable`), not microzig's built-in blocking loops.
+    /// microzig's i2c_v2 spins forever with no timeout and never clears NACKF/
+    /// STOPF, so a single NACK poisons every later transfer. Our routines add a
+    /// per-transfer timeout, clear the status flags, and reset the peripheral on
+    /// error — modeled on the libdaisy reference (10 ms timeout, re-init on error).
+    ///
+    /// `self` must live at a stable address (drivers copy this fat pointer by
+    /// value and keep `ptr = self`).
     pub fn i2c_device(self: *I2C_Device) drivers.base.I2C_Device {
-        return self.inner.i2c_device();
+        return .{ .ptr = self, .vtable = &robust_vtable };
+    }
+
+    // === Robust register-level transfer implementation ===============
+    //
+    // Operates directly on the peripheral register block (self.inner.i2c.regs).
+    // The clock, TIMINGR and pins are already set up by init()/apply().
+
+    /// Per-transfer timeout, in milliseconds (matches libdaisy's default).
+    const TRANSFER_TIMEOUT_MS: u32 = 10;
+
+    /// ICR write-1-to-clear mask: NACKCF(4) | STOPCF(5) | BERRCF(8) | ARLOCF(9).
+    /// Written raw so we don't depend on per-field register names.
+    const ICR_CLEAR_MASK: u32 = (1 << 4) | (1 << 5) | (1 << 8) | (1 << 9);
+
+    fn regs(self: *I2C_Device) @TypeOf(self.inner.i2c.regs) {
+        return self.inner.i2c.regs;
+    }
+
+    /// Reset the peripheral state machine after an error or timeout. Toggling PE
+    /// releases SCL/SDA and clears BUSY and all status flags; TIMINGR is retained.
+    fn recover(self: *I2C_Device) void {
+        const r = self.regs();
+        r.CR1.modify(.{ .PE = 0 });
+        var i: u32 = 0;
+        while (i < 16) : (i += 1) asm volatile ("nop"); // hold PE=0 a few APB cycles
+        r.CR1.modify(.{ .PE = 1 });
+    }
+
+    /// Wait until the given ISR flag is set, bailing out on NACK/bus-error or a
+    /// timeout. On any failure the peripheral is reset before returning.
+    fn wait_flag(self: *I2C_Device, comptime flag: []const u8) Error!void {
+        const r = self.regs();
+        const start = clock.get_tick();
+        while (true) {
+            const isr = r.ISR.read();
+            if (@field(isr, flag) == 1) return;
+            if (isr.NACKF == 1) {
+                self.recover();
+                return Error.NoAcknowledge;
+            }
+            if (isr.BERR == 1 or isr.ARLO == 1) {
+                self.recover();
+                return Error.UnknownAbort;
+            }
+            if (clock.get_tick() -% start >= TRANSFER_TIMEOUT_MS) {
+                self.recover();
+                return Error.Timeout;
+            }
+        }
+    }
+
+    /// Wait for the bus to be free before starting a new transfer.
+    fn wait_not_busy(self: *I2C_Device) Error!void {
+        const r = self.regs();
+        const start = clock.get_tick();
+        while (r.ISR.read().BUSY == 1) {
+            if (clock.get_tick() -% start >= TRANSFER_TIMEOUT_MS) {
+                self.recover();
+                return Error.Timeout;
+            }
+        }
+    }
+
+    /// Master write of one datagram. `restart` leaves the bus held (AUTOEND off,
+    /// stops at TC) so a repeated-START read can follow; otherwise a STOP is
+    /// generated automatically.
+    fn transfer_write(self: *I2C_Device, address: Address, data: []const u8, comptime restart: bool) Error!void {
+        const r = self.regs();
+        r.ICR.write_raw(ICR_CLEAR_MASK); // drop any stale flags from a prior transfer
+        try self.wait_not_busy();
+
+        r.CR2.modify(.{
+            .NBYTES = @as(u8, @intCast(data.len)),
+            .SADD = @as(u10, @intCast(@intFromEnum(address))) << 1,
+            .AUTOEND = if (restart) .Software else .Automatic,
+            .DIR = .Write,
+        });
+        r.CR2.modify(.{ .START = 1 });
+
+        for (data) |byte| {
+            try self.wait_flag("TXIS");
+            r.TXDR.modify(.{ .TXDATA = byte });
+        }
+
+        if (restart) {
+            try self.wait_flag("TC");
+        } else {
+            try self.wait_flag("STOPF");
+            r.ICR.write_raw(ICR_CLEAR_MASK);
+        }
+    }
+
+    /// Master read of one datagram. Issues its own (repeated) START. When it
+    /// follows a `restart` write, `after_restart` must be true: the bus is
+    /// legitimately still BUSY (held for the repeated START), so skip the
+    /// bus-free wait that a standalone read performs.
+    fn transfer_read(self: *I2C_Device, address: Address, buffer: []u8, comptime after_restart: bool) Error!void {
+        const r = self.regs();
+        r.ICR.write_raw(ICR_CLEAR_MASK);
+        if (!after_restart) try self.wait_not_busy();
+
+        r.CR2.modify(.{
+            .NBYTES = @as(u8, @intCast(buffer.len)),
+            .SADD = @as(u10, @intCast(@intFromEnum(address))) << 1,
+            .AUTOEND = .Automatic,
+            .DIR = .Read,
+        });
+        r.CR2.modify(.{ .START = 1 });
+
+        for (buffer) |*slot| {
+            try self.wait_flag("RXNE");
+            slot.* = r.RXDR.read().RXDATA;
+        }
+
+        try self.wait_flag("STOPF");
+        r.ICR.write_raw(ICR_CLEAR_MASK);
+    }
+
+    const robust_vtable = drivers.base.I2C_Device.VTable{
+        .writev_fn = robust_writev,
+        .readv_fn = robust_readv,
+        .writev_then_readv_fn = robust_writev_then_readv,
+    };
+
+    fn robust_writev(ctx: *anyopaque, address: Address, datagrams: []const []const u8) InterfaceError!void {
+        const self: *I2C_Device = @ptrCast(@alignCast(ctx));
+        address.check_reserved() catch return InterfaceError.TargetAddressReserved;
+        for (datagrams) |chunk| {
+            try self.transfer_write(address, chunk, false);
+        }
+    }
+
+    fn robust_readv(ctx: *anyopaque, address: Address, datagrams: []const []u8) InterfaceError!usize {
+        const self: *I2C_Device = @ptrCast(@alignCast(ctx));
+        address.check_reserved() catch return InterfaceError.TargetAddressReserved;
+        var total: usize = 0;
+        for (datagrams) |chunk| {
+            try self.transfer_read(address, chunk, false);
+            total += chunk.len;
+        }
+        return total;
+    }
+
+    fn robust_writev_then_readv(
+        ctx: *anyopaque,
+        address: Address,
+        write_chunks: []const []const u8,
+        read_chunks: []const []u8,
+    ) InterfaceError!void {
+        const self: *I2C_Device = @ptrCast(@alignCast(ctx));
+        address.check_reserved() catch return InterfaceError.TargetAddressReserved;
+        for (write_chunks, 0..) |chunk, index| {
+            try self.transfer_write(address, chunk, true);
+            try self.transfer_read(address, read_chunks[index], true);
+        }
     }
 
     /// Write data to an I2C device (blocking)
@@ -256,14 +423,101 @@ pub const I2C_Device = struct {
     }
 };
 
-/// Configure GPIO pins for I2C function
+/// Bring-up diagnostic for `recover_bus`, readable over the debugger
+/// (`p i2c.recover_stats`): whether SDA was already released on entry, how many
+/// SCL pulses it took to free it, and whether SDA ended up high.
+pub const RecoverStats = extern struct {
+    ran: u32 = 0,
+    initial_sda_high: u32 = 0,
+    pulses: u32 = 0,
+    final_sda_high: u32 = 0,
+};
+pub var recover_stats: RecoverStats = .{};
+
+/// Recover a stuck I2C bus before the peripheral takes over the pins.
+///
+/// A CPU reset resets the I2C peripheral but NOT the bus or the slaves. A slave
+/// (e.g. the MCP23017) interrupted mid-byte keeps driving SDA low, so the next
+/// transfer's START never completes and every transfer times out. The standard
+/// fix: drive the pins as GPIO and bit-bang up to 9 SCL clocks — one byte + ACK
+/// — until the slave finishes and releases SDA, then issue a STOP. Must run
+/// BEFORE `configure_pins` switches the pins to the I2C alternate function.
+fn recover_bus(comptime pin_cfg: PinConfig) void {
+    const scl = comptime gpio.Pin.init(pin_cfg.scl.port, pin_cfg.scl.pin, .{
+        .mode = .output,
+        .otype = .OpenDrain,
+        .pull = .PullUp,
+        .speed = .VeryHighSpeed,
+    });
+    const sda = comptime gpio.Pin.init(pin_cfg.sda.port, pin_cfg.sda.pin, .{
+        .mode = .output,
+        .otype = .OpenDrain,
+        .pull = .PullUp,
+        .speed = .VeryHighSpeed,
+    });
+
+    scl.configure();
+    sda.configure();
+    // Release both lines (open-drain high = let the pull-ups win).
+    scl.write(.High);
+    sda.write(.High);
+    bit_delay();
+
+    const initial_sda_high = sda.read() == .High;
+
+    // Clock SCL until the slave releases SDA (bus is idle-high when free).
+    var pulses: u8 = 0;
+    while (pulses < 9 and sda.read() == .Low) : (pulses += 1) {
+        scl.write(.Low);
+        bit_delay();
+        scl.write(.High);
+        bit_delay();
+    }
+
+    // Diagnostic (read over the debugger: `p i2c.recover_stats`). Written
+    // through a volatile pointer so the optimizer can't dead-store-eliminate it
+    // (nothing in firmware reads recover_stats; only the debugger does).
+    const out: *volatile RecoverStats = &recover_stats;
+    out.* = .{
+        .ran = recover_stats.ran + 1,
+        .initial_sda_high = @intFromBool(initial_sda_high),
+        .pulses = pulses,
+        .final_sda_high = @intFromBool(sda.read() == .High),
+    };
+
+    // Only if we actually had to clock (bus was stuck), issue a STOP —
+    // SDA low->high while SCL is high — to leave the bus cleanly idle.
+    if (pulses > 0) {
+        sda.write(.Low);
+        bit_delay();
+        scl.write(.High);
+        bit_delay();
+        sda.write(.High);
+        bit_delay();
+    }
+}
+
+/// Crude busy-wait for the recovery bit-bang. Timing isn't critical (it only has
+/// to satisfy a slave's setup/hold and runs once at startup); ~tens of kHz. Uses
+/// a nop loop rather than SysTick, which may not be running this early in init.
+inline fn bit_delay() void {
+    var n: u32 = 0;
+    while (n < 2000) : (n += 1) asm volatile ("nop");
+}
+
+/// Configure GPIO pins for I2C function.
+///
+/// Pins use open-drain with NO internal pull-up, matching the libdaisy reference
+/// (`GPIO_MODE_AF_OD` / `GPIO_NOPULL`). The board provides external ~4.7kΩ
+/// pull-ups on SCL/SDA, which the 400 kHz TIMINGR values are tuned for; the weak
+/// (~40kΩ) internal pull-ups would slow the rise time and are intentionally off.
 fn configure_pins(comptime pin_cfg: PinConfig) void {
     // Configure SCL pin
     const scl_pin = comptime gpio.Pin.init(pin_cfg.scl.port, pin_cfg.scl.pin, .{
         .mode = .{ .alternate = pin_cfg.scl.af },
         .otype = .OpenDrain,
         .speed = .VeryHighSpeed,
-        .pull = .PullUp,
+        .pull = .Floating,
     });
     scl_pin.configure();
 
@@ -272,7 +526,7 @@ fn configure_pins(comptime pin_cfg: PinConfig) void {
         .mode = .{ .alternate = pin_cfg.sda.af },
         .otype = .OpenDrain,
         .speed = .VeryHighSpeed,
-        .pull = .PullUp,
+        .pull = .Floating,
     });
     sda_pin.configure();
 }

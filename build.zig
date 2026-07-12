@@ -13,14 +13,31 @@ const TargetConfig = struct {
     step_description: []const u8,
 };
 
+/// Recursively set the optimize mode on a module and every module it imports,
+/// using `visited` to break the import cycles in the microzig graph (core<->cpu,
+/// etc.). Used to build the microzig framework + HAL optimized while leaving the
+/// application's root module in Debug.
+fn setTreeOptimize(
+    mod: *std.Build.Module,
+    optimize: std.builtin.OptimizeMode,
+    visited: *std.AutoHashMap(*std.Build.Module, void),
+) void {
+    if (visited.contains(mod)) return;
+    visited.put(mod, {}) catch @panic("OOM");
+    mod.optimize = optimize;
+    for (mod.import_table.values()) |dep| {
+        setTreeOptimize(dep, optimize, visited);
+    }
+}
+
 const common_memory_regions = [_]microzig.MemoryRegion{
+    .{ .name = "ITCMRAM", .tag = .ram, .offset = 0x00000000, .length = 0x10000, .access = .rwx },
     .{ .name = "FLASH", .tag = .flash, .offset = 0x08000000, .length = 0x20000, .access = .rx },
+    .{ .name = "DTCMRAM", .tag = .ram, .offset = 0x20000000, .length = 0x20000, .access = .rwx },
     .{ .name = "SRAM", .tag = .ram, .offset = 0x24000000, .length = 0x80000, .access = .rwx },
     .{ .name = "RAM_D2", .tag = .ram, .offset = 0x30000000, .length = 0x48000, .access = .rwx },
     .{ .name = "RAM_D3", .tag = .ram, .offset = 0x38000000, .length = 0x10000, .access = .rwx },
     .{ .name = "BACKUP_SRAM", .tag = .ram, .offset = 0x38800000, .length = 0x1000, .access = .rwx },
-    .{ .name = "DTCMRAM", .tag = .ram, .offset = 0x20000000, .length = 0x20000, .access = .rwx },
-    .{ .name = "ITCMRAM", .tag = .ram, .offset = 0x00000000, .length = 0x10000, .access = .rwx },
     .{ .name = "SDRAM", .tag = .ram, .offset = 0xc0000000, .length = 0x4000000, .access = .rwx },
     .{ .name = "QSPIFLASH", .tag = .flash, .offset = 0x90040000, .length = 0x7C0000, .access = .rx },
 };
@@ -79,21 +96,40 @@ fn buildTargetVariant(
         .root_source_file = b.path("lib/microzig/port/stmicro/stm32/src/hals/common.zig"),
     });
 
-    const target = createSTM32Target(b, mz_dep, config.linker_script, stm32_common_mod, clockhelper_dep);
+    // const target = createSTM32Target(b, mz_dep, config.linker_script, stm32_common_mod, clockhelper_dep);
+    //
 
-    _ = optimize;
+    _ = mz_dep;
+    const hal_imports = b.allocator.alloc(std.Build.Module.Import, 2) catch @panic("out of memory");
+    hal_imports[0] = .{ .name = "stm32_common", .module = stm32_common_mod };
+    hal_imports[1] = .{ .name = "ClockTree", .module = clockhelper_dep };
+
     // Use microzig's built-in STM32H750IB chip (register definitions) but keep
     // our own HAL, custom SRAM/flash linker script, and _estack-based stack.
     const firmware = mb.add_firmware(.{
         .name = config.name,
         .target = mb.ports.stm32.chips.STM32H750IB.derive(.{
-            .hal = target.hal,
+            .hal = .{
+                .root_source_file = b.path("src/hal/STM32H750/hal.zig"),
+                .imports = hal_imports,
+            },
             .linker_script = .{ .generate = .none, .file = b.path(config.linker_script) },
             .stack = .{ .symbol_name = "_estack" },
         }),
-        .optimize = .Debug,
+        // .target = target,
+        .optimize = optimize, // was hardcoded .Debug; honor -Doptimize (test ReleaseFast for D-cache)
         .root_source_file = b.path("src/main.zig"),
     });
+
+    // In Debug, keep the application (root module: main.zig + dsp/hid/drivers)
+    // debuggable but build the microzig framework + HAL optimized, otherwise the
+    // unoptimized firmware does not fit the 128 KB internal flash. Reachable from
+    // firmware.core_mod (cpu/chip/hal/drivers); the root module is NOT in that
+    // graph (root imports core, not vice versa), so it stays Debug.
+    if (optimize == .Debug) {
+        var visited = std.AutoHashMap(*std.Build.Module, void).init(b.allocator);
+        setTreeOptimize(firmware.core_mod, .ReleaseSafe, &visited);
+    }
 
     const install = mb.add_install_firmware(firmware, .{ .format = .elf });
     const install_bin = mb.add_install_firmware(firmware, .{ .format = .binary });
@@ -130,6 +166,13 @@ pub fn build(b: *std.Build) void {
     const clockhelper_dep = b.dependency("ClockHelper", .{}).module("clockhelper");
     const optimize = b.standardOptimizeOption(.{});
 
+    const flash_report = buildTargetVariant(b, mb, mz_dep, clockhelper_dep, .{
+        .name = "blinky-flash",
+        .linker_script = "src/ld/daisy_flash.ld",
+        .step_name = "flash",
+        .step_description = "Build firmware for internal flash (direct mode)",
+    }, optimize);
+
     const sram_report = buildTargetVariant(b, mb, mz_dep, clockhelper_dep, .{
         .name = "blinky-sram",
         .linker_script = "src/ld/daisy_sram.ld",
@@ -137,12 +180,7 @@ pub fn build(b: *std.Build) void {
         .step_description = "Build firmware for SRAM (bootloader mode)",
     }, optimize);
 
-    _ = buildTargetVariant(b, mb, mz_dep, clockhelper_dep, .{
-        .name = "blinky-flash",
-        .linker_script = "src/ld/daisy_flash.ld",
-        .step_name = "flash",
-        .step_description = "Build firmware for internal flash (direct mode)",
-    }, optimize);
-
-    b.getInstallStep().dependOn(sram_report);
+    _ = sram_report;
+    b.getInstallStep().dependOn(flash_report);
+    // b.getInstallStep().dependOn(sram_report);
 }

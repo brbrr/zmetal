@@ -66,10 +66,12 @@ pub fn get_systick_clk() u32 {
 /// Initialize CPU and peripheral configuration
 /// This should be called early in the startup process
 pub fn init_vector_table() void {
-    init_fpu();
+    // already done in microzig
+    // init_fpu();
     reset_rcc();
     enable_sram_clocks();
-    init_sram1_ecc();
+    // NOTE: mitigation of the imprecise reads, which turned out to be not related, as it was related to double fpu init
+    // init_sram1_ecc();
     apply_h7_workarounds();
     configure_vector_table();
 }
@@ -119,31 +121,16 @@ fn enable_sram_clocks() void {
     _ = RCC.AHB2ENR.read();
 }
 
-// Linker-provided bounds of the D2 SRAM .sram1_bss section (NOLOAD:
-// framebuffer + audio DMA buffers). Both are word-aligned by the linker.
-extern var _ssram1_bss: u8;
-extern var _esram1_bss: u8;
-
-/// Zero-initialize the D2 SRAM `.sram1_bss` section with word-width writes.
-///
-/// This section is `(NOLOAD)` in the linker script, so neither the loader nor
-/// microzig's C-runtime startup ever touches it — on power-up its contents and
-/// ECC syndrome are random. STM32H7 SRAM is ECC-protected on a per-word granule:
-/// a byte/halfword store forces a read-modify-write that first *reads* the
-/// containing word to recompute ECC. Reading a word whose ECC was never
-/// initialized reads as a double-bit error, so the AXI slave returns SLVERR,
-/// which surfaces as an (imprecise, buffered-store) BusFault. This is why the
-/// byte-addressed framebuffer faulted intermittently while the word-addressed
-/// i32 audio buffers were always fine.
-///
-/// Writing full 32-bit words writes a fresh, valid ECC syndrome with no RMW
-/// read, so this both clears the region and makes it safe for later byte stores.
-/// Must run after `enable_sram_clocks()` and before anything touches D2 SRAM.
 fn init_sram1_ecc() void {
-    const start = @intFromPtr(&_ssram1_bss);
-    const end = @intFromPtr(&_esram1_bss);
-    var addr = start;
-    while (addr < end) : (addr += 4) {
+    // Scrub the ENTIRE MPU-mapped D2 region (0x30000000, 256KB = SRAM1+SRAM2), not
+    // just the `.sram1_bss` bytes we use. The MPU maps all 256KB as Normal, which the
+    // Cortex-M7 speculates on when D-cache is enabled; the ~95KB tail above .sram1_bss
+    // is real SRAM2 whose ECC is uninitialized on a COLD boot. A speculative read into
+    // it returns an uncorrectable ECC error -> imprecise AXIM SLVERR. (Warm reboots
+    // retain valid ECC, which is why this only bites on a true power-cycle.) Word-
+    // writing the whole region initializes ECC everywhere the M7 can speculate.
+    var addr: usize = 0x30000000;
+    while (addr < 0x30040000) : (addr += 4) {
         @as(*volatile u32, @ptrFromInt(addr)).* = 0;
     }
 }

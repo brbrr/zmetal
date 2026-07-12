@@ -346,21 +346,11 @@ pub const Daisy = struct {
 
     pub fn init(self: *Daisy) !void {
         microzig.interrupt.enable_interrupts();
+
         try hal_init();
         try configure_clocks();
 
         try configure_mpu();
-
-        hal.cache.enableICache();
-        // D-cache is intentionally NOT enabled here. Peripheral bring-up
-        // (RCC clock-enable → immediate register access) is timing-sensitive;
-        // with D-cache on, code runs fast enough to touch a peripheral before
-        // its clock is stable, taking an imprecise AHB bus fault. We enable
-        // D-cache from main() AFTER all init/display setup completes, so init
-        // runs cache-off (safe) and the audio run-loop runs cache-on (no jitter).
-        // DMA buffers (SAI rx/tx, display framebuffer) are non-cacheable D2 by
-        // MPU config, so D-cache never breaks DMA coherency.
-        hal.cache.enableDCache();
 
         try dma_init();
         try sai_init();
@@ -368,10 +358,20 @@ pub const Daisy = struct {
         try spi_init();
         try uart_init();
 
+        hal.cache.enableDCache();
+        hal.cache.enableICache();
+
         self.led.configure();
 
         // Initialize SAI after clocks and interrupts are ready
         self.sai = hal.sai.SaiDriver.init(.{});
+
+        // Bring up I2C1 (MCP23017 keyboard expander). i2c_init() above only
+        // resets the peripheral; init() enables the clock + configures pins and
+        // apply() sets TIMINGR and PE=1. Without this self.i2c stays undefined
+        // and the first transfer faults on a garbage register pointer.
+        self.i2c = try hal.i2c.I2C_Device.init(.I2C1, .{ .speed = .I2C_400KHZ });
+        self.i2c.apply();
     }
 
     pub fn startAudio(self: *Daisy, callback: *const hal.sai.AudioCallback) !void {

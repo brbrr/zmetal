@@ -12,7 +12,8 @@
 //! ```zig
 //! var i2c_dev = try hal.i2c.I2C_Device.init(.I2C1, .{});
 //! i2c_dev.apply();
-//! var kbd = try keyboard.Keyboard.init(i2c_dev.i2c_device());
+//! var kbd: keyboard.Keyboard = undefined;
+//! try kbd.init(i2c_dev.i2c_device());
 //!
 //! while (true) {
 //!     const events = try kbd.process();
@@ -82,19 +83,15 @@ pub const Keyboard = struct {
 
     debouncer: DebouncerType,
 
-    /// Initialize the keyboard
-    pub fn init(i2c_dev: I2C_Device) !Self {
-        // Create keyboard struct
-        var self = Self{
-            .mcp = undefined,
-            .col_pins = undefined,
-            .row_pins = undefined,
-            .col_ios = undefined,
-            .row_ios = undefined,
-            .matrix = undefined,
-            .debouncer = undefined,
-        };
-
+    /// Initialize the keyboard in place.
+    ///
+    /// This must initialize through `self` (a stable, caller-owned address)
+    /// rather than returning a value: the struct is self-referential
+    /// (McpPin -> &self.mcp, Digital_IO -> &self.col_pins[i], debouncer ->
+    /// &self.matrix). Returning by value would copy the struct while leaving
+    /// those internal pointers dangling at the init frame, faulting on the
+    /// first process() call.
+    pub fn init(self: *Self, i2c_dev: I2C_Device) !void {
         // Initialize MCP23017 with the interface
         self.mcp = try MCP23017.init(i2c_dev, MCP_I2C_ADDRESS);
 
@@ -132,8 +129,6 @@ pub const Keyboard = struct {
 
         // Initialize debouncer with pointer to matrix
         self.debouncer = DebouncerType.init(&self.matrix);
-
-        return self;
     }
 
     /// Process keyboard matrix scan and update debounce state
@@ -153,3 +148,13 @@ pub const Keyboard = struct {
         return Matrix.index(Key.new(row, col));
     }
 };
+
+/// Translate the debouncer's scan-order index (row-major, `row*COLS + col`) into
+/// this keyboard's physical/logical key numbering — the WoopyOne column-major
+/// layout `col*ROWS + row`, where logical keys 0..23 (Port-A columns 0..2) are
+/// the note keys and columns 3..5 are non-note keys.
+pub fn logicalKey(scan_idx: u8) u8 {
+    const row = scan_idx / COLS; // 0..ROWS-1  (Port B row pin)
+    const col = scan_idx % COLS; // 0..COLS-1  (Port A col pin)
+    return col * ROWS + row;
+}
