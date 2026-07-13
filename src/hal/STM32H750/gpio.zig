@@ -142,6 +142,27 @@ pub const Pin = struct {
     }
 };
 
+/// One pin's alternate-function assignment, for bulk configuration.
+pub const AltPin = struct {
+    port: []const u8,
+    num: []const u8,
+    af: AlternateFunction,
+};
+
+/// Configure a set of pins as alternate function, push-pull, no pull, very high
+/// speed — the common bus-peripheral pin setup (FMC, QUADSPI, SAI, ...). The
+/// pin list is comptime so each `configure()` gets comptime-known port/number.
+pub fn configureAlternates(comptime pins: []const AltPin) void {
+    @setEvalBranchQuota(10_000); // comptime Pin.init parses each pin number
+    inline for (pins) |p| {
+        const pin = comptime Pin.init(p.port, p.num, .{
+            .mode = .{ .alternate = p.af },
+            .speed = .VeryHighSpeed,
+        });
+        pin.configure();
+    }
+}
+
 /// Output GPIO wrapper for easy pin manipulation
 pub fn OutputGPIO(comptime pin: Pin) type {
     return struct {

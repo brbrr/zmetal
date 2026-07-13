@@ -63,14 +63,14 @@ pub fn Uart(comptime peripheral: Peripheral) type {
 
             rcc.enable_clock(enums.to_peripheral(index));
 
-            // Reset config (raw 0 = 8 data bits, no parity, 1 stop bit).
-            regs.CR1.raw = 0;
-            regs.CR2.raw = 0;
-            regs.CR3.raw = 0;
+            // Clear to reset state (0 = 8 data bits, no parity, 1 stop bit).
+            regs.CR1.write_raw(0);
+            regs.CR2.write_raw(0);
+            regs.CR3.write_raw(0);
 
             // BRR = f_ck / baud (OVER8 = 0).
             const usartdiv = @divTrunc(config.clock_hz, config.baud_rate);
-            regs.BRR.raw = @intCast(usartdiv);
+            regs.BRR.write(.{ .BRR = @intCast(usartdiv) });
 
             // Enable the peripheral, transmitter and receiver.
             regs.CR1.modify(.{ .UE = 1, .TE = 1, .RE = 1 });

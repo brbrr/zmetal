@@ -131,12 +131,9 @@ pub fn hal_init_tick(priority: cpu.interrupt.Priority) !void {
     }
     try init_systick(@intCast(ticks));
 
-    // Workaround: microzig set_priority writes raw 0-15 to priority byte,
-    // but Cortex-M7 only implements bits [7:4]. CMSIS encodes as: priority << 4.
-    // Without this shift, Priority.lowest (15 = 0x0F) becomes effective priority 0 (highest!).
-    const scb = cpu.peripherals.scb;
-    const prio_val: u8 = @as(u8, @intFromEnum(priority)) << 4;
-    scb.SHPR3.raw = (scb.SHPR3.raw & 0x00FFFFFF) | (@as(u32, prio_val) << 24);
+    // microzig's exception.set_priority left-aligns the logical 0-15 level into
+    // the implemented priority bits (see cortex_m.zig encode_priority).
+    cpu.interrupt.exception.set_priority(.SysTick, priority);
     uwTickPrio = priority;
 }
 

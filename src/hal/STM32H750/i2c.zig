@@ -1,30 +1,9 @@
-//! I2C peripheral driver for STM32H750
+//! I2C driver for STM32H750, wrapping microzig's `i2c_v2` with Daisy-specific
+//! pin/timing config and a robust register-level transfer path (see
+//! `i2c_device` for why the built-in blocking loops are bypassed).
 //!
-//! This module provides a zero-cost abstraction over microzig's I2C_Device for STM32H750.
-//! It wraps microzig's i2c_v2 implementation with Daisy-specific configuration and
-//! provides a comptime-based API for type-safe I2C communication.
-//!
-//! Features:
-//! - Zero-cost abstractions using comptime
-//! - Compatible with microzig's I2C_Device framework
-//! - Blocking read/write operations
-//! - Configurable speed (100kHz, 400kHz, 1MHz)
-//! - Support for all 4 I2C peripherals (I2C1-4)
-//!
-//! Example usage:
-//! ```zig
-//! // Initialize I2C1 at comptime
-//! var i2c1_dev = try hal.i2c.I2C_Device.init(.I2C1, .{
-//!     .speed = .I2C_400KHZ,
-//! });
-//! i2c1_dev.apply();
-//!
-//! // Get the I2C_Device interface for use with drivers
-//! const i2c_dev = i2c1_dev.i2c_device();
-//!
-//! // Use with any microzig driver that accepts I2C_Device
-//! const sensor = try AHT30.init(i2c_dev, @enumFromInt(0x38));
-//! ```
+//! Usage: `var dev = try I2C_Device.init(.I2C1, .{}); dev.apply();` then
+//! `dev.i2c_device()` for the microzig driver interface.
 
 const std = @import("std");
 const microzig = @import("microzig");
@@ -125,8 +104,8 @@ pub const daisy_pin_configs = struct {
 
     /// I2C4: PD12 (SCL), PD13 (SDA) - AF4
     pub const I2C4 = PinConfig{
-        .scl = .{ .port = "D", .pin = "12", .af = 4 },
-        .sda = .{ .port = "D", .pin = "13", .af = 4 },
+        .scl = .{ .port = "D", .pin = "12", .af = .af4 },
+        .sda = .{ .port = "D", .pin = "13", .af = .af4 },
     };
 };
 

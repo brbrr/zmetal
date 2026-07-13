@@ -28,9 +28,10 @@ pub const pins = @import("pins.zig");
 
 // Custom implementations (Daisy-specific or have custom extensions)
 pub const rcc = @import("rcc.zig");
-pub const uart = @import("uart_custom_backup.zig"); // legacy: custom log(); TODO retire
 pub const usart = @import("uart.zig"); // uart_v3-based driver (RX interrupt for MIDI)
 pub const sdmmc = @import("sdmmc.zig"); // SDMMC1 + SD-card block driver
+pub const sdram = @import("sdram.zig"); // FMC SDRAM (64 MB @ 0xC0000000)
+pub const qspi = @import("qspi.zig"); // QUADSPI NOR flash (8 MB @ 0x90000000, indirect mode)
 pub const dma = @import("dma_custom_backup.zig"); // Has custom audio API
 pub const power = @import("power.zig");
 pub const clock = @import("clock.zig");

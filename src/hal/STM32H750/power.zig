@@ -21,12 +21,16 @@ pub const VoltageScale = enum {
 // }
 
 const syscfg = microzig.chip.peripherals.SYSCFG;
+const rcc = microzig.chip.peripherals.RCC;
 // Note: microzig's PWR.VOS enum has no Scale0 — on the H7, VOS0 (480 MHz
 // overdrive) is reached by selecting the highest VOS (Scale1) and enabling the
 // SYSCFG overdrive bit. So this takes the local VoltageScale enum (which has
 // Scale0) and maps the rest to PWR.VOS.
 pub fn set_voltage_scalling(scale: VoltageScale) void {
     if (scale == .Scale0) {
+        rcc.APB4ENR.modify(.{ .SYSCFGEN = 1 });
+        _ = rcc.APB4ENR.read(); // settle
+
         // First set the highest VOS, then enable overdrive
         pwr.D3CR.modify_one("VOS", .Scale1);
         // Read back for delay (register write synchronization)

@@ -79,21 +79,52 @@ const Resp = enum {
 };
 
 fn clearFlags() void {
-    regs.ICR.write_raw(STATIC_FLAGS);
+    regs.ICR.write_raw(STATIC_FLAGS); // W1C mask (CMSIS SDMMC_STATIC_FLAGS)
+}
+
+/// Full CMDR write (all fields; the ones we don't set are 0). `trans` marks a
+/// data-transfer command (CMDTRANS), which triggers the DPSM alongside the CPSM.
+fn writeCmd(index: u6, waitresp: u2, trans: bool) void {
+    regs.CMDR.write(.{
+        .CMDINDEX = index,
+        .CMDTRANS = @intFromBool(trans),
+        .CMDSTOP = 0,
+        .WAITRESP = waitresp,
+        .WAITINT = 0,
+        .WAITPEND = 0,
+        .CPSMEN = 1,
+        .DTHOLD = 0,
+        .BOOTMODE = 0,
+        .BOOTEN = 0,
+        .CMDSUSPEND = 0,
+    });
+}
+
+/// Full CLKCR write: bus clock divider + bus width (0b00 = 1-bit, 0b01 = 4-bit).
+fn writeClkcr(clkdiv: u10, widbus: u2) void {
+    regs.CLKCR.write(.{
+        .CLKDIV = clkdiv,
+        .PWRSAV = 0,
+        .WIDBUS = widbus,
+        .NEGEDGE = 0,
+        .HWFC_EN = 0,
+        .DDR = 0,
+        .BUSSPEED = 0,
+        .SELCLKRX = 0,
+    });
 }
 
 /// Issue a command via the CPSM and wait for its response.
 fn sendCmd(index: u6, arg: u32, resp: Resp) Error!void {
     clearFlags();
-    regs.ARGR.write_raw(arg);
+    regs.ARGR.write(.{ .CMDARG = arg });
 
-    const waitresp: u32 = switch (resp) {
+    const waitresp: u2 = switch (resp) {
         .none => 0,
         .short, .short_no_crc => 1,
         .long => 3,
     };
-    // CMDINDEX[5:0] | WAITRESP[9:8] | CPSMEN(bit12)
-    regs.CMDR.write_raw(@as(u32, index) | (waitresp << 8) | (1 << 12));
+    writeCmd(index, waitresp, false);
 
     var spins: u32 = 0;
     if (resp == .none) {
@@ -158,7 +189,7 @@ pub fn init() Error!void {
     configurePins();
 
     // --- Peripheral: 400 kHz, 1-bit, power on ---
-    regs.CLKCR.write_raw(@as(u32, CLKDIV_INIT)); // CLKDIV, WIDBUS=1-bit, rest 0
+    writeClkcr(CLKDIV_INIT, 0b00); // 1-bit bus
     regs.POWER.modify(.{ .PWRCTRL = 0b11 }); // power on
     clock.delay_ms(2); // >= 74 SD-clock cycles (~185us at 400kHz)
 
@@ -195,7 +226,7 @@ pub fn init() Error!void {
     // --- Switch to 4-bit bus + transfer clock ---
     try sendCmd(55, @as(u32, card.rca) << 16, .short); // APP_CMD with RCA
     try sendCmd(6, 2, .short); // ACMD6 SET_BUS_WIDTH = 4-bit
-    regs.CLKCR.write_raw(@as(u32, CLKDIV_XFER) | (@as(u32, 1) << 14)); // CLKDIV + WIDBUS=4-bit
+    writeClkcr(CLKDIV_XFER, 0b01); // 4-bit bus at transfer clock
 }
 
 // === Block I/O (IDMA) ============================================
@@ -208,24 +239,40 @@ pub fn init() Error!void {
 var bounce: [512]u8 align(32) linksection(".axi_sram") = undefined;
 
 fn dataCleanup() void {
-    regs.DLENR.write_raw(0);
-    regs.DCTRL.write_raw(0);
-    regs.IDMACTRLR.write_raw(0);
+    regs.DLENR.write(.{ .DATALENGTH = 0 });
+    regs.DCTRL.write_raw(0); // zero all data-control bits
+    regs.IDMACTRLR.modify(.{ .IDMAEN = 0 });
+}
+
+/// Full DCTRL write for a 512-byte block transfer. DTEN stays 0 — the DPSM is
+/// started by the command's CMDTRANS, not by DTEN.
+fn writeDctrl(read: bool) void {
+    regs.DCTRL.write(.{
+        .DTEN = 0,
+        .DTDIR = @intFromBool(read),
+        .DTMODE = 0,
+        .DBLOCKSIZE = 9, // 2^9 = 512
+        .RWSTART = 0,
+        .RWSTOP = 0,
+        .RWMOD = 0,
+        .SDIOEN = 0,
+        .BOOTACKEN = 0,
+        .FIFORST = 0,
+    });
 }
 
 /// Run one 512-byte data transfer for `cmd_index` (CMD17 read / CMD24 write)
-/// via IDMA into/out of `bounce`. `dctrl` selects direction (DTDIR).
-fn transferBlock(cmd_index: u6, sector: u32, dctrl: u32) Error!void {
+/// via IDMA into/out of `bounce`.
+fn transferBlock(cmd_index: u6, sector: u32, read: bool) Error!void {
     clearFlags();
     regs.DCTRL.write_raw(0);
-    regs.DTIMER.write_raw(0xFFFF_FFFF);
-    regs.DLENR.write_raw(512);
-    regs.IDMABASE0R.write_raw(@intFromPtr(&bounce));
-    regs.IDMACTRLR.write_raw(1); // IDMAEN, single buffer
-    regs.DCTRL.write_raw(dctrl);
-    regs.ARGR.write_raw(sector); // SDHC: block index (no *512)
-    // short response, CPSMEN, CMDTRANS (data transfer command)
-    regs.CMDR.write_raw(@as(u32, cmd_index) | (1 << 8) | (1 << 12) | (1 << 6));
+    regs.DTIMER.write(.{ .DATATIME = 0xFFFF_FFFF });
+    regs.DLENR.write(.{ .DATALENGTH = 512 });
+    regs.IDMABASE0R.write(.{ .IDMABASE0 = @intFromPtr(&bounce) });
+    regs.IDMACTRLR.modify(.{ .IDMAEN = 1 }); // single buffer
+    writeDctrl(read);
+    regs.ARGR.write(.{ .CMDARG = sector }); // SDHC: block index (no *512)
+    writeCmd(cmd_index, 1, true); // short response, data-transfer command
 
     var spins: u32 = 0;
     while (true) {
@@ -280,7 +327,7 @@ pub fn readBlock(sector: u32, dst: *[512]u8) Error!void {
     // Clean so no stale dirty lines linger over the DMA target, run the DMA,
     // then invalidate so the CPU reads the freshly-DMA'd data (not cache).
     cache.clean_dcache_by_addr(@intFromPtr(&bounce), 512);
-    try transferBlock(17, sector, (9 << 4) | (1 << 1)); // DBLOCKSIZE=512, DTDIR=read
+    try transferBlock(17, sector, true); // CMD17 READ_SINGLE_BLOCK
     cache.invalidate_dcache_by_addr(@intFromPtr(&bounce), 512);
     @memcpy(dst, &bounce);
 }
@@ -291,7 +338,7 @@ pub fn writeBlock(sector: u32, src: *const [512]u8) Error!void {
     @memcpy(&bounce, src);
     // Clean so the IDMA reads the just-written data from RAM, not stale cache.
     cache.clean_dcache_by_addr(@intFromPtr(&bounce), 512);
-    try transferBlock(24, sector, (9 << 4)); // DBLOCKSIZE=512, DTDIR=write
+    try transferBlock(24, sector, false); // CMD24 WRITE_BLOCK
     try waitCardReady(); // wait out card programming before returning
 }
 

@@ -214,6 +214,7 @@ fn configure_mpu() !void {
 
     try hal.mpu.config_region(.{
         .enable = .Enabled,
+        .BaseAddress = 0xC0000000,
         .AccessPermission = .FullAccess,
         .DisableExec = .Enable,
         .SubRegionDisable = 0,
@@ -224,12 +225,12 @@ fn configure_mpu() !void {
         .number = 1,
         .TypeExtField = .Level0,
         .Size = .Size64MB,
-        .BaseAddress = 0xC0000000,
     });
 
     // Configure the backup SRAM region as non-cacheable
     try hal.mpu.config_region(.{
         .enable = .Enabled,
+        .BaseAddress = 0x38800000,
         .AccessPermission = .FullAccess,
         .DisableExec = .Enable,
         .SubRegionDisable = 0,
@@ -240,7 +241,6 @@ fn configure_mpu() !void {
         .number = 2,
         .TypeExtField = .Level1,
         .Size = .Size4KB,
-        .BaseAddress = 0x38800000,
     });
 
     hal.mpu.enable();
@@ -348,6 +348,11 @@ pub const Daisy = struct {
         microzig.interrupt.enable_interrupts();
 
         try hal_init();
+
+        // Always configure clocks: correct for direct-from-flash boot and for a
+        // modern (v6+) Daisy bootloader, where the app owns clock setup. (Only
+        // legacy <v6 bootloaders pre-configured clocks; if ever targeted, gate
+        // this on the bootloader-version stamp in backup SRAM — see libdaisy.)
         try configure_clocks();
 
         try configure_mpu();
@@ -362,6 +367,16 @@ pub const Daisy = struct {
         hal.cache.enableICache();
 
         self.led.configure();
+
+        // Bring up the 64 MB FMC SDRAM. The MPU region (configure_mpu) already
+        // marks 0xC0000000 cacheable + bufferable, and D-cache is enabled above
+        // — same ordering libdaisy uses.
+        hal.sdram.init();
+
+        // Bring up the 8 MB QSPI NOR flash (indirect mode). Usable afterwards
+        // via hal.qspi.read/write/eraseSector, or enableMemoryMapped() for
+        // direct reads at hal.qspi.BASE (0x90000000).
+        try hal.qspi.init();
 
         // Initialize SAI after clocks and interrupts are ready
         self.sai = hal.sai.SaiDriver.init(.{});

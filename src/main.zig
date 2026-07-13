@@ -79,6 +79,7 @@ var hw: hal.daisy.Daisy = hal.daisy.Daisy.create() catch unreachable;
 
 pub fn main() !void {
     try hw.init();
+
     try hw.startAudio(&synth.audioCallback);
     try ui.init();
 

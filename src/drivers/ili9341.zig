@@ -228,10 +228,10 @@ pub fn ILI9341_Transport(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gp
     };
 }
 
-pub var display_framebuffer: [FB_SIZE]u8 align(4) linksection(".sram1_bss") = undefined;
+pub var display_framebuffer: [FB_SIZE]u8 align(4) linksection(".sram1_bss") = @splat(0);
 
 // Contiguous staging buffer for one dirty tile (partial flush).
-var display_scratch: [TILE_BYTES]u8 align(4) linksection(".sram1_bss") = undefined;
+var display_scratch: [TILE_BYTES]u8 align(4) linksection(".sram1_bss") = @splat(0);
 
 /// ILI9341 driver with chunked DMA framebuffer transfers
 pub fn ILI9341_DMA(
