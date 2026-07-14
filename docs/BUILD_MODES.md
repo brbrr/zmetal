@@ -5,6 +5,7 @@ The firmware can be built in two different modes depending on your development w
 ## Build Modes
 
 ### Default: `zig build`
+
 **Builds**: SRAM mode (same as `zig build sram`)
 **Output**: `zig-out/firmware/blinky-sram.elf`
 **Use for**: Production firmware with Daisy bootloader
@@ -26,7 +27,7 @@ The firmware can be built in two different modes depending on your development w
 **Command**: `zig build flash`
 **Output**: `zig-out/firmware/blinky-flash.elf`
 
-- Firmware runs from internal flash (0x08000000)  
+- Firmware runs from internal flash (0x08000000)
 - No bootloader required
 - Flash via OpenOCD/ST-Link
 - **WARNING**: Overwrites bootloader if flashed to 0x08000000!
@@ -64,6 +65,7 @@ QSPIFLASH                0 B       7.75 MB       0.00%
 ```
 
 **Note**: The report shows where code executes from:
+
 - SRAM mode: Code in SRAM, data in DTCMRAM
 - Flash mode: Code in FLASH, data in DTCMRAM
 
@@ -72,28 +74,32 @@ QSPIFLASH                0 B       7.75 MB       0.00%
 ## VS Code Tasks
 
 ### SRAM Mode (Bootloader)
+
 - `build-sram` - Build firmware
 - `create-bin-sram` - Build and create .bin file
 - `program-sram-dfu` - Flash via DFU to QSPI (0x90040000)
 - `program-sram-openocd` - Flash via debugger
 
 ### Flash Mode (Direct)
+
 - `build-flash` - Build firmware
-- `create-bin-flash` - Build and create .bin file  
+- `create-bin-flash` - Build and create .bin file
 - `program-flash-dfu` - Flash via DFU to internal flash (⚠️ overwrites bootloader!)
 - `program-flash-openocd` - Flash via debugger
 
 ## Memory Layout Comparison
 
 ### SRAM Mode (Bootloader)
+
 ```
 Vector Table:  0x24000000 (SRAM)
-Code:          0x24000298 (SRAM)  
+Code:          0x24000298 (SRAM)
 Data/BSS:      0x20000000 (DTCMRAM)
 Storage:       0x90040000 (QSPI Flash)
 ```
 
 ### Flash Mode (Direct)
+
 ```
 Vector Table:  0x08000000 (Internal Flash)
 Code:          0x08000298 (Internal Flash)
@@ -102,8 +108,8 @@ Data/BSS:      0x20000000 (DTCMRAM)
 
 ## Linker Scripts
 
-- **SRAM Mode**: `src/ld/daisy_sram.ld` - Vector table in SRAM
-- **Flash Mode**: `src/ld/daisy_flash.ld` - Vector table in Flash
+- **SRAM Mode**: `src/ld/sram.ld` - Vector table in SRAM
+- **Flash Mode**: `src/ld/flash.ld` - Vector table in Flash
 
 ## Verification
 
@@ -120,12 +126,14 @@ llvm-objdump -h blinky-flash.elf | grep isr_vector
 ## When to Use Each Mode
 
 **SRAM Mode (Bootloader)**:
+
 - ✅ Production/release builds
 - ✅ Firmware updates via USB
 - ✅ Maximum available flash space (QSPI ~8MB)
 - ✅ Fast boot (already in RAM)
 
 **Flash Mode (Direct)**:
+
 - ✅ Development/debugging
 - ✅ No bootloader dependency
 - ✅ Direct debugging via SWD

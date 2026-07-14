@@ -62,6 +62,26 @@ pub const Speed = enum {
     I2C_1MHZ,
 };
 
+/// TIMINGR for `speed` at the actual I2C kernel clock (I2C1/2/3 share
+/// `I2C123output`). TIMINGR is a multi-field register a solver (CubeMX) produces,
+/// not a simple divide, so we don't compute it — we carry the hardware-measured
+/// values from libdaisy (`src/per/i2c.cpp`) and select by the resolved clock
+/// tree: `[0]` = 120 MHz kernel (480 MHz SYSCLK / VOS0 boost), `[1]` = 100 MHz
+/// (400 MHz SYSCLK / VOS1). Any other kernel clock fails the build loudly rather
+/// than silently mis-timing the bus.
+fn timingrFor(comptime speed: Speed) u32 {
+    const proven: [2]u32 = switch (speed) {
+        .I2C_100KHZ => .{ 0x6090435F, 0x30E0628A },
+        .I2C_400KHZ => .{ 0x30B00F2D, 0x20D01132 },
+        .I2C_1MHZ => .{ 0x10A00B20, 0x1080091A },
+    };
+    return switch (@as(u32, @intFromFloat(rcc.clock_outputs.I2C123output))) {
+        120_000_000 => proven[0],
+        100_000_000 => proven[1],
+        else => @compileError("no proven I2C TIMINGR for this kernel clock — add a measured value (cf. libdaisy src/per/i2c.cpp)"),
+    };
+}
+
 /// I2C configuration structure
 pub const Config = struct {
     /// Clock speed selection (default: 400 kHz)
@@ -125,18 +145,10 @@ pub const I2C_Device = struct {
         var inner = try i2c_v2.I2C_Device.init(i2c_type);
 
         // Override TIMINGR with libdaisy proven values if requested or use speed-based defaults
-        if (config.timingr_override) |timingr_val| {
-            inner.i2c.timingr = @bitCast(timingr_val);
-        } else {
-            // Use libdaisy tested TIMINGR values (these are proven to work on Daisy Seed)
-            // Based on PCLK1 = 120MHz for STM32H750
-            const timingr_val: u32 = switch (config.speed) {
-                .I2C_100KHZ => 0x6090435F, // 100kHz @ 120MHz PCLK1
-                .I2C_400KHZ => 0x30B00F2D, // 400kHz @ 120MHz PCLK1
-                .I2C_1MHZ => 0x10A00B20, // ~837kHz @ 120MHz PCLK1
-            };
-            inner.i2c.timingr = @bitCast(timingr_val);
-        }
+        inner.i2c.timingr = if (config.timingr_override) |timingr_val|
+            @bitCast(timingr_val)
+        else
+            @bitCast(timingrFor(config.speed));
 
         // Configure pins if specified, otherwise use defaults
         const pin_cfg = config.pin_config orelse switch (peripheral) {
@@ -452,12 +464,11 @@ fn recover_bus(comptime pin_cfg: PinConfig) void {
     }
 }
 
-/// Crude busy-wait for the recovery bit-bang. Timing isn't critical (it only has
-/// to satisfy a slave's setup/hold and runs once at startup); ~tens of kHz. Uses
-/// a nop loop rather than SysTick, which may not be running this early in init.
+/// Half-period for the recovery bit-bang (~100 kHz). Timing isn't critical (it
+/// only has to satisfy a slave's setup/hold and runs once at startup); uses the
+/// SysTick-independent `clock.delay_us` since SysTick may not be up this early.
 inline fn bit_delay() void {
-    var n: u32 = 0;
-    while (n < 2000) : (n += 1) asm volatile ("nop");
+    clock.delay_us(5);
 }
 
 /// Configure GPIO pins for I2C function.

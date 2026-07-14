@@ -5,15 +5,26 @@
 
 const microzig = @import("microzig");
 const gpio = @import("gpio.zig");
+const clock = @import("clock.zig");
 
 const chip = microzig.chip;
 const regs = chip.peripherals.QUADSPI;
-const rcc = chip.peripherals.RCC;
+const rcc_regs = chip.peripherals.RCC;
+const hal_rcc = microzig.hal.rcc;
 
 pub const Error = error{Timeout};
 
-/// QUADSPI_CLK = kernel clock / (PRESCALER + 1). Kernel clock is D1HCLK.
-const PRESCALER: u8 = 1;
+/// Target QUADSPI SCK ceiling. QUADSPI_CLK = kernel clock / (PRESCALER + 1);
+/// kernel clock is `hal_rcc.clock_outputs.QSPIoutput` (D1HCLK-derived). Choose
+/// the smallest prescaler keeping SCK <= this — the 8-dummy FAST_READ path
+/// (see READ_DUMMY below) covers the turnaround margin at this rate.
+const TARGET_SCK_HZ: u32 = 120_000_000;
+const PRESCALER: u8 = blk: {
+    const ker: u32 = @intFromFloat(hal_rcc.clock_outputs.QSPIoutput);
+    // ceil(ker/target) - 1
+    const div = (ker + TARGET_SCK_HZ - 1) / TARGET_SCK_HZ;
+    break :blk @intCast(div - 1);
+};
 /// Backstop for all status polls so a wedged peripheral can't hang the caller.
 const POLL_LIMIT: u32 = 1_000_000;
 /// Dummy cycles for FAST_READ (0x0B): required for turnaround margin at this
@@ -195,18 +206,12 @@ fn waitWip() Error!void {
     }
 }
 
-/// SysTick-independent busy-wait, for the flash's reset-recovery time.
-fn spin(count: u32) void {
-    var i: u32 = 0;
-    while (i < count) : (i += 1) asm volatile ("" ::: .{ .memory = true });
-}
-
 // --- Public API --------------------------------------------------------------
 
 /// Bring up QUADSPI + the flash chip. Usable via read/write/eraseSector after.
 pub fn init() Error!void {
-    rcc.AHB3ENR.modify(.{ .QUADSPIEN = 1 });
-    _ = rcc.AHB3ENR.read(); // RCC settle readback
+    rcc_regs.AHB3ENR.modify(.{ .QUADSPIEN = 1 });
+    _ = rcc_regs.AHB3ENR.read(); // RCC settle readback
     configurePins();
 
     regs.CR.write_raw(0); // disable + clear (safe after a warm reset)
@@ -218,7 +223,7 @@ pub fn init() Error!void {
     // program/erase aren't silently blocked (WP#/HOLD# are held high as GPIO).
     try transfer(.reset_enable, null, 0, .none);
     try transfer(.reset, null, 0, .none);
-    spin(20_000); // tRST recovery
+    clock.delay_us(500); // tRST/tRPH recovery (generous; needs only tens of µs)
 
     try writeEnable();
     try transfer(.write_status, null, 0, .{ .write = &[_]u8{SR_DEFAULT} });

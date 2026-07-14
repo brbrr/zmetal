@@ -10,6 +10,7 @@ const microzig = @import("microzig");
 const chip = microzig.chip;
 const daisy = @import("daisy.zig");
 const gpio = @import("gpio.zig");
+const clock = @import("clock.zig");
 
 const regs = chip.peripherals.FMC;
 const rcc = chip.peripherals.RCC;
@@ -41,15 +42,6 @@ comptime {
     // survive and are readable over SWD.
     @export(&st_ok, .{ .name = "sdram_st_ok" });
     @export(&st_fail_addr, .{ .name = "sdram_st_fail_addr" });
-}
-
-/// SysTick-independent busy-wait: `count` volatile iterations. Used for the
-/// SDRAM power-up settle delay so it holds regardless of tick state.
-fn spinDelay(count: u32) void {
-    var i: u32 = 0;
-    while (i < count) : (i += 1) {
-        asm volatile ("" ::: .{ .memory = true });
-    }
 }
 
 /// Bring up FMC SDRAM bank 1. Usable at `BASE` after this returns.
@@ -101,15 +93,14 @@ pub fn init() void {
     regs.SDCMR.modify(.{ .MODE = .ClockConfigurationEnable, .CTB1 = 1, .CTB2 = 0, .NRFS = 0, .MRD = 0 });
     // JEDEC requires a >=100us pause after the clock-enable command. A
     // cycle-counted busy-wait (not the SysTick delay) keeps this real regardless
-    // of when init runs; ~50k iterations is ~1 ms at 480 MHz.
-    spinDelay(50_000);
+    clock.delay_us(1000);
 
     regs.SDCMR.modify(.{ .MODE = .PALL, .CTB1 = 1, .CTB2 = 0, .NRFS = 0, .MRD = 0 });
-    spinDelay(10_000);
+    clock.delay_us(200);
 
     // NRFS holds (AutoRefreshNumber - 1); issue 4 auto-refresh cycles.
     regs.SDCMR.modify(.{ .MODE = .AutoRefreshCommand, .CTB1 = 1, .CTB2 = 0, .NRFS = 4 - 1, .MRD = 0 });
-    spinDelay(10_000);
+    clock.delay_us(200);
 
     // Mode register (= libdaisy's 0x232): burst length 4, sequential burst,
     // CAS latency 3, single-location write burst.
@@ -120,7 +111,7 @@ pub fn init() void {
         (1 << 9); // WRITEBURST_MODE_SINGLE
 
     regs.SDCMR.modify(.{ .MODE = .LoadModeRegister, .CTB1 = 1, .CTB2 = 0, .NRFS = 0, .MRD = mode_reg });
-    spinDelay(10_000);
+    clock.delay_us(200);
 
     regs.SDRTR.modify(.{ .COUNT = REFRESH_COUNT });
 }

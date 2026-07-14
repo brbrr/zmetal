@@ -5,3 +5,6 @@
 	path = lib/zfat
 	url = git@github.com:brbrr/zfat.git
 	branch = zig-0.17
+[submodule "lib/tinyusb"]
+	path = lib/tinyusb
+	url = https://github.com/hathach/tinyusb.git

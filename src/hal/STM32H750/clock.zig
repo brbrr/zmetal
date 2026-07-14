@@ -43,8 +43,22 @@ pub inline fn delay_ms(wait: u32) void {
     //* Add a freq to guarantee minimum wait */
     while ((get_tick() - tickstart) < _wait) {
         // cpu.wfi();
-        // asm volatile ("" ::: .{ .memory = true });
+        asm volatile ("" ::: .{ .memory = true });
     }
+}
+
+/// SysTick-independent busy-wait of ~`us` microseconds, derived from the actual
+/// CPU clock (`SystemCoreClock`). Use for short (sub-millisecond) delays in
+/// low-level init/recovery paths that must not depend on the SysTick interrupt
+/// (which may not be running that early); `delay_ms` (SysTick-based) is for
+/// coarse main-loop waits. Approximate — good enough for "wait at least ~X us".
+pub inline fn delay_us(us: u32) void {
+    // The inner loop is ~CYCLES_PER_ITER CPU cycles (empirical: the SDRAM
+    // bring-up used 50k iters ~= 1 ms at 480 MHz => ~9.6 cyc/iter).
+    const CYCLES_PER_ITER: u32 = 10;
+    const iters = (SystemCoreClock / 1_000_000) * us / CYCLES_PER_ITER;
+    var i: u32 = 0;
+    while (i < iters) : (i += 1) asm volatile ("" ::: .{ .memory = true });
 }
 
 /// Get the current system clock frequency

@@ -43,6 +43,7 @@ pub const fault = @import("fault.zig");
 // Daisy-specific modules
 pub const daisy = @import("daisy.zig");
 pub const sai = @import("sai.zig");
+pub const usb = @import("usb/usb.zig");
 
 // Utilities
 pub const utils = @import("util.zig");

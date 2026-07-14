@@ -6,11 +6,43 @@ const MicroBuild = microzig.MicroBuild(.{
     .stm32 = true,
 });
 
+fn addTinyUsb(b: *std.Build, root: *std.Build.Module) void {
+    const tu = "lib/tinyusb/src/";
+    const sources = [_][]const u8{
+        tu ++ "tusb.c",
+        tu ++ "common/tusb_fifo.c",
+        tu ++ "device/usbd.c",
+        tu ++ "device/usbd_control.c",
+        tu ++ "class/cdc/cdc_device.c",
+        tu ++ "class/midi/midi_device.c",
+        tu ++ "portable/synopsys/dwc2/dcd_dwc2.c",
+        tu ++ "portable/synopsys/dwc2/dwc2_common.c",
+        "lib/tinyusb_shim/usb_glue.c",
+    };
+    for (sources) |src| {
+        root.addCSourceFile(.{ .file = b.path(src), .flags = &.{
+            "-std=c11",
+            "-DCFG_TUSB_MCU=OPT_MCU_STM32H7",
+        } });
+    }
+    root.addIncludePath(b.path("lib/tinyusb/src"));
+    root.addIncludePath(b.path("lib/tinyusb_shim"));
+    // TinyUSB does intentional type-punning / unaligned packed-struct access that
+    // Zig's C UBSan flags; with `.trap` those become `udf` -> UsageFault(UNDEFINSTR)
+    // on real hardware (e.g. in usbd.c during enumeration). `.off` disables the
+    // checks entirely (no UBSan runtime either, so no size cost) — TinyUSB is a
+    // mature, widely-deployed stack, so we trust it here.
+    root.sanitize_c = .off;
+}
+
 const TargetConfig = struct {
     name: []const u8,
     linker_script: []const u8,
     step_name: []const u8,
     step_description: []const u8,
+    /// Root/entry source file. Defaults to the application; test firmwares
+    /// (e.g. test/usb_loopback.zig) override this with their own root.
+    root_source: []const u8 = "src/main.zig",
 };
 
 /// Recursively set the optimize mode on a module and every module it imports,
@@ -42,52 +74,9 @@ const common_memory_regions = [_]microzig.MemoryRegion{
     .{ .name = "QSPIFLASH", .tag = .flash, .offset = 0x90040000, .length = 0x7C0000, .access = .rx },
 };
 
-fn createSTM32Target(
-    b: *std.Build,
-    mz_dep: *std.Build.Dependency,
-    linker_script: []const u8,
-    stm32_common_mod: *std.Build.Module,
-    clockhelper_dep: *std.Build.Module,
-) *microzig.Target {
-    const memory_regions = b.allocator.dupe(microzig.MemoryRegion, &common_memory_regions) catch @panic("out of memory");
-
-    const hal_imports = b.allocator.alloc(std.Build.Module.Import, 2) catch @panic("out of memory");
-    hal_imports[0] = .{ .name = "stm32_common", .module = stm32_common_mod };
-    hal_imports[1] = .{ .name = "ClockTree", .module = clockhelper_dep };
-
-    const target = b.allocator.create(microzig.Target) catch @panic("out of memory");
-    target.* = .{
-        .dep = mz_dep,
-        .preferred_binary_format = .elf,
-        .zig_target = .{
-            .cpu_arch = .thumb,
-            .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_m7 },
-            .os_tag = .freestanding,
-            .cpu_features_add = std.Target.arm.featureSet(&.{.fp_armv8d16sp}),
-            .abi = .eabihf,
-        },
-        .chip = .{
-            .name = "STM32H750IB",
-            .register_definition = .{ .zig = b.path("./stm32h7/STM32H750x.zig") },
-            .memory_regions = memory_regions,
-        },
-        .stack = .{ .symbol_name = "_estack" },
-        .linker_script = .{
-            .generate = .none,
-            .file = b.path(linker_script),
-        },
-        .hal = .{
-            .root_source_file = b.path("src/hal/STM32H750/hal.zig"),
-            .imports = hal_imports,
-        },
-    };
-    return target;
-}
-
 fn buildTargetVariant(
     b: *std.Build,
     mb: *MicroBuild,
-    mz_dep: *std.Build.Dependency,
     clockhelper_dep: *std.Build.Module,
     zfat_mod: *std.Build.Module,
     config: TargetConfig,
@@ -97,10 +86,6 @@ fn buildTargetVariant(
         .root_source_file = b.path("lib/microzig/port/stmicro/stm32/src/hals/common.zig"),
     });
 
-    // const target = createSTM32Target(b, mz_dep, config.linker_script, stm32_common_mod, clockhelper_dep);
-    //
-
-    _ = mz_dep;
     const hal_imports = b.allocator.alloc(std.Build.Module.Import, 2) catch @panic("out of memory");
     hal_imports[0] = .{ .name = "stm32_common", .module = stm32_common_mod };
     hal_imports[1] = .{ .name = "ClockTree", .module = clockhelper_dep };
@@ -119,7 +104,7 @@ fn buildTargetVariant(
         }),
         // .target = target,
         .optimize = optimize, // was hardcoded .Debug; honor -Doptimize (test ReleaseFast for D-cache)
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path(config.root_source),
     });
 
     // In Debug, keep the application (root module: main.zig + dsp/hid/drivers)
@@ -135,6 +120,10 @@ fn buildTargetVariant(
     // FatFs bindings (zfat) for the SD card. Imported into the application root
     // module; the module carries the vendored FatFs C compilation.
     firmware.exe.root_module.addImport("zfat", zfat_mod);
+
+    // TinyUSB device stack (CDC + MIDI) for the on-board USB port; compiled into
+    // the application root module (main.zig -> hal.usb / hid.midi_io use it).
+    addTinyUsb(b, firmware.exe.root_module);
 
     // Display driver (ui.zig + ili9341 + font tables) as its own module, built
     // optimized even in Debug app builds. Its pixel loops and font tables are
@@ -178,6 +167,7 @@ pub fn build(b: *std.Build) void {
     //   zig build       -> SRAM mode (bootloader) [DEFAULT]
     //   zig build sram  -> SRAM mode (bootloader) [explicit]
     //   zig build flash -> Flash mode (direct, no bootloader)
+    //   zig build hwtest -Dtest=<name> -> one HW test from src/test/<name>.zig
     // ========================================================================
 
     const mz_dep = b.dependency("microzig", .{});
@@ -208,23 +198,37 @@ pub fn build(b: *std.Build) void {
     // Freestanding (no libc): supply the <string.h> + strchr/strlen the FatFs C
     // needs. mem* come from compiler_rt; malloc/free aren't used at FF_USE_LFN=0.
     zfat_mod.addIncludePath(b.path("lib/zfat_shim"));
-    zfat_mod.addCSourceFile(.{ .file = b.path("lib/zfat_shim/shim.c"), .flags = &.{"-std=c99"} });
+    zfat_mod.addCSourceFile(.{ .file = b.path("lib/zfat_shim/shim.c"), .flags = &.{"-std=c11"} });
 
-    const flash_report = buildTargetVariant(b, mb, mz_dep, clockhelper_dep, zfat_mod, .{
+    const flash_report = buildTargetVariant(b, mb, clockhelper_dep, zfat_mod, .{
         .name = "blinky-flash",
-        .linker_script = "src/ld/daisy_flash.ld",
+        .linker_script = "src/ld/flash.ld",
         .step_name = "flash",
         .step_description = "Build firmware for internal flash (direct mode)",
     }, optimize);
 
-    const sram_report = buildTargetVariant(b, mb, mz_dep, clockhelper_dep, zfat_mod, .{
+    const sram_report = buildTargetVariant(b, mb, clockhelper_dep, zfat_mod, .{
         .name = "blinky-sram",
-        .linker_script = "src/ld/daisy_sram.ld",
+        .linker_script = "src/ld/sram.ld",
         .step_name = "sram",
         .step_description = "Build firmware for SRAM (bootloader mode)",
     }, optimize);
 
     _ = sram_report;
+
+    // On-hardware test firmwares live in `src/test/<name>.zig`, each its own
+    // entry point. `zig build hwtest -Dtest=<name>` builds exactly one, forced
+    // ReleaseSafe so it fits the 128 KB internal flash. Artifact:
+    // `zig-out/firmware/<name>.elf`. Defaults to usb_loopback.
+    const hwtest_name = b.option([]const u8, "test", "HW test to build from src/test/<name>.zig (e.g. -Dtest=usb_loopback)") orelse "usb_loopback";
+    _ = buildTargetVariant(b, mb, clockhelper_dep, zfat_mod, .{
+        .name = hwtest_name,
+        .linker_script = "src/ld/flash.ld",
+        .step_name = "hwtest",
+        .step_description = "Build one HW test firmware: zig build hwtest -Dtest=<name>",
+        .root_source = b.fmt("src/test/{s}.zig", .{hwtest_name}),
+    }, .ReleaseSafe);
+
     b.getInstallStep().dependOn(flash_report);
     // b.getInstallStep().dependOn(sram_report);
 }

@@ -104,6 +104,35 @@ pub const Parser = struct {
     }
 };
 
+/// Single-slot-sacrificed SPSC ring of decoded `Message`s. Pure and
+/// hardware-agnostic; shared by the MIDI transports (see `midi_port.zig`) to
+/// buffer messages between the decode point and the consumer.
+pub const MessageQueue = struct {
+    ring: [64]Message = undefined,
+    head: usize = 0,
+    tail: usize = 0,
+
+    pub fn init() MessageQueue {
+        return .{};
+    }
+
+    /// Enqueue a message; drops it if the queue is full.
+    pub fn push(self: *MessageQueue, msg: Message) void {
+        const next = (self.head + 1) % self.ring.len;
+        if (next == self.tail) return; // full: drop
+        self.ring[self.head] = msg;
+        self.head = next;
+    }
+
+    /// Pop the next message, or null if empty.
+    pub fn pop(self: *MessageQueue) ?Message {
+        if (self.tail == self.head) return null;
+        const msg = self.ring[self.tail];
+        self.tail = (self.tail + 1) % self.ring.len;
+        return msg;
+    }
+};
+
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 
@@ -186,4 +215,31 @@ test "sysex payload is skipped" {
     // and a normal message parses fine afterwards
     const m = feedAll(&p, &.{ 0x90, 0x3C, 0x40 }).?;
     try expectEqual(MessageKind.note_on, m.kind);
+}
+
+test "MessageQueue: fifo order and empty" {
+    var q = MessageQueue.init();
+    try expect(q.pop() == null);
+    q.push(.{ .kind = .note_on, .channel = 0, .data1 = 60, .data2 = 64 });
+    q.push(.{ .kind = .note_off, .channel = 1, .data1 = 62, .data2 = 0 });
+    try expectEqual(@as(u8, 60), q.pop().?.data1);
+    try expectEqual(@as(u8, 62), q.pop().?.data1);
+    try expect(q.pop() == null);
+}
+
+test "MessageQueue: drops on full, keeps oldest, no corruption" {
+    var q = MessageQueue.init();
+    var i: u8 = 0;
+    while (i < 100) : (i += 1) {
+        q.push(.{ .kind = .note_on, .channel = 0, .data1 = i, .data2 = 0 });
+    }
+    // capacity is ring.len - 1 = 63; oldest retained, newest dropped.
+    var count: usize = 0;
+    var last: u8 = 0;
+    while (q.pop()) |m| : (count += 1) {
+        try expectEqual(@as(u8, @intCast(count)), m.data1); // oldest-first, contiguous
+        last = m.data1;
+    }
+    try expectEqual(@as(usize, 63), count);
+    try expectEqual(@as(u8, 62), last);
 }
