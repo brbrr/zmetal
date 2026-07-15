@@ -42,4 +42,40 @@
 #define CFG_TUD_MIDI_TX_BUFSIZE   128
 #define CFG_TUD_MIDI_EP_BUFSIZE   64
 
+// --- Audio (UAC2) ---
+#define CFG_TUD_AUDIO             1
+
+// One audio function, full-duplex, single PCM format.
+#define CFG_TUD_AUDIO_FUNC_1_N_AS_INT                  2   // 2 AS interfaces (spk + mic)
+#define CFG_TUD_AUDIO_FUNC_1_N_FORMATS                 1
+#define CFG_TUD_AUDIO_ENABLE_INTERRUPT_EP              0
+
+// Format: 2ch, 24-bit in 3-byte subslots, 48 kHz.
+#define CFG_TUD_AUDIO_FUNC_1_MAX_SAMPLE_RATE           48000
+#define CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_TX             2   // mic  (device -> host)
+#define CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX             2   // spk  (host -> device)
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_TX  3
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_TX          24
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX  3
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX          24
+
+// Control buffer for class requests (clock freq get/set/range).
+#define CFG_TUD_AUDIO_FUNC_1_CTRL_BUF_SZ               64
+
+// --- Capture (mic) IN endpoint ---
+#define CFG_TUD_AUDIO_ENABLE_EP_IN                     1
+#define CFG_TUD_AUDIO_FUNC_1_EP_IN_SZ_MAX \
+  TUD_AUDIO_EP_SIZE(false, CFG_TUD_AUDIO_FUNC_1_MAX_SAMPLE_RATE, \
+    CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_TX, CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_TX)
+#define CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ           (4 * CFG_TUD_AUDIO_FUNC_1_EP_IN_SZ_MAX)
+
+// --- Playback (spk) OUT endpoint + feedback ---
+#define CFG_TUD_AUDIO_ENABLE_EP_OUT                    1
+#define CFG_TUD_AUDIO_ENABLE_FEEDBACK_EP               1
+#define CFG_TUD_AUDIO_FUNC_1_EP_OUT_SZ_MAX \
+  TUD_AUDIO_EP_SIZE(false, CFG_TUD_AUDIO_FUNC_1_MAX_SAMPLE_RATE, \
+    CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX, CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX)
+// FIFO_COUNT feedback needs the OUT SW FIFO >= 4x EP size.
+#define CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ          (4 * CFG_TUD_AUDIO_FUNC_1_EP_OUT_SZ_MAX)
+
 #endif
