@@ -108,11 +108,11 @@ comptime {
 fn is_harmless_async_bus_fault(cfsr: Cfsr, abfsr: u32) bool {
     if (scb.HFSR.read().FORCED != 0) return false;
     if (cfsr.BFSR.busfault_address_register_valid) return false;
-    if (cfsr.BFSR.precice_data_bus_error) return false;
+    if (cfsr.BFSR.precise_data_bus_error) return false;
 
     const bfsr_byte: u8 = @truncate(@as(u32, @bitCast(cfsr)) >> 8);
     const no_cause = bfsr_byte == 0 and abfsr == 0;
-    return cfsr.BFSR.imprecice_data_bus_error or no_cause;
+    return cfsr.BFSR.imprecise_data_bus_error or no_cause;
 }
 
 fn capture(frame: *const StackFrame, kind: u32, cfsr: Cfsr, abfsr: u32) void {
@@ -128,8 +128,8 @@ fn capture(frame: *const StackFrame, kind: u32, cfsr: Cfsr, abfsr: u32) void {
         .bfar = scb.BFAR,
         .abfsr = abfsr,
         .bfar_valid = @intFromBool(cfsr.BFSR.busfault_address_register_valid),
-        .precise = @intFromBool(cfsr.BFSR.precice_data_bus_error),
-        .imprecise = @intFromBool(cfsr.BFSR.imprecice_data_bus_error),
+        .precise = @intFromBool(cfsr.BFSR.precise_data_bus_error),
+        .imprecise = @intFromBool(cfsr.BFSR.imprecise_data_bus_error),
         .aximtype = (abfsr >> 8) & 0x7,
         .r0 = frame.r0,
         .r1 = frame.r1,

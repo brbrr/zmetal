@@ -114,9 +114,9 @@ fn buildTargetVariant(
     // unoptimized firmware does not fit the 128 KB internal flash. Reachable from
     // firmware.core_mod (cpu/chip/hal/drivers); the root module is NOT in that
     // graph (root imports core, not vice versa), so it stays Debug.
-    if (optimize == .Debug) {
+    if (optimize == .debug) {
         var visited = std.AutoHashMap(*std.Build.Module, void).init(b.allocator);
-        setTreeOptimize(firmware.core_mod, .ReleaseSafe, &visited);
+        setTreeOptimize(firmware.core_mod, .safe, &visited);
     }
 
     // FatFs bindings (zfat) for the SD card. Imported into the application root
@@ -136,7 +136,7 @@ fn buildTargetVariant(
     // large when unoptimized; keeping them ReleaseSafe lets the Debug app + the
     // display + FatFs file I/O all fit the 128 KB internal flash. It only depends
     // on std + microzig, so it shares the app's microzig instance for ABI parity.
-    const display_optimize: std.builtin.OptimizeMode = if (optimize == .Debug) .ReleaseSafe else optimize;
+    const display_optimize: std.builtin.OptimizeMode = if (optimize == .debug) .safe else optimize;
     const ui_mod = b.createModule(.{
         .root_source_file = b.path("src/ui.zig"),
         .target = firmware.exe.root_module.resolved_target,
@@ -193,7 +193,7 @@ pub fn build(b: *std.Build) void {
     //   - long_file_name = false: 8.3 names only.
     //   - no mkfs/exfat/find/chmod: unused APIs, kept out of flash.
     const zfat_mod = b.dependency("zfat", .{
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
         .@"static-rtc" = @as([]const u8, "2026-01-01"),
         .read_only = false, // we create/write files
         .long_file_name = false, // 8.3 only — no Unicode tables
@@ -237,7 +237,7 @@ pub fn build(b: *std.Build) void {
         .step_name = "hwtest",
         .step_description = "Build one HW test firmware: zig build hwtest -Dtest=<name>",
         .root_source = b.fmt("src/test/{s}.zig", .{hwtest_name}),
-    }, .ReleaseSafe, build_opts);
+    }, .safe, build_opts);
 
     b.getInstallStep().dependOn(flash_report);
     // b.getInstallStep().dependOn(sram_report);

@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
 Memory usage report for Daisy Seed firmware
-Parses ELF sections and displays memory usage by region
+Parses ELF program headers and displays memory usage by region
 Memory regions are parsed from the linker script's MEMORY section
+
+The ELF is decoded directly rather than by scraping `llvm-objdump -h`: Zig
+emits section names containing spaces and parentheses for generic
+instantiations (e.g. `.text.drivers.ili9341.ILI9341_DMA(.{ ... })`), which
+makes the columnar output impossible to split reliably.
 """
 
 import sys
-import subprocess
+import struct
 import re
 from typing import Dict, List, Tuple
 
@@ -49,43 +54,70 @@ def parse_memory_regions(linker_script: str) -> List[Tuple[str, int, int]]:
     
     return regions
 
-def get_section_info(elf_file: str) -> List[Tuple[str, int, int]]:
-    """Get section name, size, and VMA from ELF file"""
-    result = subprocess.run(
-        ['llvm-objdump', '-h', elf_file],
-        capture_output=True,
-        text=True
-    )
-    
-    sections = []
-    for line in result.stdout.splitlines():
-        # Parse: Idx Name Size VMA LMA Type
-        match = re.match(r'\s+\d+\s+(\.[\w.]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)\s+(\w+)', line)
-        if match:
-            name = match.group(1)
-            size = int(match.group(2), 16)
-            vma = int(match.group(3), 16)
-            type_flags = match.group(5)
-            
-            # Only count allocated sections (DATA, TEXT, BSS)
-            if type_flags in ('DATA', 'TEXT', 'BSS') and size > 0:
-                sections.append((name, size, vma))
-    
-    return sections
+def parse_load_segments(elf_file: str) -> List[Tuple[int, int, int, int]]:
+    """
+    Read PT_LOAD program headers from a 32-bit little-endian ARM ELF.
+    Returns list of (vaddr, paddr, filesz, memsz) tuples.
+    """
+    with open(elf_file, 'rb') as f:
+        data = f.read()
 
-def calculate_usage(sections: List[Tuple[str, int, int]], memory_regions: List[Tuple[str, int, int]]) -> Dict[str, int]:
-    """Calculate memory usage per region"""
+    if data[:4] != b'\x7fELF':
+        raise ValueError(f"{elf_file} is not an ELF file")
+    if data[4] != 1 or data[5] != 1:
+        raise ValueError(f"{elf_file} is not 32-bit little-endian ELF")
+
+    # Elf32_Ehdr: e_phoff at 0x1c, e_phentsize at 0x2a, e_phnum at 0x2c
+    e_phoff, = struct.unpack_from('<I', data, 0x1c)
+    e_phentsize, e_phnum = struct.unpack_from('<HH', data, 0x2a)
+
+    PT_LOAD = 1
+    segments = []
+    for i in range(e_phnum):
+        off = e_phoff + i * e_phentsize
+        # Elf32_Phdr: type, offset, vaddr, paddr, filesz, memsz, flags, align
+        p_type, _, p_vaddr, p_paddr, p_filesz, p_memsz, _, _ = \
+            struct.unpack_from('<8I', data, off)
+        if p_type == PT_LOAD and p_memsz > 0:
+            segments.append((p_vaddr, p_paddr, p_filesz, p_memsz))
+
+    if not segments:
+        raise ValueError(f"No PT_LOAD segments found in {elf_file}")
+
+    return segments
+
+
+def find_region(addr: int, memory_regions: List[Tuple[str, int, int]]):
+    """Return the name of the region containing addr, or None"""
+    for region_name, region_start, region_size in memory_regions:
+        if region_start <= addr < region_start + region_size:
+            return region_name
+    return None
+
+
+def calculate_usage(segments: List[Tuple[int, int, int, int]],
+                    memory_regions: List[Tuple[str, int, int]]) -> Dict[str, int]:
+    """
+    Calculate memory usage per region.
+
+    Each segment occupies `memsz` bytes at its run-time address (vaddr). When
+    it is loaded from somewhere else -- .data lives in RAM but its initialiser
+    image is stored in flash -- the `filesz` bytes at the load address (paddr)
+    are charged to that region too.
+    """
     usage = {name: 0 for name, _, _ in memory_regions}
-    
-    for section_name, size, vma in sections:
-        # Map section VMA to memory region
-        for region_name, region_start, region_size in memory_regions:
-            region_end = region_start + region_size
-            if region_start <= vma < region_end:
-                usage[region_name] += size
-                break
-    
+
+    for vaddr, paddr, filesz, memsz in segments:
+        run_region = find_region(vaddr, memory_regions)
+        if run_region is not None:
+            usage[run_region] += memsz
+
+        load_region = find_region(paddr, memory_regions)
+        if load_region is not None and load_region != run_region:
+            usage[load_region] += filesz
+
     return usage
+
 
 def print_report(usage: Dict[str, int], memory_regions: List[Tuple[str, int, int]], target_name: str):
     """Print memory usage report"""
@@ -123,8 +155,8 @@ if __name__ == "__main__":
     
     try:
         memory_regions = parse_memory_regions(linker_script)
-        sections = get_section_info(elf_file)
-        usage = calculate_usage(sections, memory_regions)
+        segments = parse_load_segments(elf_file)
+        usage = calculate_usage(segments, memory_regions)
         print_report(usage, memory_regions, target_name)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
