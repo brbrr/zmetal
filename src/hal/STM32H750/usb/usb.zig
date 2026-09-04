@@ -7,6 +7,8 @@ const peripherals = microzig.chip.peripherals;
 const interrupt = microzig.cpu.interrupt;
 
 const gpio = @import("../gpio.zig");
+const power = @import("../power.zig");
+const clock = @import("../clock.zig");
 const tusb = @import("tinyusb.zig");
 
 const StreamDevice = microzig.drivers.base.StreamDevice;
@@ -79,7 +81,8 @@ pub const Controller = enum { internal_fs, external_hs };
 pub const Config = struct {
     controller: Controller = .internal_fs,
     /// NVIC priority for the OTG IRQ. MUST be numerically greater (lower
-    /// urgency) than the SAI audio-DMA ISR. Default `.lowest`.
+    /// urgency) than the SAI audio-DMA ISR (`.highest`/0 in daisy.zig) so a USB
+    /// ISR can never delay an audio-DMA refill. Default `.lowest` (15).
     irq_priority: interrupt.Priority = .lowest,
 };
 
@@ -87,8 +90,16 @@ const Descriptor = struct {
     rhport: u8,
     dm: gpio.AltPin,
     dp: gpio.AltPin,
+    /// RCC.AHB1ENR field: run-mode peripheral clock enable.
     rcc_field: []const u8,
+    /// RCC.AHB1LPENR field: keep the clock during CPU sleep (CSLEEP/`wfi`).
+    lp_field: []const u8,
+    /// RCC.AHB1LPENR ULPI-clock field. Reset-default 1; MUST be cleared for the
+    /// embedded FS PHY or the OTG core stalls in CSLEEP (see init()).
+    ulpi_lp_field: []const u8,
     irq: @TypeOf(.enum_literal),
+    /// OTG core register block base (for pre-powering the PHY before tud_init).
+    base: usize,
 };
 
 fn descriptor(c: Controller) Descriptor {
@@ -98,17 +109,27 @@ fn descriptor(c: Controller) Descriptor {
             .dm = .{ .port = "A", .num = "11", .af = .af10 },
             .dp = .{ .port = "A", .num = "12", .af = .af10 },
             .rcc_field = "USB_OTG_FSEN",
+            .lp_field = "USB_OTG_FSLPEN",
+            .ulpi_lp_field = "USB_OTG_FS_ULPILPEN",
             .irq = .OTG_FS,
+            .base = 0x4008_0000, // USB2_OTG_FS
         },
         .external_hs => .{
             .rhport = 1,
             .dm = .{ .port = "B", .num = "14", .af = .af12 },
             .dp = .{ .port = "B", .num = "15", .af = .af12 },
             .rcc_field = "USB_OTG_HSEN",
+            .lp_field = "USB_OTG_HSLPEN",
+            .ulpi_lp_field = "USB_OTG_HS_ULPILPEN",
             .irq = .OTG_HS,
+            .base = 0x4004_0000, // USB1_OTG_HS
         },
     };
 }
+
+/// dwc2 GCCFG register offset + PWRDWN bit (STM32 embedded-PHY wrapper).
+const GCCFG_OFFSET = 0x38;
+const GCCFG_PWRDWN = 1 << 16;
 
 pub fn init(comptime cfg: Config) void {
     const d = comptime descriptor(cfg.controller);
@@ -127,6 +148,39 @@ pub fn init(comptime cfg: Config) void {
     // Enable the OTG peripheral clock, then read back (RCC enable settle delay).
     peripherals.RCC.AHB1ENR.modify_one(d.rcc_field, 1);
     _ = peripherals.RCC.AHB1ENR.read();
+
+    // Keep USB alive across CPU sleep (`cpu.wfi()` in the main loop enters
+    // CSLEEP, where each AHB1 peripheral is clocked only if its AHB1LPENR bit is
+    // set). Two bits matter for the embedded FS PHY, and the ULPI one is the
+    // subtle killer:
+    //   - <OTG>LPEN = 1: keep the OTG peripheral clock during CSLEEP.
+    //   - <OTG>_ULPILPEN = 0: the ULPI-PHY clock defaults to 1 after reset, and
+    //     with that default the H7 OTG core stalls in CSLEEP even though we use
+    //     the *internal* FS PHY (no ULPI). This is why enabling <OTG>LPEN alone
+    //     was not enough — USB still died under wfi. Clearing ULPILPEN is the
+    //     documented fix (ST __HAL_RCC_USB2_OTG_FS_ULPI_CLK_SLEEP_DISABLE;
+    //     ARMmbed/mbed-os PR #13780). DMA-driven peripherals tolerate CSLEEP
+    //     gating (they resume on the next SysTick wake); USB, which must service
+    //     the host autonomously in real time, does not.
+    peripherals.RCC.AHB1LPENR.modify_one(d.lp_field, 1);
+    peripherals.RCC.AHB1LPENR.modify_one(d.ulpi_lp_field, 0);
+    _ = peripherals.RCC.AHB1LPENR.read();
+
+    // Ensure the USB 3.3V supply is ready (config_usb enables PWR.CR3.USB33DEN
+    // but doesn't wait). Bounded/best-effort — usually already set by now.
+    var spins: u32 = 0;
+    while (!power.get_flag(.USB33RDY) and spins < 1_000_000) : (spins += 1) {}
+
+    // Pre-power the embedded FS PHY and let it settle BEFORE tud_init. dcd_init
+    // sets GCCFG.PWRDWN (transceiver on) and then IMMEDIATELY asserts the core
+    // soft reset (CSRST) with no PHY-settle delay; on a cold boot the PHY clock
+    // isn't stable that fast, so CSRST occasionally never self-clears and
+    // reset_core() spins forever (TinyUSB's reset loop has no timeout). Powering
+    // the PHY here + a delay guarantees a stable PHY clock by the time the reset
+    // runs. (ST's USB_CoreReset avoids the race by waiting AHB-idle first.)
+    const gccfg: *volatile u32 = @ptrFromInt(d.base + GCCFG_OFFSET);
+    gccfg.* |= GCCFG_PWRDWN;
+    clock.delay_us(1000);
 
     // NVIC: priority BELOW the audio ISR, then enable.
     interrupt.set_priority(d.irq, cfg.irq_priority);

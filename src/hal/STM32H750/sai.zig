@@ -3,6 +3,9 @@ const math = std.math;
 const microzig = @import("microzig");
 const hal = @import("hal.zig");
 const daisy = @import("daisy.zig");
+const audio = @import("audio.zig");
+const dwt = @import("dwt.zig");
+const CpuLoadMeter = @import("cpu_load.zig").CpuLoadMeter;
 const regs = microzig.chip.peripherals;
 const sai_types = microzig.chip.types.peripherals.sai_v3_4pdm;
 const cpu = microzig.cpu;
@@ -12,19 +15,10 @@ const Channel = hal.dma.Channel;
 // Configuration Types
 // ============================================================================
 
-pub const SampleRate = enum(u32) {
-    @"8khz" = 8000,
-    @"16khz" = 16000,
-    @"32khz" = 32000,
-    @"48khz" = 48000,
-    @"96khz" = 96000,
-};
-
-pub const BitDepth = enum(u8) {
-    @"16bit" = 16,
-    @"24bit" = 24,
-    @"32bit" = 32,
-};
+// Canonical definitions live in audio.zig (shared with AudioConfig); re-export
+// so existing `sai.SampleRate` / `sai.BitDepth` references keep working.
+pub const SampleRate = audio.SampleRate;
+pub const BitDepth = audio.BitDepth;
 
 pub const Direction = enum {
     transmit,
@@ -81,9 +75,18 @@ pub const SaiConfig = struct {
     }
 };
 
-pub const AudioCallback = fn (input: []const f32, output: []f32, size: u16) void;
+/// Build a SaiConfig from the runtime AudioConfig. Sample rate and bit depth are
+/// the shared enums (assigned directly); sync modes and directions keep the
+/// SaiConfig defaults (A = master TX, B = slave RX).
+pub fn configFromAudio(cfg: audio.AudioConfig) SaiConfig {
+    return .{
+        .sample_rate = cfg.sample_rate,
+        .bit_depth = cfg.bit_depth,
+        .blocksize = cfg.blocksize,
+    };
+}
 
-const buf_size = 400;
+pub const AudioCallback = fn (input: []const f32, output: []f32, size: u16) void;
 
 // ============================================================================
 // DMA Channels (fixed for SAI1: Stream0=TX, Stream1=RX)
@@ -104,9 +107,10 @@ pub fn dma1_1_handler() callconv(.c) void {
 // Buffers (placed in DMA-safe non-cacheable SRAM1)
 // ============================================================================
 
-const BufferSize: u32 = 1024;
-var tx_buffer: [BufferSize]i32 align(4) linksection(".sram1_bss") = undefined;
-var rx_buffer: [BufferSize]i32 align(4) linksection(".sram1_bss") = undefined;
+// Must be >= blocksize×4.
+const HalfBuffer: u32 = 256;
+var tx_buffer: [HalfBuffer * 2]i32 align(4) linksection(".sram1_bss") = undefined;
+var rx_buffer: [HalfBuffer * 2]i32 align(4) linksection(".sram1_bss") = undefined;
 // ============================================================================
 // GPIO Pin Configuration (match libdaisy: AF6, PushPull, MediumSpeed, PullUp)
 // ============================================================================
@@ -138,6 +142,8 @@ pub const SaiDriver = struct {
     config: SaiConfig,
     transfer_size: u16 = 0,
     user_callback: ?*const AudioCallback = null,
+    /// Optional CPU-load meter (owned by daisy), updated once per block.
+    load_meter: ?*CpuLoadMeter = null,
 
     // ------------------------------------------------------------------
     // Public API
@@ -182,8 +188,9 @@ pub const SaiDriver = struct {
 
     /// Start DMA audio streaming with the given callback.
     /// Follows libdaisy's start sequence: slave (RX) first, then master (TX).
-    pub fn start(self: *SaiDriver, callback: *const AudioCallback) !void {
+    pub fn start(self: *SaiDriver, callback: *const AudioCallback, load_meter: ?*CpuLoadMeter) !void {
         self.user_callback = callback;
+        self.load_meter = load_meter;
 
         // Match libdaisy callback ownership: RX DMA HT/TC drives audio callback timing.
         const rx_hdl = rx_chan.handlers();
@@ -506,14 +513,14 @@ pub const SaiDriver = struct {
 
     pub fn fillTxBuffer(self: *SaiDriver, offset: u32) void {
         const half_size = self.transfer_size / 2;
-        std.debug.assert(half_size <= buf_size);
+        std.debug.assert(half_size <= HalfBuffer);
 
-        // All intermediate buffers live on the stack (DTCM, 0x20000000).
-        // DTCM is zero-wait-state on a dedicated bus — CPU accesses here
-        // do NOT contend with DMA accessing SRAM1 on the D2 bus matrix.
-        var f_in: [buf_size]f32 = undefined;
-        var f_out: [buf_size]f32 = undefined;
-        // var tx_staging: [buf_size]i32 = undefined;
+        // Time the whole per-block audio work (convert + callback + convert) for
+        // the CPU-load meter.
+        if (self.load_meter) |m| m.beginBlock(dwt.cycles());
+
+        var f_in: [HalfBuffer]f32 = undefined;
+        var f_out: [HalfBuffer]f32 = undefined;
 
         // --- Read rx_buffer (SRAM1) into stack-local f_in (DTCM) ---
         switch (self.config.bit_depth) {
@@ -550,9 +557,10 @@ pub const SaiDriver = struct {
             else => unreachable,
         }
 
-        // Ensure stores to SRAM1 are visible before DMA consumes this half.
         cpu.dsb();
         cpu.dmb();
+
+        if (self.load_meter) |m| m.endBlock(dwt.cycles());
     }
 
     // ------------------------------------------------------------------

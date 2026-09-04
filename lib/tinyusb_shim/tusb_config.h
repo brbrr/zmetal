@@ -50,14 +50,17 @@
 #define CFG_TUD_AUDIO_FUNC_1_N_FORMATS                 1
 #define CFG_TUD_AUDIO_ENABLE_INTERRUPT_EP              0
 
-// Format: 2ch, 24-bit in 3-byte subslots, 48 kHz.
-#define CFG_TUD_AUDIO_FUNC_1_MAX_SAMPLE_RATE           48000
+// These size the C driver's EP/FIFO buffers only (the actual descriptor is
+// built at runtime from AudioConfig). Set to the MAX envelope — 96 kHz, 2ch,
+// 4-byte subslot — so any runtime format fits. EP size = (96+1)*4*2 = 776 B,
+// within the full-speed 1023 B/frame iso ceiling.
+#define CFG_TUD_AUDIO_FUNC_1_MAX_SAMPLE_RATE           96000
 #define CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_TX             2   // mic  (device -> host)
 #define CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX             2   // spk  (host -> device)
-#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_TX  3
-#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_TX          24
-#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX  3
-#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX          24
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_TX  4
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_TX          32
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX  4
+#define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_RESOLUTION_RX          32
 
 // Control buffer for class requests (clock freq get/set/range).
 #define CFG_TUD_AUDIO_FUNC_1_CTRL_BUF_SZ               64
@@ -71,7 +74,10 @@
 
 // --- Playback (spk) OUT endpoint + feedback ---
 #define CFG_TUD_AUDIO_ENABLE_EP_OUT                    1
-#define CFG_TUD_AUDIO_ENABLE_FEEDBACK_EP               1
+// Adaptive OUT, no feedback EP: macOS will not drive a UAC2 feedback endpoint on
+// full-speed (it stalls after priming). The host self-paces; residual host/SAI
+// clock drift is corrected in software on the consume side.
+#define CFG_TUD_AUDIO_ENABLE_FEEDBACK_EP               0
 #define CFG_TUD_AUDIO_FUNC_1_EP_OUT_SZ_MAX \
   TUD_AUDIO_EP_SIZE(false, CFG_TUD_AUDIO_FUNC_1_MAX_SAMPLE_RATE, \
     CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX, CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX)

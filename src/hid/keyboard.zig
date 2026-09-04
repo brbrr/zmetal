@@ -27,20 +27,17 @@
 const std = @import("std");
 const microzig = @import("microzig");
 const mcp23017 = @import("../drivers/mcp23017.zig");
-const mcp_digital_io = @import("mcp_digital_io.zig");
 const debounce = @import("debounce.zig");
 
 const drivers = microzig.drivers;
 const Keyboard_Matrix = drivers.input.KeyboardMatrix;
 const Key = drivers.input.Key;
-const Digital_IO = drivers.base.Digital_IO;
 
 /// I2C Device interface type from microzig
 pub const I2C_Device = drivers.base.I2C_Device;
 
 const hal = microzig.hal;
 const MCP23017 = mcp23017.MCP23017;
-const McpPin = mcp_digital_io.McpPin;
 
 /// Matrix configuration
 pub const ROWS = 8;
@@ -63,6 +60,8 @@ const MCP_I2C_ADDRESS: u8 = 0x21;
 pub const Keyboard = struct {
     const Self = @This();
 
+    // microzig's matrix type is kept only for its `Set`/`Key`/`index` helpers;
+    // scanning goes through `PortMatrix` below, not its per-pin `scan()`.
     const Matrix = Keyboard_Matrix(.{
         .rows = ROWS,
         .columns = COLS,
@@ -70,27 +69,59 @@ pub const Keyboard = struct {
 
     pub const Set = Matrix.Set;
 
-    const DebouncerType = debounce.Debouncer(Matrix, KEY_COUNT, ROWS, COLS);
+    const DebouncerType = debounce.Debouncer(PortMatrix, KEY_COUNT, ROWS, COLS);
+
+    /// Port-batched matrix scanner.
+    ///
+    /// microzig's generic `Keyboard_Matrix.scan` drives/reads one pin at a
+    /// time, and every MCP23017 pin op is a full I2C transaction — 72 per
+    /// scan for 8×6 (48 of them redundant full-register row reads), ~7 ms.
+    /// This scanner exploits the fixed layout (columns on Port A, rows on
+    /// Port B): drive each column with a single `OLATA` write and read all 8
+    /// rows in ONE `GPIOB` read → ~14 transactions/scan (~5× fewer, ~1.4 ms).
+    const PortMatrix = struct {
+        mcp: *MCP23017,
+
+        pub fn scan(self: *PortMatrix) !Matrix.Set {
+            var result = Matrix.Set{};
+            for (COL_PINS, 0..) |col_pin, col| {
+                // Drive the active column low, all others high (Port A).
+                try self.mcp.writeRegister(.OLATA, ~(@as(u8, 1) << @intCast(col_pin)));
+                settle();
+                // A single read samples every row; a pressed key pulls its
+                // (pulled-up) row low.
+                const rows = try self.mcp.readPort(.B);
+                for (ROW_PINS, 0..) |row_pin, row| {
+                    const bit = @as(u8, 1) << @intCast(row_pin - 8);
+                    if (rows & bit == 0) result.add(Key.new(@intCast(row), @intCast(col)));
+                }
+            }
+            // Idle: release all columns high.
+            try self.mcp.writeRegister(.OLATA, 0xFF);
+            return result;
+        }
+
+        /// Let a driven column settle before sampling rows. The I2C read that
+        /// follows already inserts >100 µs, so this only needs to be nominal.
+        inline fn settle() void {
+            for (0..50) |_| asm volatile ("" ::: .{ .memory = true });
+        }
+    };
 
     mcp: MCP23017,
-
-    // Matrix fields - directly embedded, no wrapper
-    col_pins: [COLS]McpPin,
-    row_pins: [ROWS]McpPin,
-    col_ios: [COLS]Digital_IO,
-    row_ios: [ROWS]Digital_IO,
-    matrix: Matrix,
-
+    port_matrix: PortMatrix,
     debouncer: DebouncerType,
+
+    events: EventQueue = .{},
 
     /// Initialize the keyboard in place.
     ///
     /// This must initialize through `self` (a stable, caller-owned address)
     /// rather than returning a value: the struct is self-referential
-    /// (McpPin -> &self.mcp, Digital_IO -> &self.col_pins[i], debouncer ->
-    /// &self.matrix). Returning by value would copy the struct while leaving
-    /// those internal pointers dangling at the init frame, faulting on the
-    /// first process() call.
+    /// (`port_matrix.mcp` -> `&self.mcp`, `debouncer.matrix` ->
+    /// `&self.port_matrix`). Returning by value would copy the struct while
+    /// leaving those internal pointers dangling at the init frame, faulting on
+    /// the first process() call.
     pub fn init(self: *Self, i2c_dev: I2C_Device) !void {
         // Initialize MCP23017 with the interface
         self.mcp = try MCP23017.init(i2c_dev, MCP_I2C_ADDRESS);
@@ -103,39 +134,17 @@ pub const Keyboard = struct {
         try self.mcp.setPortMode(.B, 0xFF);
         try self.mcp.setPortPullups(.B, 0xFF);
 
-        // Initialize McpPin instances
-        for (COL_PINS, 0..) |pin, i| {
-            self.col_pins[i] = McpPin.init(&self.mcp, pin);
-        }
-
-        for (ROW_PINS, 0..) |pin, i| {
-            self.row_pins[i] = McpPin.init(&self.mcp, pin);
-        }
-
-        // Create Digital_IO interfaces pointing to pins
-        for (0..COLS) |i| {
-            self.col_ios[i] = self.col_pins[i].digital_io();
-        }
-
-        for (0..ROWS) |i| {
-            self.row_ios[i] = self.row_pins[i].digital_io();
-        }
-
-        // Create matrix with embedded Digital_IO arrays
-        self.matrix = Matrix{
-            .cols = self.col_ios,
-            .rows = self.row_ios,
-        };
-
-        // Initialize debouncer with pointer to matrix
-        self.debouncer = DebouncerType.init(&self.matrix);
+        self.port_matrix = .{ .mcp = &self.mcp };
+        self.debouncer = DebouncerType.init(&self.port_matrix);
     }
 
     /// Process keyboard matrix scan and update debounce state
     /// Returns a queue of key events (press/release)
     /// Call this function periodically (recommended: every 10ms)
-    pub fn process(self: *Self) !EventQueue {
-        return try self.debouncer.process();
+    pub fn process(self: *Self) !*EventQueue {
+        self.events.count = 0;
+        try self.debouncer.process(&self.events);
+        return &self.events;
     }
 
     /// Check if a specific key is currently pressed (0-47)

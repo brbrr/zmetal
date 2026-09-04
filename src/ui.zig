@@ -30,6 +30,11 @@ var fps_frame_count: u32 = 0;
 var fps_window_start: u32 = 0;
 var fps_value: u32 = 0;
 
+// Audio CPU-load readout (percent), sampled once per second alongside FPS so
+// the peak reflects the worst block over that whole window.
+var cpu_avg: u32 = 0;
+var cpu_peak: u32 = 0;
+
 var tast_f_time: u32 = 0;
 var last_dirty_tiles: u32 = 0;
 
@@ -53,7 +58,7 @@ pub fn init() !void {
     display_ready = true;
 }
 
-pub fn service() void {
+pub fn service(load_meter: *hal.cpu_load.CpuLoadMeter) void {
     if (!display_ready) return;
 
     // A partial flush spanning multiple tiles is advanced here, in the
@@ -88,6 +93,11 @@ pub fn service() void {
         fps_value = fps_frame_count * 1000 / elapsed;
         fps_frame_count = 0;
         fps_window_start = now;
+
+        // Sample the audio CPU load (resets its peak-hold, so peak is per-second).
+        const load = load_meter.read();
+        cpu_avg = @intFromFloat(@min(load.avg, 9.99) * 100);
+        cpu_peak = @intFromFloat(@min(load.peak, 9.99) * 100);
     }
 
     // Draw "FPS:NNN T:NN" (T = dirty tiles sent last frame) in the top-right.
@@ -95,6 +105,12 @@ pub fn service() void {
     const fps_str = std.fmt.bufPrint(&fps_buf, "FPS:{d:>3} T:{d:>2}", .{ fps_value, last_dirty_tiles }) catch "FPS:???";
     const fps_w: u16 = @intCast(fps_str.len * ili9341.font.font6x8.width);
     _ = display.draw_string(ili9341.WIDTH - fps_w - 2, 2, fps_str, ili9341.font.font6x8, ili9341.Colors.White, ili9341.Colors.Black);
+
+    // Draw "CPU:aa^pp" (avg^peak %) just below the FPS line.
+    var cpu_buf: [16]u8 = undefined;
+    const cpu_str = std.fmt.bufPrint(&cpu_buf, "CPU:{d:>2}^{d:>2}", .{ cpu_avg, cpu_peak }) catch "CPU:??";
+    const cpu_w: u16 = @intCast(cpu_str.len * ili9341.font.font6x8.width);
+    _ = display.draw_string(ili9341.WIDTH - cpu_w - 2, 12, cpu_str, ili9341.font.font6x8, ili9341.Colors.Yellow, ili9341.Colors.Black);
 
     display.flush_diff(null) catch |err| switch (err) {
         error.FlushInProgress => {},

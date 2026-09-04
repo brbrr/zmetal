@@ -43,7 +43,11 @@ pub const fault = @import("fault.zig");
 // Daisy-specific modules
 pub const daisy = @import("daisy.zig");
 pub const sai = @import("sai.zig");
+pub const audio = @import("audio.zig"); // runtime audio format config (SAI + USB)
+pub const cpu_load = @import("cpu_load.zig"); // audio-ISR CPU load meter
+pub const dwt = @import("dwt.zig"); // Cortex-M7 cycle counter (feeds cpu_load)
 pub const usb = @import("usb/usb.zig");
+pub const usb_audio = @import("usb/usb_audio.zig"); // UAC2 <-> SAI bridge callback
 
 // Utilities
 pub const utils = @import("util.zig");

@@ -465,8 +465,9 @@ fn recover_bus(comptime pin_cfg: PinConfig) void {
 }
 
 /// Half-period for the recovery bit-bang (~100 kHz). Timing isn't critical (it
-/// only has to satisfy a slave's setup/hold and runs once at startup); uses the
-/// SysTick-independent `clock.delay_us` since SysTick may not be up this early.
+/// only has to satisfy a slave's setup/hold and runs once at startup); uses
+/// `clock.delay_us` because delay_ms's ~1 ms granularity is far too coarse for a
+/// µs-scale bit-bang.
 inline fn bit_delay() void {
     clock.delay_us(5);
 }

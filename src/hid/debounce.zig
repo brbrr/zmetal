@@ -67,8 +67,7 @@ pub fn Debouncer(comptime MatrixType: type, comptime key_count: usize, comptime 
 
         /// Process a matrix scan and update debounce state
         /// Returns an array of key events (press/release)
-        pub fn process(self: *Self) !EventQueue {
-            var events = EventQueue{};
+        pub fn process(self: *Self, events: *EventQueue) !void {
 
             // Scan the matrix
             const pressed_keys = try self.matrix.scan();
@@ -110,8 +109,6 @@ pub fn Debouncer(comptime MatrixType: type, comptime key_count: usize, comptime 
                     });
                 }
             }
-
-            return events;
         }
 
         /// Check if a specific key is currently pressed (debounced)

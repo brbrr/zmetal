@@ -329,6 +329,11 @@ fn uart_init() !void {
 pub const Daisy = struct {
     sai: hal.sai.SaiDriver,
     i2c: hal.i2c.I2C_Device,
+    /// Audio format driving both the SAI codec path and USB audio. Set before
+    /// `init()` to change it; defaults to stereo / 24-bit / 48 kHz.
+    audio: hal.audio.AudioConfig = .{},
+    /// Audio-ISR CPU load meter; wired into the SAI callback and read by the UI.
+    load_meter: hal.cpu_load.CpuLoadMeter = .{},
 
     comptime led: hal.gpio.Pin = hal.gpio.Pin.init("C", "7", .{
         .mode = .output,
@@ -341,6 +346,8 @@ pub const Daisy = struct {
         return Daisy{
             .sai = undefined,
             .i2c = undefined,
+            .audio = .{},
+            .load_meter = .{},
         };
     }
 
@@ -354,6 +361,13 @@ pub const Daisy = struct {
         // legacy <v6 bootloaders pre-configured clocks; if ever targeted, gate
         // this on the bootloader-version stamp in backup SRAM — see libdaisy.)
         try configure_clocks();
+
+        // hal_init() set up SysTick on the pre-PLL clock (it must be running for
+        // configure_clocks' HSE/PLL-ready timeouts). Now that the PLL is applied
+        // and SystemCoreClock reflects it, re-init the tick so its 1 ms period —
+        // and therefore delay_ms — is accurate. Mirrors ST HAL_RCC_ClockConfig,
+        // which re-calls HAL_InitTick after switching the system clock.
+        hal.clock.hal_init_tick(hal.clock.uwTickPrio) catch return error.ClockSetupError;
 
         try configure_mpu();
 
@@ -378,8 +392,17 @@ pub const Daisy = struct {
         // direct reads at hal.qspi.BASE (0x90000000).
         try hal.qspi.init();
 
-        // Initialize SAI after clocks and interrupts are ready
-        self.sai = hal.sai.SaiDriver.init(.{});
+        // Initialize SAI after clocks and interrupts are ready, from the audio
+        // config (sample rate / bit depth / block size).
+        self.sai = hal.sai.SaiDriver.init(hal.sai.configFromAudio(self.audio));
+
+        // CPU-load meter: enable the DWT cycle counter and size the meter to the
+        // audio block (cycles/block = coreclk/rate * blocksize; block rate = rate/blocksize).
+        hal.dwt.enableCycleCounter();
+        self.load_meter = hal.cpu_load.CpuLoadMeter.init(
+            (hal.clock.SystemCoreClock / self.audio.rateHz()) * self.audio.blocksize,
+            @as(f32, @floatFromInt(self.audio.rateHz())) / @as(f32, @floatFromInt(self.audio.blocksize)),
+        );
 
         // Bring up I2C1 (MCP23017 keyboard expander). i2c_init() above only
         // resets the peripheral; init() enables the clock + configures pins and
@@ -390,6 +413,6 @@ pub const Daisy = struct {
     }
 
     pub fn startAudio(self: *Daisy, callback: *const hal.sai.AudioCallback) !void {
-        try self.sai.start(callback);
+        try self.sai.start(callback, &self.load_meter);
     }
 };

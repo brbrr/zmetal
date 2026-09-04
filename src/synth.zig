@@ -39,8 +39,15 @@ var engine: Engine = .{
 /// silence when gated off. Matches `hal.sai.AudioCallback`'s signature.
 pub fn audioCallback(input: []const f32, output: []f32, size: u16) void {
     _ = input;
-    var i: u32 = 0;
-    while (i < size) : (i += 2) {
+    render(output[0..size]);
+}
+
+/// Render the mono voice into `output` (interleaved stereo), or silence when
+/// gated off. A generator — ignores any input. Shared by the legacy SAI
+/// callback and the audio-interface Program.
+pub fn render(output: []f32) void {
+    var i: usize = 0;
+    while (i < output.len) : (i += 2) {
         // Gate: silence (and freeze phase) when no note key is held.
         const samp = if (engine.gate) engine.sine.nextSample() else 0.0;
         output[i] = samp;

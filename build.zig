@@ -18,6 +18,7 @@ fn addTinyUsb(b: *std.Build, root: *std.Build.Module) void {
         tu ++ "portable/synopsys/dwc2/dcd_dwc2.c",
         tu ++ "portable/synopsys/dwc2/dwc2_common.c",
         "lib/tinyusb_shim/usb_glue.c",
+        "lib/tinyusb_shim/usb_audio_glue.c",
     };
     for (sources) |src| {
         root.addCSourceFile(.{ .file = b.path(src), .flags = &.{
@@ -81,6 +82,7 @@ fn buildTargetVariant(
     zfat_mod: *std.Build.Module,
     config: TargetConfig,
     optimize: std.builtin.OptimizeMode,
+    build_opts: *std.Build.Step.Options,
 ) *std.Build.Step {
     const stm32_common_mod = b.createModule(.{
         .root_source_file = b.path("lib/microzig/port/stmicro/stm32/src/hals/common.zig"),
@@ -124,6 +126,10 @@ fn buildTargetVariant(
     // TinyUSB device stack (CDC + MIDI) for the on-board USB port; compiled into
     // the application root module (main.zig -> hal.usb / hid.midi_io use it).
     addTinyUsb(b, firmware.exe.root_module);
+
+    // Compile-time build config exposed to the app as `@import("build_config")`
+    // (e.g. -Dusb-audio routes USB Audio to the SAI callback instead of the synth).
+    firmware.exe.root_module.addOptions("build_config", build_opts);
 
     // Display driver (ui.zig + ili9341 + font tables) as its own module, built
     // optimized even in Debug app builds. Its pixel loops and font tables are
@@ -175,6 +181,10 @@ pub fn build(b: *std.Build) void {
     const clockhelper_dep = b.dependency("ClockHelper", .{}).module("clockhelper");
     const optimize = b.standardOptimizeOption(.{});
 
+    const usb_audio = b.option(bool, "usb-audio", "Route USB Audio (UAC2) to the SAI codec instead of the synth") orelse false;
+    const build_opts = b.addOptions();
+    build_opts.addOption(bool, "usb_audio", usb_audio);
+
     // FatFs bindings; the module compiles the vendored FatFs C for the firmware
     // target when imported. Config is spelled out rather than left to defaults:
     //   - ReleaseSafe keeps the FatFs C compact.
@@ -205,14 +215,14 @@ pub fn build(b: *std.Build) void {
         .linker_script = "src/ld/flash.ld",
         .step_name = "flash",
         .step_description = "Build firmware for internal flash (direct mode)",
-    }, optimize);
+    }, optimize, build_opts);
 
     const sram_report = buildTargetVariant(b, mb, clockhelper_dep, zfat_mod, .{
         .name = "blinky-sram",
         .linker_script = "src/ld/sram.ld",
         .step_name = "sram",
         .step_description = "Build firmware for SRAM (bootloader mode)",
-    }, optimize);
+    }, optimize, build_opts);
 
     _ = sram_report;
 
@@ -227,7 +237,7 @@ pub fn build(b: *std.Build) void {
         .step_name = "hwtest",
         .step_description = "Build one HW test firmware: zig build hwtest -Dtest=<name>",
         .root_source = b.fmt("src/test/{s}.zig", .{hwtest_name}),
-    }, .ReleaseSafe);
+    }, .ReleaseSafe, build_opts);
 
     b.getInstallStep().dependOn(flash_report);
     // b.getInstallStep().dependOn(sram_report);

@@ -47,11 +47,11 @@ pub inline fn delay_ms(wait: u32) void {
     }
 }
 
-/// SysTick-independent busy-wait of ~`us` microseconds, derived from the actual
-/// CPU clock (`SystemCoreClock`). Use for short (sub-millisecond) delays in
-/// low-level init/recovery paths that must not depend on the SysTick interrupt
-/// (which may not be running that early); `delay_ms` (SysTick-based) is for
-/// coarse main-loop waits. Approximate — good enough for "wait at least ~X us".
+/// Busy-wait of ~`us` microseconds, derived from the actual CPU clock
+/// (`SystemCoreClock`). Use for sub-millisecond delays: `delay_ms` is SysTick-
+/// based and floors at ~1 ms (+1 tick), so it can't express the µs-scale spacing
+/// peripheral init/recovery timing needs. Approximate — good enough for "wait at
+/// least ~X us", not a precise timer.
 pub inline fn delay_us(us: u32) void {
     // The inner loop is ~CYCLES_PER_ITER CPU cycles (empirical: the SDRAM
     // bring-up used 50k iters ~= 1 ms at 480 MHz => ~9.6 cyc/iter).

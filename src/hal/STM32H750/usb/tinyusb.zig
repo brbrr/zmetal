@@ -32,6 +32,14 @@ extern fn zt_midi_available() u32;
 extern fn zt_midi_stream_read(buffer: [*]u8, bufsize: u32) u32;
 extern fn zt_midi_stream_write(cable_num: u8, buffer: [*]const u8, bufsize: u32) u32;
 
+// Audio FIFO forwarders + alt-setting flags (lib/tinyusb_shim/usb_audio_glue.c).
+pub extern fn zt_audio_read(buf: [*]u8, n: u16) u16;
+pub extern fn zt_audio_write(buf: [*]const u8, n: u16) u16;
+pub extern fn zt_audio_out_available() u32;
+pub extern fn zt_audio_out_active() bool;
+pub extern fn zt_audio_in_active() bool;
+pub extern fn zt_audio_set_sample_rate(rate: u32) void;
+
 // Friendly names used across the usb HAL (thin wrappers over the glue).
 pub fn tud_task() void {
     zt_task();
