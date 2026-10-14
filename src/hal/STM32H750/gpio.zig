@@ -1,5 +1,4 @@
 //! GPIO (General Purpose I/O) driver for STM32H750
-//! Follows microzig common gpio_v2 patterns for STM32 GPIO peripherals
 
 const std = @import("std");
 const microzig = @import("microzig");
@@ -7,11 +6,6 @@ const peripherals = microzig.chip.peripherals;
 
 // STM32H7 uses GPIO v2 peripheral types
 const gpio_types = microzig.chip.types.peripherals.gpio_v2;
-
-const stm32_common = @import("stm32_common");
-const stm32_gpio = stm32_common.gpio_v2;
-
-pub const Port = stm32_gpio.Port;
 
 pub const AlternateFunction = enum(u4) {
     af0 = 0,
