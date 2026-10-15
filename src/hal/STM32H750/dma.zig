@@ -9,8 +9,9 @@ const DMA1 = regs.DMA1;
 const DMA2 = regs.DMA2;
 
 pub const dmat = microzig.chip.types.peripherals.dma_v1;
+const dma_index = @import("dma_index.zig");
 
-// 7 x 2
+// 8 streams x 2 controllers (channel n = DMA(n/8+1) stream n%8).
 const num_channels = 16;
 var claimed_channels = microzig.concurrency.AtomicStaticBitSet(num_channels){};
 const MaskType = std.meta.Int(.unsigned, num_channels);
@@ -308,23 +309,13 @@ pub const Channel = enum(u4) {
     }
 
     pub fn dma_reg(chan: Channel) *volatile dmat.DMA {
-        const stream_num: u4 = @intFromEnum(chan);
-        const is_dma2 = stream_num > 6;
-
-        const dma = if (is_dma2) DMA2 else DMA1;
-        return dma;
+        return if (dma_index.locate(@intFromEnum(chan)).controller == 0) DMA1 else DMA2;
     }
 
     pub inline fn get_regs(chan: Channel) *volatile Regs {
         // microzig exposes the per-stream registers as a native ST[8] array.
-        var ch_id: u8 = @intFromEnum(chan);
-        // [0, 7] :: [8, 13]
-        if (ch_id <= 7) {
-            return &DMA1.ST[ch_id];
-        } else {
-            ch_id -= num_channels / 2;
-            return &DMA2.ST[ch_id];
-        }
+        const l = dma_index.locate(@intFromEnum(chan));
+        return &(if (l.controller == 0) DMA1 else DMA2).ST[l.stream];
     }
 
     pub fn claim(chan: Channel) ChannelError!void {
@@ -637,19 +628,19 @@ pub const Channel = enum(u4) {
     pub fn info(comptime chan: Channel) ChannelInfo {
         const index = @intFromEnum(chan);
 
-        // 7 streams X 2 peripherals
-        const dma_index: u1 = if (index > 7) 1 else 0;
-        const local: u3 = if (index > 7) index - 8 else index;
+        const loc = dma_index.locate(index);
+        const controller = loc.controller;
+        const local = loc.stream;
 
-        // low [0, 3] and high [4, 6]
+        // low [0, 3] and high [4, 7]
         const is_high = local >= 4;
         const hisr_id: u2 = if (is_high) local - 4 else local;
 
-        const reg = if (dma_index == 0) DMA1 else DMA2;
+        const reg = if (controller == 0) DMA1 else DMA2;
 
         return .{
             .global_index = index,
-            .per_id = dma_index,
+            .per_id = controller,
             .stream_id = local,
             .is_high = is_high,
             .hisr_id = hisr_id,
@@ -694,22 +685,23 @@ pub fn wait_for_finish_blocking(chan: Channel) void {
 }
 
 /// Get interrupt enum for this channel (for enabling NVIC)
-pub fn get_interrupt(chan: Channel) microzig.interrupt.Interrupt {
-    return switch (@intFromEnum(chan)) {
-        0 => microzig.interrupt.DMA1_Stream0,
-        1 => microzig.interrupt.DMA1_Stream1,
-        2 => microzig.interrupt.DMA1_Stream2,
-        3 => microzig.interrupt.DMA1_Stream3,
-        4 => microzig.interrupt.DMA1_Stream4,
-        5 => microzig.interrupt.DMA1_Stream5,
-        6 => microzig.interrupt.DMA1_Stream6,
-        7 => microzig.interrupt.DMA2_Stream0,
-        8 => microzig.interrupt.DMA2_Stream1,
-        9 => microzig.interrupt.DMA2_Stream2,
-        10 => microzig.interrupt.DMA2_Stream3,
-        11 => microzig.interrupt.DMA2_Stream4,
-        12 => microzig.interrupt.DMA2_Stream5,
-        13 => microzig.interrupt.DMA2_Stream6,
-        else => unreachable,
+/// NVIC line for a DMA channel (e.g. channel 7 -> DMA1_Stream7, 8 -> DMA2_Stream0).
+pub fn get_interrupt(chan: Channel) microzig.cpu.ExternalInterrupt {
+    const table = comptime blk: {
+        @setEvalBranchQuota(100_000);
+        var t: [num_channels]microzig.cpu.ExternalInterrupt = undefined;
+        for (0..num_channels) |i| {
+            const l = dma_index.locate(i);
+            t[i] = @field(microzig.cpu.ExternalInterrupt, std.fmt.comptimePrint("DMA{d}_Stream{d}", .{ @as(u32, l.controller) + 1, l.stream }));
+        }
+        break :blk t;
     };
+    return table[@intFromEnum(chan)];
+}
+
+comptime {
+    // Pins the mapping and forces analysis even while nothing calls it.
+    std.debug.assert(get_interrupt(@enumFromInt(7)) == .DMA1_Stream7);
+    std.debug.assert(get_interrupt(@enumFromInt(8)) == .DMA2_Stream0);
+    std.debug.assert(get_interrupt(@enumFromInt(15)) == .DMA2_Stream7);
 }

@@ -1,12 +1,52 @@
 const std = @import("std");
 const microzig = @import("microzig");
-const STM32H750x = @import("stm32h7/STM32H750x.zig");
 
 const MicroBuild = microzig.MicroBuild(.{
     .stm32 = true,
 });
 
-fn addTinyUsb(b: *std.Build, root: *std.Build.Module) void {
+// ============================================================================
+// Build commands:
+//   zig build                         -> every example (install)
+//   zig build <example>               -> one example, e.g. `zig build synth -Doptimize=safe`
+//   zig build test                    -> host unit tests (std-only modules)
+//   -Dmemory=flash|sram               -> internal flash (default) or SRAM (Daisy bootloader)
+// Artifacts: zig-out/firmware/<example>.{elf,bin}
+// ============================================================================
+
+pub const Memory = enum { flash, sram };
+
+pub const FirmwareOptions = struct {
+    name: []const u8,
+    root_source_file: std.Build.LazyPath,
+    memory: Memory = .flash,
+    optimize: std.builtin.OptimizeMode,
+    /// Optimize mode for the zmetal library + microzig/HAL. Default: .safe when
+    /// the app is .debug (an all-Debug image does not fit 128 KB flash), else
+    /// the app's mode.
+    lib_optimize: ?std.builtin.OptimizeMode = null,
+    /// Link TinyUSB (CDC + MIDI + UAC2) and install the OTG IRQ handlers.
+    usb: bool = false,
+    /// Link FatFs (zfat) and expose `zmetal.fat`.
+    fat: bool = false,
+    /// Extra options exposed to the app as `@import("build_config")`.
+    build_config: ?*std.Build.Step.Options = null,
+};
+
+/// Firmware-independent inputs to addFirmware, created once in `build`.
+pub const Context = struct {
+    mb: *MicroBuild,
+    clockhelper: *std.Build.Module,
+    zfat: *std.Build.Module,
+};
+
+pub const Firmware = struct {
+    fw: *MicroBuild.Firmware,
+    /// Installs .elf + .bin and prints the memory report.
+    step: *std.Build.Step,
+};
+
+fn addTinyUsb(b: *std.Build, mod: *std.Build.Module) void {
     const tu = "lib/tinyusb/src/";
     const sources = [_][]const u8{
         tu ++ "tusb.c",
@@ -21,30 +61,20 @@ fn addTinyUsb(b: *std.Build, root: *std.Build.Module) void {
         "lib/tinyusb_shim/usb_audio_glue.c",
     };
     for (sources) |src| {
-        root.addCSourceFile(.{ .file = b.path(src), .flags = &.{
+        mod.addCSourceFile(.{ .file = b.path(src), .flags = &.{
             "-std=c11",
             "-DCFG_TUSB_MCU=OPT_MCU_STM32H7",
         } });
     }
-    root.addIncludePath(b.path("lib/tinyusb/src"));
-    root.addIncludePath(b.path("lib/tinyusb_shim"));
+    mod.addIncludePath(b.path("lib/tinyusb/src"));
+    mod.addIncludePath(b.path("lib/tinyusb_shim"));
     // TinyUSB does intentional type-punning / unaligned packed-struct access that
     // Zig's C UBSan flags; with `.trap` those become `udf` -> UsageFault(UNDEFINSTR)
     // on real hardware (e.g. in usbd.c during enumeration). `.off` disables the
     // checks entirely (no UBSan runtime either, so no size cost) — TinyUSB is a
     // mature, widely-deployed stack, so we trust it here.
-    root.sanitize_c = .off;
+    mod.sanitize_c = .off;
 }
-
-const TargetConfig = struct {
-    name: []const u8,
-    linker_script: []const u8,
-    step_name: []const u8,
-    step_description: []const u8,
-    /// Root/entry source file. Defaults to the application; test firmwares
-    /// (e.g. test/usb_loopback.zig) override this with their own root.
-    root_source: []const u8 = "src/main.zig",
-};
 
 /// Recursively set the optimize mode on a module and every module it imports,
 /// using `visited` to break the import cycles in the microzig graph (core<->cpu,
@@ -63,127 +93,114 @@ fn setTreeOptimize(
     }
 }
 
-const common_memory_regions = [_]microzig.MemoryRegion{
-    .{ .name = "ITCMRAM", .tag = .ram, .offset = 0x00000000, .length = 0x10000, .access = .rwx },
-    .{ .name = "FLASH", .tag = .flash, .offset = 0x08000000, .length = 0x20000, .access = .rx },
-    .{ .name = "DTCMRAM", .tag = .ram, .offset = 0x20000000, .length = 0x20000, .access = .rwx },
-    .{ .name = "SRAM", .tag = .ram, .offset = 0x24000000, .length = 0x80000, .access = .rwx },
-    .{ .name = "RAM_D2", .tag = .ram, .offset = 0x30000000, .length = 0x48000, .access = .rwx },
-    .{ .name = "RAM_D3", .tag = .ram, .offset = 0x38000000, .length = 0x10000, .access = .rwx },
-    .{ .name = "BACKUP_SRAM", .tag = .ram, .offset = 0x38800000, .length = 0x1000, .access = .rwx },
-    .{ .name = "SDRAM", .tag = .ram, .offset = 0xc0000000, .length = 0x4000000, .access = .rwx },
-    .{ .name = "QSPIFLASH", .tag = .flash, .offset = 0x90040000, .length = 0x7C0000, .access = .rx },
-};
+/// Build one firmware image against the zmetal library. The app root imports
+/// `zmetal` (and the std-only `zmetal_dsp`); microzig, the HAL and the facade
+/// are per-firmware because microzig reads `microzig_options` from the root.
+pub fn addFirmware(b: *std.Build, ctx: Context, opts: FirmwareOptions) Firmware {
+    const lib_optimize = opts.lib_optimize orelse if (opts.optimize == .debug) .safe else opts.optimize;
+    const linker_script = switch (opts.memory) {
+        .flash => "src/ld/flash.ld",
+        .sram => "src/ld/sram.ld",
+    };
 
-fn buildTargetVariant(
-    b: *std.Build,
-    mb: *MicroBuild,
-    clockhelper_dep: *std.Build.Module,
-    zfat_mod: *std.Build.Module,
-    config: TargetConfig,
-    optimize: std.builtin.OptimizeMode,
-    build_opts: *std.Build.Step.Options,
-) *std.Build.Step {
+    // Seen by the HAL (default_interrupts) and the facade (zmetal.fat).
+    const zmetal_opts = b.addOptions();
+    zmetal_opts.addOption(bool, "usb", opts.usb);
+    zmetal_opts.addOption(bool, "fat", opts.fat);
+    const zmetal_opts_mod = zmetal_opts.createModule();
+
     const stm32_common_mod = b.createModule(.{
         .root_source_file = b.path("lib/microzig/port/stmicro/stm32/src/hals/common.zig"),
     });
+    const hal_imports = b.allocator.dupe(std.Build.Module.Import, &.{
+        .{ .name = "stm32_common", .module = stm32_common_mod },
+        .{ .name = "ClockTree", .module = ctx.clockhelper },
+        .{ .name = "zmetal_options", .module = zmetal_opts_mod },
+    }) catch @panic("OOM");
 
-    const hal_imports = b.allocator.alloc(std.Build.Module.Import, 2) catch @panic("out of memory");
-    hal_imports[0] = .{ .name = "stm32_common", .module = stm32_common_mod };
-    hal_imports[1] = .{ .name = "ClockTree", .module = clockhelper_dep };
-
-    // Use microzig's built-in STM32H750IB chip (register definitions) but keep
-    // our own HAL, custom SRAM/flash linker script, and _estack-based stack.
-    const firmware = mb.add_firmware(.{
-        .name = config.name,
-        .target = mb.ports.stm32.chips.STM32H750IB.derive(.{
-            .hal = .{
-                .root_source_file = b.path("src/hal/STM32H750/hal.zig"),
-                .imports = hal_imports,
-            },
-            .linker_script = .{ .generate = .none, .file = b.path(config.linker_script) },
+    // microzig's built-in STM32H750IB chip (register definitions) with our own
+    // HAL, our self-contained linker scripts and the _estack-based stack.
+    const fw = ctx.mb.add_firmware(.{
+        .name = opts.name,
+        .target = ctx.mb.ports.stm32.chips.STM32H750IB.derive(.{
+            .hal = .{ .root_source_file = b.path("src/hal/STM32H750/hal.zig"), .imports = hal_imports },
+            .linker_script = .{ .generate = .none, .file = b.path(linker_script) },
             .stack = .{ .symbol_name = "_estack" },
         }),
-        // .target = target,
-        .optimize = optimize, // was hardcoded .Debug; honor -Doptimize (test ReleaseFast for D-cache)
-        .root_source_file = b.path(config.root_source),
+        .optimize = opts.optimize,
+        .root_source_file = opts.root_source_file,
     });
+    stm32_common_mod.addImport("microzig", fw.core_mod);
 
-    // In Debug, keep the application (root module: main.zig + dsp/hid/drivers)
-    // debuggable but build the microzig framework + HAL optimized, otherwise the
-    // unoptimized firmware does not fit the 128 KB internal flash. Reachable from
-    // firmware.core_mod (cpu/chip/hal/drivers); the root module is NOT in that
-    // graph (root imports core, not vice versa), so it stays Debug.
-    if (optimize == .debug) {
+    // microzig framework + HAL (reachable from core_mod; the app root is not).
+    if (lib_optimize != opts.optimize) {
         var visited = std.AutoHashMap(*std.Build.Module, void).init(b.allocator);
-        setTreeOptimize(firmware.core_mod, .safe, &visited);
+        setTreeOptimize(fw.core_mod, lib_optimize, &visited);
     }
 
-    // FatFs bindings (zfat) for the SD card. Imported into the application root
-    // module; the module carries the vendored FatFs C compilation.
-    firmware.exe.root_module.addImport("zfat", zfat_mod);
+    const root = fw.exe.root_module;
+    const mz = root.import_table.get("microzig").?;
 
-    // TinyUSB device stack (CDC + MIDI) for the on-board USB port; compiled into
-    // the application root module (main.zig -> hal.usb / hid.midi_io use it).
-    addTinyUsb(b, firmware.exe.root_module);
-
-    // Compile-time build config exposed to the app as `@import("build_config")`
-    // (e.g. -Dusb-audio routes USB Audio to the SAI callback instead of the synth).
-    firmware.exe.root_module.addOptions("build_config", build_opts);
-
-    // Display driver (ui.zig + ili9341 + font tables) as its own module, built
-    // optimized even in Debug app builds. Its pixel loops and font tables are
-    // large when unoptimized; keeping them ReleaseSafe lets the Debug app + the
-    // display + FatFs file I/O all fit the 128 KB internal flash. It only depends
-    // on std + microzig, so it shares the app's microzig instance for ABI parity.
-    const display_optimize: std.builtin.OptimizeMode = if (optimize == .debug) .safe else optimize;
-    const ui_mod = b.createModule(.{
-        .root_source_file = b.path("src/ui.zig"),
-        .target = firmware.exe.root_module.resolved_target,
-        .optimize = display_optimize,
+    const dsp_mod = b.createModule(.{
+        .root_source_file = b.path("src/dsp/root.zig"),
+        .target = root.resolved_target,
+        .optimize = lib_optimize,
     });
-    ui_mod.addImport("microzig", firmware.exe.root_module.import_table.get("microzig").?);
-    firmware.exe.root_module.addImport("ui", ui_mod);
-
-    const install = mb.add_install_firmware(firmware, .{ .format = .elf });
-    const install_bin = mb.add_install_firmware(firmware, .{ .format = .binary });
-
-    stm32_common_mod.addImport("microzig", firmware.core_mod);
-
-    const report = b.addSystemCommand(&.{
-        "python3",
-        "build_tools/memory_report.py",
+    const zmetal_mod = b.createModule(.{
+        .root_source_file = b.path("src/zmetal.zig"),
+        .target = root.resolved_target,
+        .optimize = lib_optimize,
+        .imports = &.{
+            .{ .name = "microzig", .module = mz },
+            .{ .name = "zmetal_options", .module = zmetal_opts_mod },
+            .{ .name = "zmetal_dsp", .module = dsp_mod },
+        },
     });
-    report.addFileArg(firmware.get_emitted_elf());
-    // report.addFileArg(firmware.get_emitted_bin(.binary));
-    report.addArg(config.name);
-    report.addArg(config.linker_script);
+    if (opts.fat) zmetal_mod.addImport("zfat", ctx.zfat);
+    // TinyUSB's C belongs to the library, so it builds at lib_optimize.
+    if (opts.usb) addTinyUsb(b, zmetal_mod);
+
+    root.addImport("zmetal", zmetal_mod);
+    root.addImport("zmetal_dsp", dsp_mod);
+    if (opts.build_config) |bc| root.addOptions("build_config", bc);
+
+    const install = ctx.mb.add_install_firmware(fw, .{ .format = .elf });
+    const install_bin = ctx.mb.add_install_firmware(fw, .{ .format = .binary });
+    const report = b.addSystemCommand(&.{ "python3", "build_tools/memory_report.py" });
+    report.addFileArg(fw.get_emitted_elf());
+    report.addArg(opts.name);
+    report.addFileArg(b.path(linker_script));
     report.step.dependOn(&install.step);
     report.step.dependOn(&install_bin.step);
 
-    const build_step = b.step(config.step_name, config.step_description);
-    build_step.dependOn(&report.step);
-
-    return &report.step;
+    return .{ .fw = fw, .step = &report.step };
 }
 
-pub fn build(b: *std.Build) void {
-    // ========================================================================
-    // Build Commands:
-    //   zig build       -> SRAM mode (bootloader) [DEFAULT]
-    //   zig build sram  -> SRAM mode (bootloader) [explicit]
-    //   zig build flash -> Flash mode (direct, no bootloader)
-    //   zig build hwtest -Dtest=<name> -> one HW test from src/test/<name>.zig
-    // ========================================================================
+const Example = struct {
+    name: []const u8,
+    root: []const u8,
+    usb: bool = false,
+    fat: bool = false,
+    /// synth only: `build_config.usb_audio` (route USB Audio to the codec).
+    usb_audio: ?bool = null,
+    /// False when the Debug image overflows the 128 KB internal flash: a
+    /// Debug + -Dmemory=flash build then promotes this example to .safe
+    /// (Debug still works with -Dmemory=sram, 480 KB).
+    debug_fits_flash: bool = true,
+};
 
+const examples = [_]Example{
+    .{ .name = "synth", .root = "examples/synth/main.zig", .usb = true, .fat = true, .usb_audio = false, .debug_fits_flash = false },
+    .{ .name = "synth_usb_audio", .root = "examples/synth/main.zig", .usb = true, .fat = true, .usb_audio = true, .debug_fits_flash = false },
+    .{ .name = "usb_loopback", .root = "examples/usb_loopback/main.zig", .usb = true },
+    .{ .name = "i2c", .root = "examples/i2c/main.zig" },
+};
+
+pub fn build(b: *std.Build) void {
     const mz_dep = b.dependency("microzig", .{});
     const mb = MicroBuild.init(b, mz_dep) orelse return;
-    const clockhelper_dep = b.dependency("ClockHelper", .{}).module("clockhelper");
     const optimize = b.standardOptimizeOption(.{});
-
-    const usb_audio = b.option(bool, "usb-audio", "Route USB Audio (UAC2) to the SAI codec instead of the synth") orelse false;
-    const build_opts = b.addOptions();
-    build_opts.addOption(bool, "usb_audio", usb_audio);
+    const memory = b.option(Memory, "memory", "flash (default) or sram (Daisy bootloader)") orelse .flash;
 
     // FatFs bindings; the module compiles the vendored FatFs C for the firmware
     // target when imported. Config is spelled out rather than left to defaults:
@@ -210,35 +227,59 @@ pub fn build(b: *std.Build) void {
     zfat_mod.addIncludePath(b.path("lib/zfat_shim"));
     zfat_mod.addCSourceFile(.{ .file = b.path("lib/zfat_shim/shim.c"), .flags = &.{"-std=c11"} });
 
-    const flash_report = buildTargetVariant(b, mb, clockhelper_dep, zfat_mod, .{
-        .name = "blinky-flash",
-        .linker_script = "src/ld/flash.ld",
-        .step_name = "flash",
-        .step_description = "Build firmware for internal flash (direct mode)",
-    }, optimize, build_opts);
+    const ctx: Context = .{
+        .mb = mb,
+        .clockhelper = b.dependency("ClockHelper", .{}).module("clockhelper"),
+        .zfat = zfat_mod,
+    };
 
-    const sram_report = buildTargetVariant(b, mb, clockhelper_dep, zfat_mod, .{
-        .name = "blinky-sram",
-        .linker_script = "src/ld/sram.ld",
-        .step_name = "sram",
-        .step_description = "Build firmware for SRAM (bootloader mode)",
-    }, optimize, build_opts);
+    for (examples) |ex| {
+        const bc: ?*std.Build.Step.Options = if (ex.usb_audio) |ua| blk: {
+            const o = b.addOptions();
+            o.addOption(bool, "usb_audio", ua);
+            break :blk o;
+        } else null;
+        const fw = addFirmware(b, ctx, .{
+            .name = ex.name,
+            .root_source_file = b.path(ex.root),
+            .memory = memory,
+            .optimize = if (optimize == .debug and memory == .flash and !ex.debug_fits_flash) .safe else optimize,
+            .usb = ex.usb,
+            .fat = ex.fat,
+            .build_config = bc,
+        });
+        b.step(ex.name, b.fmt("Build the {s} example", .{ex.name})).dependOn(fw.step);
+        b.getInstallStep().dependOn(fw.step);
+    }
 
-    _ = sram_report;
-
-    // On-hardware test firmwares live in `src/test/<name>.zig`, each its own
-    // entry point. `zig build hwtest -Dtest=<name>` builds exactly one, forced
-    // ReleaseSafe so it fits the 128 KB internal flash. Artifact:
-    // `zig-out/firmware/<name>.elf`. Defaults to usb_loopback.
-    const hwtest_name = b.option([]const u8, "test", "HW test to build from src/test/<name>.zig (e.g. -Dtest=usb_loopback)") orelse "usb_loopback";
-    _ = buildTargetVariant(b, mb, clockhelper_dep, zfat_mod, .{
-        .name = hwtest_name,
-        .linker_script = "src/ld/flash.ld",
-        .step_name = "hwtest",
-        .step_description = "Build one HW test firmware: zig build hwtest -Dtest=<name>",
-        .root_source = b.fmt("src/test/{s}.zig", .{hwtest_name}),
-    }, .safe, build_opts);
-
-    b.getInstallStep().dependOn(flash_report);
-    // b.getInstallStep().dependOn(sram_report);
+    // Host unit tests: std-only library modules (no microzig), plus the synth
+    // example's Program, which only needs the std-only DSP module.
+    const host = b.graph.host;
+    const test_step = b.step("test", "Run host unit tests (std-only modules)");
+    const host_dsp = b.createModule(.{ .root_source_file = b.path("src/dsp/root.zig"), .target = host });
+    const test_roots = [_][]const u8{
+        "src/hid/midi.zig",
+        "src/hid/midi_port.zig",
+        "src/hid/encoder.zig",
+        "src/hal/STM32H750/usb/pcm.zig",
+        "src/hal/STM32H750/usb/resampler.zig",
+        "src/hal/STM32H750/dma_index.zig",
+        "src/hal/STM32H750/sai_math.zig",
+        "src/hal/STM32H750/i2c_seg.zig",
+        "src/hal/STM32H750/tick_math.zig",
+        "src/hal/STM32H750/pin_name.zig",
+        "src/hal/STM32H750/usb/descriptors.zig",
+        "src/hal/STM32H750/cpu_load.zig",
+    };
+    for (test_roots) |path| {
+        const t = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(path), .target = host }) });
+        test_step.dependOn(&b.addRunArtifact(t).step);
+    }
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = host_dsp })).step);
+    const program_mod = b.createModule(.{
+        .root_source_file = b.path("examples/synth/program.zig"),
+        .target = host,
+        .imports = &.{.{ .name = "zmetal_dsp", .module = host_dsp }},
+    });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = program_mod })).step);
 }

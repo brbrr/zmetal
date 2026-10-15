@@ -57,45 +57,6 @@ const stm32_common = @import("stm32_common");
 pub const RccPeriferals = stm32_common.enums.Peripherals;
 const util = stm32_common.util;
 
-pub const ResetReason = enum {
-    low_power,
-    window_watchdog,
-    independent_watchdog,
-    POR_or_PDR,
-    NRST,
-};
-
-pub const ClockOutputs = struct {
-    //system clock
-    SYS: u32 = 0,
-
-    //Bus Clocks
-    AHB: u32 = 0,
-    APB1: u32 = 0,
-    APB2: u32 = 0,
-    APB3: u32 = 0,
-    APB4: u32 = 0,
-
-    //Peripheral clocks
-    FSMC: u32 = 0,
-    SDIO: u32 = 0,
-    TimAPB1: u32 = 0,
-    TimAPB2: u32 = 0,
-    ADC: u32 = 0,
-    // USB: u32 = 0,
-
-    USART234578: u32 = 0,
-    USART16: u32 = 0,
-
-    SAI1: u32 = 0,
-};
-
-pub const Bus = enum {
-    // AHB, //AHB cannot be reset by software
-    APB1,
-    APB2,
-};
-
 pub const RccFlag = enum(u8) {
     HSIRDY = 0x22,
     HSIDIV = 0x25,
@@ -142,7 +103,7 @@ pub fn get_flag(flag: RccFlag) u1 {
 pub fn wait_for_flag(flag: RccFlag, expected: u1, max_wait: u32) !void {
     const tick_start = clock.get_tick();
     while (get_flag(flag) != expected) {
-        if (clock.get_tick() - tick_start > max_wait) return error.HSETimeout;
+        if (clock.elapsed_ms(tick_start) > max_wait) return error.HSETimeout;
     }
     // var ticks: usize = clock.get_tick();
     // while (get_flag(flag) != expected) {
@@ -308,7 +269,7 @@ pub fn config_clocks(comptime tree_out: ClockTree.Tree_Output, flash_latency: u3
         const tick_start = clock.get_tick();
         // #define __HAL_RCC_GET_SYSCLK_SOURCE() ((uint32_t)(RCC->CFGR & RCC_CFGR_SWS))
         while (rcc.CFGR.read().SWS != sw_src) {
-            if (clock.get_tick() - tick_start > ClockSwitchTimeout) {
+            if (clock.elapsed_ms(tick_start) > ClockSwitchTimeout) {
                 return error.SysClkTimeout;
             }
         }
@@ -514,48 +475,6 @@ fn pll3_config(comptime tree_out: ClockTree.Tree_Output, comptime divider: DivUp
     try wait_for_flag(.PLL3RDY, 1, PLLTimeout);
 }
 
-//force HSI Clock and clear any clock configs
-fn secure_enable() void {
-    rcc.CR.modify(.{ .HSION = 1 });
-    while (rcc.CR.read().HSIRDY != 1) {
-        asm volatile ("" ::: .{ .memory = true });
-    }
-
-    rcc.BDCR.raw = 0;
-    rcc.CFGR.raw = 0;
-    while (rcc.CFGR.read().SWS != .HSI) {
-        asm volatile ("" ::: .{ .memory = true });
-    }
-
-    rcc.CR.modify(.{
-        .PLL1ON = 0,
-        .PLL2ON = 0,
-        .PLL3ON = 0,
-
-        .HSEBYP = 0,
-        .HSEON = 0,
-        .HSECSSON = 0,
-    });
-}
-
-fn config_HSI(value: usize) void {
-    //secure_enable has already started the HSE
-    const trim: u5 = @truncate(value);
-    rcc.CR.modify(.{ .HSITRIM = trim });
-
-    //wait for the HSI to stabilize
-    for (0..16) |_| {
-        asm volatile ("" ::: .{ .memory = true });
-    }
-}
-
-fn config_LSI() void {
-    rcc.CSR.modify(.{ .LSION = 1 });
-    while (rcc.CSR.read().LSIRDY == 0) {
-        asm volatile ("" ::: .{ .memory = true });
-    }
-}
-
 fn config_HSE(comptime config: ClockTree.Config_Output) ClockInitError!void {
     rcc.CR.modify(.{ .HSEON = 1 });
 
@@ -568,63 +487,6 @@ fn config_HSI48(comptime config: ClockTree.Config_Output) ClockInitError!void {
 
     // config.HSE_Timout is now ?f32
     try wait_for_flag(.HSI48RDY, 1, @intFromFloat(config.HSE_Timout.?));
-}
-
-fn config_LSE(comptime config: ClockTree.Config_Output) ClockInitError!void {
-    // config.LSE_Timeout is now ?f32
-    const max_wait: u32 = if (config.LSE_Timeout) |val| @intFromFloat(val) else std.math.maxInt(u32);
-    var ticks: usize = 0;
-    rcc.BDCR.modify(.{ .LSEON = 1 });
-    while (rcc.BDCR.read().LSERDY == 0) {
-        if (ticks == max_wait - 1) return error.LSETimeout;
-        ticks += 1;
-        asm volatile ("" ::: .{ .memory = true });
-    }
-}
-
-pub const PLL3Clocks = struct {
-    p: u32,
-    q: u32,
-    r: u32,
-};
-
-pub fn getPLL3Clocks() PLL3Clocks {
-    const pllsource = @intFromEnum(rcc.PLLCKSELR.read().PLLSRC);
-    const pll3m_raw: f32 = @floatFromInt(@intFromEnum(rcc.PLLCKSELR.read().@"DIVM[2]"));
-    const pll3m: f32 = if (pll3m_raw != 0) pll3m_raw else 1.0; // avoid div0
-
-    const pll3fracen = rcc.PLLCFGR.read().@"PLLFRACEN[2]";
-    const fracn3_raw = (rcc.@"PLLFRACR[2]".read().FRACN) >> 3;
-    const fracn3: f32 = if (pll3fracen == 1) @floatFromInt(fracn3_raw) else 0.0;
-
-    // Base clock source
-    const hse: f32 = 16_000_000.0;
-    const hsi: f32 = 64_000_000.0;
-    const csi: f32 = 4_000_000.0;
-
-    var pll_input: f32 = 0.0;
-    switch (pllsource) {
-        0 => pll_input = hsi, // HSI
-        1 => pll_input = csi, // CSI
-        2 => pll_input = hse, // HSE
-        else => pll_input = csi,
-    }
-
-    const n: f32 = @floatFromInt(@intFromEnum(rcc.@"PLLDIVR[2]".read().PLLN));
-    const nfloat: f32 = n + 1.0 + fracn3 / 8192.0;
-
-    const pll3vco: f32 = (pll_input / pll3m) * nfloat;
-
-    // divisors
-    const pdiv: f32 = @floatFromInt(@intFromEnum(rcc.@"PLLDIVR[2]".read().PLLP) + 1);
-    const qdiv: f32 = @floatFromInt(@intFromEnum(rcc.@"PLLDIVR[2]".read().PLLQ) + 1);
-    const rdiv: f32 = @floatFromInt(@intFromEnum(rcc.@"PLLDIVR[2]".read().PLLR) + 1);
-
-    return PLL3Clocks{
-        .p = @intFromFloat(pll3vco / pdiv),
-        .q = @intFromFloat(pll3vco / qdiv),
-        .r = @intFromFloat(pll3vco / rdiv),
-    };
 }
 
 fn config_peripherals(comptime tree_out: ClockTree.Tree_Output) !void {
@@ -793,38 +655,6 @@ fn config_peripherals(comptime tree_out: ClockTree.Tree_Output) !void {
     //}
 }
 
-fn init_pll() void {
-    rcc.CR.modify(.{ .PLLON = 1 });
-    while (rcc.CR.read().PLLRDY == 0) {
-        asm volatile ("" ::: .{ .memory = true });
-    }
-}
-
-fn config_MCO(comptime config: ClockTree.Config) void {
-    if (config.MCO1Mult) |src| {
-        const mco: MCO1SEL = switch (src) {
-            .RCC_MCO1SOURCE_HSI => .HSI,
-            .RCC_MCO1SOURCE_LSE => .LSE,
-            .RCC_MCO1SOURCE_HSE => .HSE,
-            .RCC_MCO1SOURCE_PLL1QCLK => .PLL1_Q,
-            .RCC_MCO1SOURCE_HSI48 => .HSQI48,
-        };
-        rcc.CFGR.modify(.{ .MCO1SEL = mco });
-    }
-
-    if (config.MCO2Mult) |src| {
-        const mco: MCO2SEL = switch (src) {
-            .RCC_MCO2SOURCE_SYSCLK => .SYS,
-            .RCC_MCO2SOURCE_PLL2PCLK => .PLL2_P,
-            .RCC_MCO2SOURCE_HSE => .HSE,
-            .RCC_MCO2SOURCE_PLLCLK => .PLL1_P,
-            .RCC_MCO2SOURCE_CSICLK => .CSI,
-            .RCC_MCO2SOURCE_LSICLK => .LSI,
-        };
-        rcc.CFGR.modify(.{ .MCO1SEL = mco });
-    }
-}
-
 pub fn set_clock(peri: RccPeriferals, state: u1) void {
     switch (peri) {
         .DMA1 => rcc.AHB1ENR.modify(.{ .DMA1EN = state }),
@@ -963,9 +793,6 @@ pub fn get_clock(comptime source: RccPeriferals) u32 {
     @panic("Unknown clock for peripheral");
 }
 
-pub inline fn get_sys_clk() u32 {
-    return clock_outputs.SYS;
-}
 
 /// Verifies that all enabled peripheral clocks have non-zero output values
 ///

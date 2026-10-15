@@ -125,68 +125,67 @@ pub fn init() void {
 fn configurePins() void {
     gpio.configureAlternates(&.{
         // Address A0-A12
-        .{ .port = "F", .num = "0", .af = .af12 }, // A0
-        .{ .port = "F", .num = "1", .af = .af12 }, // A1
-        .{ .port = "F", .num = "2", .af = .af12 }, // A2
-        .{ .port = "F", .num = "3", .af = .af12 }, // A3
-        .{ .port = "F", .num = "4", .af = .af12 }, // A4
-        .{ .port = "F", .num = "5", .af = .af12 }, // A5
-        .{ .port = "F", .num = "12", .af = .af12 }, // A6
-        .{ .port = "F", .num = "13", .af = .af12 }, // A7
-        .{ .port = "F", .num = "14", .af = .af12 }, // A8
-        .{ .port = "F", .num = "15", .af = .af12 }, // A9
-        .{ .port = "G", .num = "0", .af = .af12 }, // A10
-        .{ .port = "G", .num = "1", .af = .af12 }, // A11
-        .{ .port = "G", .num = "2", .af = .af12 }, // A12
+        .{ .pin = .{ .port = .F, .num = 0 }, .af = .af12 }, // A0
+        .{ .pin = .{ .port = .F, .num = 1 }, .af = .af12 }, // A1
+        .{ .pin = .{ .port = .F, .num = 2 }, .af = .af12 }, // A2
+        .{ .pin = .{ .port = .F, .num = 3 }, .af = .af12 }, // A3
+        .{ .pin = .{ .port = .F, .num = 4 }, .af = .af12 }, // A4
+        .{ .pin = .{ .port = .F, .num = 5 }, .af = .af12 }, // A5
+        .{ .pin = .{ .port = .F, .num = 12 }, .af = .af12 }, // A6
+        .{ .pin = .{ .port = .F, .num = 13 }, .af = .af12 }, // A7
+        .{ .pin = .{ .port = .F, .num = 14 }, .af = .af12 }, // A8
+        .{ .pin = .{ .port = .F, .num = 15 }, .af = .af12 }, // A9
+        .{ .pin = .{ .port = .G, .num = 0 }, .af = .af12 }, // A10
+        .{ .pin = .{ .port = .G, .num = 1 }, .af = .af12 }, // A11
+        .{ .pin = .{ .port = .G, .num = 2 }, .af = .af12 }, // A12
         // Data D0-D31
-        .{ .port = "D", .num = "14", .af = .af12 }, // D0
-        .{ .port = "D", .num = "15", .af = .af12 }, // D1
-        .{ .port = "D", .num = "0", .af = .af12 }, // D2
-        .{ .port = "D", .num = "1", .af = .af12 }, // D3
-        .{ .port = "E", .num = "7", .af = .af12 }, // D4
-        .{ .port = "E", .num = "8", .af = .af12 }, // D5
-        .{ .port = "E", .num = "9", .af = .af12 }, // D6
-        .{ .port = "E", .num = "10", .af = .af12 }, // D7
-        .{ .port = "E", .num = "11", .af = .af12 }, // D8
-        .{ .port = "E", .num = "12", .af = .af12 }, // D9
-        .{ .port = "E", .num = "13", .af = .af12 }, // D10
-        .{ .port = "E", .num = "14", .af = .af12 }, // D11
-        .{ .port = "E", .num = "15", .af = .af12 }, // D12
-        .{ .port = "D", .num = "8", .af = .af12 }, // D13
-        .{ .port = "D", .num = "9", .af = .af12 }, // D14
-        .{ .port = "D", .num = "10", .af = .af12 }, // D15
-        .{ .port = "H", .num = "8", .af = .af12 }, // D16
-        .{ .port = "H", .num = "9", .af = .af12 }, // D17
-        .{ .port = "H", .num = "10", .af = .af12 }, // D18
-        .{ .port = "H", .num = "11", .af = .af12 }, // D19
-        .{ .port = "H", .num = "12", .af = .af12 }, // D20
-        .{ .port = "H", .num = "13", .af = .af12 }, // D21
-        .{ .port = "H", .num = "14", .af = .af12 }, // D22
-        .{ .port = "H", .num = "15", .af = .af12 }, // D23
-        .{ .port = "I", .num = "0", .af = .af12 }, // D24
-        .{ .port = "I", .num = "1", .af = .af12 }, // D25
-        .{ .port = "I", .num = "2", .af = .af12 }, // D26
-        .{ .port = "I", .num = "3", .af = .af12 }, // D27
-        .{ .port = "I", .num = "6", .af = .af12 }, // D28
-        .{ .port = "I", .num = "7", .af = .af12 }, // D29
-        .{ .port = "I", .num = "9", .af = .af12 }, // D30
-        .{ .port = "I", .num = "10", .af = .af12 }, // D31
+        .{ .pin = .{ .port = .D, .num = 14 }, .af = .af12 }, // D0
+        .{ .pin = .{ .port = .D, .num = 15 }, .af = .af12 }, // D1
+        .{ .pin = .{ .port = .D, .num = 0 }, .af = .af12 }, // D2
+        .{ .pin = .{ .port = .D, .num = 1 }, .af = .af12 }, // D3
+        .{ .pin = .{ .port = .E, .num = 7 }, .af = .af12 }, // D4
+        .{ .pin = .{ .port = .E, .num = 8 }, .af = .af12 }, // D5
+        .{ .pin = .{ .port = .E, .num = 9 }, .af = .af12 }, // D6
+        .{ .pin = .{ .port = .E, .num = 10 }, .af = .af12 }, // D7
+        .{ .pin = .{ .port = .E, .num = 11 }, .af = .af12 }, // D8
+        .{ .pin = .{ .port = .E, .num = 12 }, .af = .af12 }, // D9
+        .{ .pin = .{ .port = .E, .num = 13 }, .af = .af12 }, // D10
+        .{ .pin = .{ .port = .E, .num = 14 }, .af = .af12 }, // D11
+        .{ .pin = .{ .port = .E, .num = 15 }, .af = .af12 }, // D12
+        .{ .pin = .{ .port = .D, .num = 8 }, .af = .af12 }, // D13
+        .{ .pin = .{ .port = .D, .num = 9 }, .af = .af12 }, // D14
+        .{ .pin = .{ .port = .D, .num = 10 }, .af = .af12 }, // D15
+        .{ .pin = .{ .port = .H, .num = 8 }, .af = .af12 }, // D16
+        .{ .pin = .{ .port = .H, .num = 9 }, .af = .af12 }, // D17
+        .{ .pin = .{ .port = .H, .num = 10 }, .af = .af12 }, // D18
+        .{ .pin = .{ .port = .H, .num = 11 }, .af = .af12 }, // D19
+        .{ .pin = .{ .port = .H, .num = 12 }, .af = .af12 }, // D20
+        .{ .pin = .{ .port = .H, .num = 13 }, .af = .af12 }, // D21
+        .{ .pin = .{ .port = .H, .num = 14 }, .af = .af12 }, // D22
+        .{ .pin = .{ .port = .H, .num = 15 }, .af = .af12 }, // D23
+        .{ .pin = .{ .port = .I, .num = 0 }, .af = .af12 }, // D24
+        .{ .pin = .{ .port = .I, .num = 1 }, .af = .af12 }, // D25
+        .{ .pin = .{ .port = .I, .num = 2 }, .af = .af12 }, // D26
+        .{ .pin = .{ .port = .I, .num = 3 }, .af = .af12 }, // D27
+        .{ .pin = .{ .port = .I, .num = 6 }, .af = .af12 }, // D28
+        .{ .pin = .{ .port = .I, .num = 7 }, .af = .af12 }, // D29
+        .{ .pin = .{ .port = .I, .num = 9 }, .af = .af12 }, // D30
+        .{ .pin = .{ .port = .I, .num = 10 }, .af = .af12 }, // D31
         // Bank address
-        .{ .port = "G", .num = "4", .af = .af12 }, // BA0
-        .{ .port = "G", .num = "5", .af = .af12 }, // BA1
+        .{ .pin = .{ .port = .G, .num = 4 }, .af = .af12 }, // BA0
+        .{ .pin = .{ .port = .G, .num = 5 }, .af = .af12 }, // BA1
         // Control
-        .{ .port = "F", .num = "11", .af = .af12 }, // SDNRAS
-        .{ .port = "G", .num = "15", .af = .af12 }, // SDNCAS
-        .{ .port = "H", .num = "5", .af = .af12 }, // SDNWE (Daisy actual)
-        .{ .port = "C", .num = "0", .af = .af12 }, // SDNWE (alt; libdaisy also sets)
-        .{ .port = "H", .num = "3", .af = .af12 }, // SDNE0
-        .{ .port = "H", .num = "2", .af = .af12 }, // SDCKE0
-        .{ .port = "G", .num = "8", .af = .af12 }, // SDCLK
+        .{ .pin = .{ .port = .F, .num = 11 }, .af = .af12 }, // SDNRAS
+        .{ .pin = .{ .port = .G, .num = 15 }, .af = .af12 }, // SDNCAS
+        .{ .pin = .{ .port = .H, .num = 5 }, .af = .af12 }, // SDNWE (PC0 is header pin D15/A0 — not used by the SDRAM)
+        .{ .pin = .{ .port = .H, .num = 3 }, .af = .af12 }, // SDNE0
+        .{ .pin = .{ .port = .H, .num = 2 }, .af = .af12 }, // SDCKE0
+        .{ .pin = .{ .port = .G, .num = 8 }, .af = .af12 }, // SDCLK
         // Byte lane enables
-        .{ .port = "E", .num = "0", .af = .af12 }, // NBL0
-        .{ .port = "E", .num = "1", .af = .af12 }, // NBL1
-        .{ .port = "I", .num = "4", .af = .af12 }, // NBL2
-        .{ .port = "I", .num = "5", .af = .af12 }, // NBL3
+        .{ .pin = .{ .port = .E, .num = 0 }, .af = .af12 }, // NBL0
+        .{ .pin = .{ .port = .E, .num = 1 }, .af = .af12 }, // NBL1
+        .{ .pin = .{ .port = .I, .num = 4 }, .af = .af12 }, // NBL2
+        .{ .pin = .{ .port = .I, .num = 5 }, .af = .af12 }, // NBL3
     });
 }
 

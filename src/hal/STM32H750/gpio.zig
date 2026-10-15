@@ -70,6 +70,12 @@ pub const Pin = struct {
     pin_num: u8,
 
     /// Initialize a GPIO pin with the given configuration
+    /// Build the comptime pin used by the drivers from a `hal.Pin` value.
+    pub fn from(comptime p: @import("pin_name.zig").Pin, comptime config: PinConfig) Pin {
+        const num_str = [16][]const u8{ "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15" };
+        return Pin.init(@tagName(p.port), num_str[p.num], config);
+    }
+
     pub fn init(
         port_id: []const u8,
         number_str: []const u8,
@@ -98,9 +104,6 @@ pub const Pin = struct {
         _ = peripherals.RCC.AHB4ENR.read();
         const port = @field(peripherals, "GPIO" ++ self.port_id);
 
-        // Set mode (input/output/alternate/analog)
-        port.MODER.modify_one("MODER[" ++ self.number_str ++ "]", self.config.mode.to_moder());
-
         // Configure alternate function if in alternate mode.
         // microzig groups AFRL/AFRH into an AFR[2] array; each holds fields
         // AFR[0..7], so the pin's field index is pin_num % 8.
@@ -117,16 +120,27 @@ pub const Pin = struct {
 
         // Set output speed
         port.OSPEEDR.modify_one("OSPEEDR[" ++ self.number_str ++ "]", self.config.speed);
+
+        // Mode last (ST HAL order): the pin only starts driving once its type,
+        // pull, speed and AF are in place, so e.g. an open-drain pin is never
+        // briefly push-pull.
+        port.MODER.modify_one("MODER[" ++ self.number_str ++ "]", self.config.mode.to_moder());
     }
 
     /// Write a value to the GPIO output data register
+    /// Atomic via BSRR: no read-modify-write of ODR, so an ISR touching another
+    /// pin of the same port can't be lost.
     pub fn write(comptime self: @This(), value: gpio_types.ODR) void {
-        @field(peripherals, "GPIO" ++ self.port_id).ODR.modify_one("ODR[" ++ self.number_str ++ "]", value);
+        const bit: u32 = @as(u32, 1) << self.pin_num;
+        @field(peripherals, "GPIO" ++ self.port_id).BSRR.write_raw(if (value == .High) bit else bit << 16);
     }
 
     /// Toggle the GPIO output state
     pub fn toggle(comptime self: @This()) void {
-        @field(peripherals, "GPIO" ++ self.port_id).ODR.toggle_one("ODR[" ++ self.number_str ++ "]", .High);
+        const port = @field(peripherals, "GPIO" ++ self.port_id);
+        const bit: u32 = @as(u32, 1) << self.pin_num;
+        // Read ODR, then set/reset only this pin through BSRR.
+        port.BSRR.write_raw(if (port.ODR.raw & bit != 0) bit << 16 else bit);
     }
 
     /// Read the GPIO input data register
@@ -136,12 +150,12 @@ pub const Pin = struct {
     }
 };
 
-/// One pin's alternate-function assignment, for bulk configuration.
-pub const AltPin = struct {
-    port: []const u8,
-    num: []const u8,
+/// A pin plus its alternate function — the pin type every driver config uses.
+pub const AfPin = struct {
+    pin: @import("pin_name.zig").Pin,
     af: AlternateFunction,
 };
+pub const AltPin = AfPin;
 
 /// Configure a set of pins as alternate function, push-pull, no pull, very high
 /// speed — the common bus-peripheral pin setup (FMC, QUADSPI, SAI, ...). The
@@ -149,7 +163,7 @@ pub const AltPin = struct {
 pub fn configureAlternates(comptime pins: []const AltPin) void {
     @setEvalBranchQuota(10_000); // comptime Pin.init parses each pin number
     inline for (pins) |p| {
-        const pin = comptime Pin.init(p.port, p.num, .{
+        const pin = comptime Pin.from(p.pin, .{
             .mode = .{ .alternate = p.af },
             .speed = .VeryHighSpeed,
         });

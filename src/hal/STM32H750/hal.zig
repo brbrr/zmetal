@@ -22,9 +22,19 @@ pub const systick = stm32_common.systick;
 pub const i2c = @import("i2c.zig");
 pub const spi = @import("spi.zig");
 
-// Custom implementations: GPIO/Pins incompatible with gpio_v2 (H7 uses AFRL/AFRH not AFR[2])
+// GPIO: comptime pin driver (used by the peripheral drivers).
 pub const gpio = @import("gpio.zig");
-pub const pins = @import("pins.zig");
+
+// Pin values (one Pin type for every driver) + runtime GPIO handle.
+pub const pin_name = @import("pin_name.zig");
+pub const Port = pin_name.Port;
+pub const Pin = pin_name.Pin;
+pub const Gpio = @import("gpio_rt.zig").Gpio;
+
+/// Comptime pin by name, e.g. `hal.pin("PC7")`.
+pub fn pin(comptime name: []const u8) Pin {
+    return comptime pin_name.parse(name) catch @compileError("bad pin name: " ++ name);
+}
 
 // Custom implementations (Daisy-specific or have custom extensions)
 pub const rcc = @import("rcc.zig");
@@ -32,13 +42,14 @@ pub const usart = @import("uart.zig"); // uart_v3-based driver (RX interrupt for
 pub const sdmmc = @import("sdmmc.zig"); // SDMMC1 + SD-card block driver
 pub const sdram = @import("sdram.zig"); // FMC SDRAM (64 MB @ 0xC0000000)
 pub const qspi = @import("qspi.zig"); // QUADSPI NOR flash (8 MB @ 0x90000000, indirect mode)
-pub const dma = @import("dma_custom_backup.zig"); // Has custom audio API
+pub const dma = @import("dma.zig"); // Has custom audio API
 pub const power = @import("power.zig");
 pub const clock = @import("clock.zig");
 pub const mpu = @import("mpu.zig");
 pub const time = @import("time.zig");
 pub const cache = @import("cache.zig");
 pub const fault = @import("fault.zig");
+pub const tick_math = @import("tick_math.zig"); // pure SysTick µs math (zmetal.time)
 
 // Daisy-specific modules
 pub const daisy = @import("daisy.zig");
@@ -49,14 +60,37 @@ pub const dwt = @import("dwt.zig"); // Cortex-M7 cycle counter (feeds cpu_load)
 pub const usb = @import("usb/usb.zig");
 pub const usb_audio = @import("usb/usb_audio.zig"); // UAC2 <-> SAI bridge callback
 
-// Utilities
-pub const utils = @import("util.zig");
-pub const errors = @import("errors.zig");
+const options = @import("zmetal_options");
 
-/// HAL configuration options
-pub const HAL_Options = struct {
-    /// RCC clock configuration (applied during initialization)
-    rcc_clock_config: rcc.Config = .{},
+/// Interrupt handlers the HAL owns. microzig merges these into the vector
+/// table; an app that also lists one gets a compile error unless it sets
+/// `overwrite_hal_interrupts`. Apps list only their own IRQs.
+pub const default_interrupts: microzig.cpu.InterruptOptions = blk: {
+    var t: microzig.cpu.InterruptOptions = .{
+        .SysTick = .{ .c = clock.sys_tick_handler },
+        .HardFault = .{ .naked = fault.hard_fault },
+        .NMI = .{ .c = fault.nmi_handler },
+        .MemManageFault = .{ .naked = fault.mem_manage_fault },
+        .BusFault = .{ .naked = fault.bus_fault },
+        .UsageFault = .{ .naked = fault.usage_fault },
+        .SVCall = .{ .c = fault.sv_call_handler },
+        .PendSV = .{ .c = fault.hw_handler },
+        // Audio: SAI1 block A/B DMA + SAI1 error IRQ.
+        .DMA1_Stream0 = .{ .c = sai.dma1_0_handler },
+        .DMA1_Stream1 = .{ .c = sai.dma1_1_handler },
+        .SAI1 = .{ .c = sai.SaiDriver.sai1_irq_handler },
+        // Display SPI1 + its TX DMA stream.
+        .SPI1 = .{ .c = spi.spi1_irq_handler },
+        .DMA2_Stream3 = .{ .c = spi.tx_dma_irq_handler },
+        // MIDI IN (USART1 RX).
+        .USART1 = .{ .c = usart.UartStream(.USART1).irqHandler },
+    };
+    if (options.usb) {
+        // Only the active controller's NVIC line is enabled (by usb.init).
+        t.OTG_FS = .{ .c = usb.otg_fs_irq_handler };
+        t.OTG_HS = .{ .c = usb.otg_hs_irq_handler };
+    }
+    break :blk t;
 };
 
 /// Get system clock frequency in Hz
@@ -71,28 +105,13 @@ pub fn get_systick_clk() u32 {
     return clock.get_sys_clock() / 8;
 }
 
-/// Initialize CPU and peripheral configuration
-/// This should be called early in the startup process
-pub fn init_vector_table() void {
-    // already done in microzig
-    // init_fpu();
+/// Early chip init: RCC reset, D2 SRAM clocks, silicon-revision workarounds.
+/// Runs automatically before `main` (microzig calls `hal.init`); an app-level
+/// `pub fn init` in the root file replaces it.
+pub fn init() void {
     reset_rcc();
     enable_sram_clocks();
-    // NOTE: mitigation of the imprecise reads, which turned out to be not related, as it was related to double fpu init
-    // init_sram1_ecc();
     apply_h7_workarounds();
-    configure_vector_table();
-}
-
-/// Enable FPU (Floating Point Unit) with full access to CP10 and CP11
-fn init_fpu() void {
-    // microzig exposes CPACR as a plain u32 field of the SCB (not a separate
-    // FPU_CPACR peripheral). Set CP10 and CP11 to full access: bits [23:20] = 0xF.
-    scb.CPACR = scb.CPACR | (@as(u32, 0xF) << 20);
-
-    // Data & Instruction Synchronization Barriers
-    cpu.dmb();
-    cpu.isb();
 }
 
 /// Reset RCC (Reset and Clock Control) to default state
@@ -129,20 +148,6 @@ fn enable_sram_clocks() void {
     _ = RCC.AHB2ENR.read();
 }
 
-fn init_sram1_ecc() void {
-    // Scrub the ENTIRE MPU-mapped D2 region (0x30000000, 256KB = SRAM1+SRAM2), not
-    // just the `.sram1_bss` bytes we use. The MPU maps all 256KB as Normal, which the
-    // Cortex-M7 speculates on when D-cache is enabled; the ~95KB tail above .sram1_bss
-    // is real SRAM2 whose ECC is uninitialized on a COLD boot. A speculative read into
-    // it returns an uncorrectable ECC error -> imprecise AXIM SLVERR. (Warm reboots
-    // retain valid ECC, which is why this only bites on a true power-cycle.) Word-
-    // writing the whole region initializes ECC everywhere the M7 can speculate.
-    var addr: usize = 0x30000000;
-    while (addr < 0x30040000) : (addr += 4) {
-        @as(*volatile u32, @ptrFromInt(addr)).* = 0;
-    }
-}
-
 /// Apply STM32H7 silicon revision Y workarounds
 fn apply_h7_workarounds() void {
     // Change the switch matrix read issuing capability to 1 for AXI SRAM target (Target 7)
@@ -151,9 +156,4 @@ fn apply_h7_workarounds() void {
         const axi_targ7_fn_mod: *volatile u32 = @ptrFromInt(0x51008108);
         axi_targ7_fn_mod.* = 0x00000001;
     }
-}
-
-/// Configure the vector table offset register
-fn configure_vector_table() void {
-    // scb.VTOR = @intCast(@intFromPtr(&cpu.startup_logic._vector_table));
 }

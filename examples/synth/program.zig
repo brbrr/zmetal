@@ -7,7 +7,7 @@
 //! behind the same `process(io)` — dropped in with no engine changes.
 const std = @import("std");
 const synth = @import("synth.zig");
-const AudioIO = @import("audio_io.zig").AudioIO;
+const AudioIO = @import("zmetal_dsp").AudioIO;
 
 /// Default Program: the synth, monitored to both outputs alongside USB
 /// playback. `line_in` is available but unused by default — a future effect

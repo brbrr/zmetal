@@ -6,14 +6,13 @@ const clk = @import("clock.zig");
 
 // TODO: Implement Clock_Device
 
+/// microzig's `time.Absolute` is in microseconds; the SysTick tick is 1 ms.
 pub fn get_time_since_boot() time.Absolute {
-    const ticks = clk.get_tick();
-
-    return @enumFromInt(ticks);
+    return @enumFromInt(@as(u64, clk.get_tick()) * 1000);
 }
 
 pub fn sleep_ms(time_ms: u32) void {
-    sleep_us(time_ms * 1000);
+    sleep_us(@as(u64, time_ms) * 1000);
 }
 
 pub fn sleep_us(time_us: u64) void {

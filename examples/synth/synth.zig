@@ -13,8 +13,9 @@
 //! two f32 fields, so a pitch change can glitch at most one rendered sample.
 
 const std = @import("std");
-const osc = @import("dsp/osc.zig");
-const mono_voice = @import("dsp/mono_voice.zig");
+const dsp = @import("zmetal_dsp");
+const osc = dsp.osc;
+const mono_voice = dsp.mono_voice;
 
 const SAMPLE_RATE = 48000;
 
@@ -37,9 +38,9 @@ var engine: Engine = .{
 
 /// SAI audio callback. Renders the (mono) oscillator to both channels, or
 /// silence when gated off. Matches `hal.sai.AudioCallback`'s signature.
-pub fn audioCallback(input: []const f32, output: []f32, size: u16) void {
+pub fn audioCallback(input: []const f32, output: []f32) void {
     _ = input;
-    render(output[0..size]);
+    render(output);
 }
 
 /// Render the mono voice into `output` (interleaved stereo), or silence when

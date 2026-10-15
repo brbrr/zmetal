@@ -31,6 +31,9 @@ pub const SystemConfig = struct {
 // pub const SysConfig = SystemConfig{ .freq = .default };
 pub const SysConfig = SystemConfig{ .freq = .boost };
 
+/// Seed header pin names (D0..D32, A0..A13, LED).
+pub const seed = @import("seed_pins.zig");
+
 const ClockTree = hal.rcc.ClockTree;
 
 pub const clk_config = ClockTree.Config{
@@ -254,61 +257,17 @@ fn dma_init() !void {
     rcc.AHB1ENR.modify_one("DMA2EN", 1);
     _ = rcc.AHB1ENR.read().DMA2EN;
 
-    // DMA interrupt init
-    // DMA1_Stream0_IRQn interrupt configuration
+    // DMA interrupt init. Only streams with a handler in hal.default_interrupts
+    // may be enabled: a stray IRQ on any other stream would hit microzig's
+    // "unhandled interrupt" panic.
+    // SAI1 block A/B (audio).
     cpu.interrupt.set_priority(.DMA1_Stream0, .highest);
     cpu.interrupt.enable(.DMA1_Stream0);
-    // DMA1_Stream1_IRQn interrupt configuration
     cpu.interrupt.set_priority(.DMA1_Stream1, .highest);
     cpu.interrupt.enable(.DMA1_Stream1);
-    // DMA1_Stream2_IRQn interrupt configuration
-    cpu.interrupt.set_priority(.DMA1_Stream2, .highest);
-    cpu.interrupt.enable(.DMA1_Stream2);
-    // DMA1_Stream3_IRQn interrupt configuration
-    cpu.interrupt.set_priority(.DMA1_Stream3, .highest);
-    cpu.interrupt.enable(.DMA1_Stream3);
-    // DMA1_Stream4_IRQn interrupt configuration
-    cpu.interrupt.set_priority(.DMA1_Stream4, .highest);
-    cpu.interrupt.enable(.DMA1_Stream4);
-    // DMA1_Stream5_IRQn and DMA2_Stream4_IRQn interrupt configuration for uart rx and tx
-    cpu.interrupt.set_priority(.DMA1_Stream5, .highest);
-    cpu.interrupt.enable(.DMA1_Stream5);
-    // DMA1_Stream6_IRQn interrupt configuration for I2C
-    cpu.interrupt.set_priority(.DMA1_Stream6, .highest);
-    cpu.interrupt.enable(.DMA1_Stream6);
-
-    // DMA2_Stream0_IRQn, interrupt configuration for DAC Ch1
-    cpu.interrupt.set_priority(.DMA2_Stream0, .highest);
-    cpu.interrupt.enable(.DMA2_Stream0);
-    // DMA2_Stream1_IRQn, interrupt configuration for DAC Ch2
-    cpu.interrupt.set_priority(.DMA2_Stream1, .highest);
-    cpu.interrupt.enable(.DMA2_Stream1);
-    // DMA2_Stream2_IRQn and DMA2_Stream3_IRQn interrupt configuration for SPI
-    cpu.interrupt.set_priority(.DMA2_Stream2, .highest);
-    cpu.interrupt.enable(.DMA2_Stream2);
+    // SPI1 TX (display).
     cpu.interrupt.set_priority(.DMA2_Stream3, .highest);
     cpu.interrupt.enable(.DMA2_Stream3);
-    cpu.interrupt.set_priority(.DMA2_Stream4, .highest);
-    cpu.interrupt.enable(.DMA2_Stream4);
-}
-
-fn i2c_init() !void {
-    // cpu.interrupt.set_priority(.I2C1_EV, .highest);
-    // cpu.interrupt.enable(.I2C1_EV);
-
-    // Reset I2C1 peripheral via RCC to clear any stuck BUSY state
-    // This is necessary if the I2C bus was in a bad state from previous power cycle
-    const rcc_regs = chip.peripherals.RCC;
-    rcc_regs.APB1LRSTR.modify(.{ .I2C1RST = 1 });
-    var i2c_reset_delay: u32 = 0;
-    while (i2c_reset_delay < 200) : (i2c_reset_delay += 1) {
-        asm volatile ("nop");
-    }
-    rcc_regs.APB1LRSTR.modify(.{ .I2C1RST = 0 });
-    i2c_reset_delay = 0;
-    while (i2c_reset_delay < 200) : (i2c_reset_delay += 1) {
-        asm volatile ("nop");
-    }
 }
 
 fn sai_init() !void {
@@ -317,41 +276,35 @@ fn sai_init() !void {
     cpu.interrupt.set_priority(.SAI1, .highest);
 }
 
-fn spi_init() !void {
-    microzig.cpu.interrupt.enable(.SPI1);
-    microzig.cpu.interrupt.set_priority(.SPI1, .highest);
-}
-
 fn uart_init() !void {
     //
 }
 
+/// The Daisy Seed board (libdaisy `DaisySeed`). Declare one at module scope
+/// (`var seed: zmetal.Seed = .{};`) — the audio DMA keeps pointers into it, so
+/// it must not move after `init`.
 pub const Daisy = struct {
-    sai: hal.sai.SaiDriver,
-    i2c: hal.i2c.I2C_Device,
-    /// Audio format driving both the SAI codec path and USB audio. Set before
-    /// `init()` to change it; defaults to stereo / 24-bit / 48 kHz.
+    pub const Config = struct {
+        /// Codec + USB audio format (sample rate, bit depth, block size).
+        audio: hal.audio.AudioConfig = .{},
+        /// Bring up the 64 MB FMC SDRAM at 0xC0000000.
+        sdram: bool = true,
+        /// Bring up the 8 MB QSPI NOR flash (indirect mode).
+        qspi: bool = true,
+    };
+
+    sai: hal.sai.SaiDriver = undefined,
+    /// Audio format in use (from `Config.audio`); read by USB audio.
     audio: hal.audio.AudioConfig = .{},
-    /// Audio-ISR CPU load meter; wired into the SAI callback and read by the UI.
+    /// Audio-ISR CPU load meter; see `cpuLoad`.
     load_meter: hal.cpu_load.CpuLoadMeter = .{},
+    led: hal.Gpio = undefined,
 
-    comptime led: hal.gpio.Pin = hal.gpio.Pin.init("C", "7", .{
-        .mode = .output,
-        .pull = .Floating,
-        .otype = .PushPull,
-        .speed = .LowSpeed,
-    }),
-
-    pub fn create() !Daisy {
-        return Daisy{
-            .sai = undefined,
-            .i2c = undefined,
-            .audio = .{},
-            .load_meter = .{},
-        };
-    }
-
-    pub fn init(self: *Daisy) !void {
+    /// Bring up clocks, power, MPU, caches, DMA, the user LED, the codec + SAI,
+    /// and (per `config`) SDRAM/QSPI. Peripherals on the header pins (I2C, SPI,
+    /// UART, ...) are left to the application.
+    pub fn init(self: *Daisy, config: Config) !void {
+        self.audio = config.audio;
         microzig.interrupt.enable_interrupts();
 
         try hal_init();
@@ -373,28 +326,22 @@ pub const Daisy = struct {
 
         try dma_init();
         try sai_init();
-        try i2c_init();
-        try spi_init();
-        try uart_init();
 
         hal.cache.enableDCache();
         hal.cache.enableICache();
 
-        self.led.configure();
+        self.led = hal.Gpio.init(seed.LED, .{});
 
-        // Bring up the 64 MB FMC SDRAM. The MPU region (configure_mpu) already
-        // marks 0xC0000000 cacheable + bufferable, and D-cache is enabled above
-        // — same ordering libdaisy uses.
-        hal.sdram.init();
+        // SDRAM: the MPU region (configure_mpu) already marks 0xC0000000
+        // cacheable + bufferable, and D-cache is enabled above — libdaisy order.
+        if (config.sdram) hal.sdram.init();
 
-        // Bring up the 8 MB QSPI NOR flash (indirect mode). Usable afterwards
-        // via hal.qspi.read/write/eraseSector, or enableMemoryMapped() for
-        // direct reads at hal.qspi.BASE (0x90000000).
-        try hal.qspi.init();
+        // QSPI NOR: usable afterwards via hal.qspi.read/write/eraseSector, or
+        // enableMemoryMapped() for direct reads at hal.qspi.BASE (0x90000000).
+        if (config.qspi) try hal.qspi.init();
 
-        // Initialize SAI after clocks and interrupts are ready, from the audio
-        // config (sample rate / bit depth / block size).
-        self.sai = hal.sai.SaiDriver.init(hal.sai.configFromAudio(self.audio));
+        // SAI after clocks and interrupts are ready, from the audio config.
+        self.sai = try hal.sai.SaiDriver.init(hal.sai.configFromAudio(self.audio));
 
         // CPU-load meter: enable the DWT cycle counter and size the meter to the
         // audio block (cycles/block = coreclk/rate * blocksize; block rate = rate/blocksize).
@@ -403,16 +350,39 @@ pub const Daisy = struct {
             (hal.clock.SystemCoreClock / self.audio.rateHz()) * self.audio.blocksize,
             @as(f32, @floatFromInt(self.audio.rateHz())) / @as(f32, @floatFromInt(self.audio.blocksize)),
         );
-
-        // Bring up I2C1 (MCP23017 keyboard expander). i2c_init() above only
-        // resets the peripheral; init() enables the clock + configures pins and
-        // apply() sets TIMINGR and PE=1. Without this self.i2c stays undefined
-        // and the first transfer faults on a garbage register pointer.
-        self.i2c = try hal.i2c.I2C_Device.init(.I2C1, .{ .speed = .I2C_400KHZ });
-        self.i2c.apply();
     }
 
-    pub fn startAudio(self: *Daisy, callback: *const hal.sai.AudioCallback) !void {
-        try self.sai.start(callback, &self.load_meter);
+    pub fn setLed(self: *Daisy, on: bool) void {
+        self.led.write(on);
+    }
+
+    pub fn toggleLed(self: *Daisy) void {
+        self.led.toggle();
+    }
+
+    /// Audio-callback CPU load (avg + peak, 0..1); resets the peak hold.
+    pub fn cpuLoad(self: *Daisy) hal.cpu_load.Load {
+        return self.load_meter.read();
+    }
+
+    /// Start audio with a plain callback: `fn (in, out) void`, interleaved
+    /// stereo, `out` zeroed on entry. Runs in the audio DMA interrupt.
+    pub fn startAudio(self: *Daisy, comptime callback: fn (in: []const f32, out: []f32) void) !void {
+        try self.sai.start(.{ .ctx = null, .func = struct {
+            fn call(_: ?*anyopaque, in: []const f32, out: []f32) void {
+                callback(in, out);
+            }
+        }.call }, &self.load_meter);
+    }
+
+    /// Start audio with a context: `callback(ctx, in, out)`, e.g.
+    /// `seed.startAudioCtx(&my_engine, Engine.process)`. `ctx` must outlive audio.
+    pub fn startAudioCtx(self: *Daisy, ctx: anytype, comptime callback: fn (@TypeOf(ctx), []const f32, []f32) void) !void {
+        const Ctx = @TypeOf(ctx);
+        try self.sai.start(.{ .ctx = @ptrCast(ctx), .func = struct {
+            fn call(c: ?*anyopaque, in: []const f32, out: []f32) void {
+                callback(@as(Ctx, @ptrCast(@alignCast(c.?))), in, out);
+            }
+        }.call }, &self.load_meter);
     }
 };

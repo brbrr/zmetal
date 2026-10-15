@@ -10,6 +10,11 @@ const gpio = @import("../gpio.zig");
 const power = @import("../power.zig");
 const clock = @import("../clock.zig");
 const tusb = @import("tinyusb.zig");
+const descriptors = @import("descriptors.zig");
+const usb_audio = @import("usb_audio.zig");
+const AudioConfig = @import("../audio.zig").AudioConfig;
+
+pub const Identity = descriptors.Identity;
 
 const StreamDevice = microzig.drivers.base.StreamDevice;
 
@@ -84,7 +89,16 @@ pub const Config = struct {
     /// urgency) than the SAI audio-DMA ISR (`.highest`/0 in daisy.zig) so a USB
     /// ISR can never delay an audio-DMA refill. Default `.lowest` (15).
     irq_priority: interrupt.Priority = .lowest,
+    /// VID/PID and strings reported to the host (serial defaults to the chip UID).
+    identity: Identity = .{},
 };
+
+/// `init` for apps that stream USB Audio: applies the audio format (match the
+/// codec, e.g. `seed.audio`) to the descriptors before enumeration, then inits.
+pub fn initWithAudio(comptime cfg: Config, audio: AudioConfig) void {
+    usb_audio.configure(audio);
+    init(cfg);
+}
 
 const Descriptor = struct {
     rhport: u8,
@@ -106,8 +120,8 @@ fn descriptor(c: Controller) Descriptor {
     return switch (c) {
         .internal_fs => .{
             .rhport = 0,
-            .dm = .{ .port = "A", .num = "11", .af = .af10 },
-            .dp = .{ .port = "A", .num = "12", .af = .af10 },
+            .dm = .{ .pin = .{ .port = .A, .num = 11 }, .af = .af10 },
+            .dp = .{ .pin = .{ .port = .A, .num = 12 }, .af = .af10 },
             .rcc_field = "USB_OTG_FSEN",
             .lp_field = "USB_OTG_FSLPEN",
             .ulpi_lp_field = "USB_OTG_FS_ULPILPEN",
@@ -116,8 +130,8 @@ fn descriptor(c: Controller) Descriptor {
         },
         .external_hs => .{
             .rhport = 1,
-            .dm = .{ .port = "B", .num = "14", .af = .af12 },
-            .dp = .{ .port = "B", .num = "15", .af = .af12 },
+            .dm = .{ .pin = .{ .port = .B, .num = 14 }, .af = .af12 },
+            .dp = .{ .pin = .{ .port = .B, .num = 15 }, .af = .af12 },
             .rcc_field = "USB_OTG_HSEN",
             .lp_field = "USB_OTG_HSLPEN",
             .ulpi_lp_field = "USB_OTG_HS_ULPILPEN",
@@ -133,6 +147,9 @@ const GCCFG_PWRDWN = 1 << 16;
 
 pub fn init(comptime cfg: Config) void {
     const d = comptime descriptor(cfg.controller);
+
+    // Descriptors must be final before the host can enumerate.
+    descriptors.setIdentity(cfg.identity);
 
     // DP/DM pins: alternate function, very-high speed, no pull.
     gpio.configureAlternates(&.{ d.dm, d.dp });

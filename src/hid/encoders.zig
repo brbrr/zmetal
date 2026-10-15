@@ -1,13 +1,15 @@
-//! Four rotary encoders on a dedicated MCP23017 I2C GPIO expander (address 0x20).
+//! Rotary encoders on an MCP23017 I2C GPIO expander.
 //!
 //! Each encoder uses three expander pins — quadrature A/B plus a push switch —
-//! per the WoopyOne v0.1 layout. `poll()` reads all 16 inputs in one I2C
-//! transaction and advances each encoder's decoder (`hid/encoder.zig`).
+//! given by `EncodersConfig.pins` (expander pin 0..15; 0-7 = Port A, 8-15 =
+//! Port B). `poll()` reads all 16 inputs in one I2C transaction and advances
+//! each encoder's decoder (`hid/encoder.zig`).
 //!
 //! Usage:
 //! ```zig
-//! var encoders: Encoders = undefined;
-//! try encoders.init(i2c_dev.i2c_device());
+//! const Encoders = zmetal.hid.encoders.McpEncoders(.{ .address = 0x20, .pins = &my_pins });
+//! var encoders: Encoders = undefined; // must not move after init
+//! try encoders.init(i2c.i2c_device());
 //! // periodically (a few ms):
 //! try encoders.poll();
 //! const e0 = encoders.get(0); // .inc / .pressed / .just_pressed ...
@@ -24,60 +26,61 @@ const MCP23017 = mcp23017.MCP23017;
 
 pub const Update = encoder.Update;
 
-pub const NUM_ENCODERS = 4;
+/// Expander pins (0..15) of one encoder.
+pub const EncPins = struct { a: u4, b: u4, sw: u4 };
 
-/// I2C address of the encoder expander (the keyboard uses a separate one at 0x21).
-const MCP_I2C_ADDRESS: u8 = 0x20;
-
-const EncPins = struct { a: u8, b: u8, sw: u8 };
-
-/// WoopyOne v0.1 pin map. Expander pins 0-7 are Port A, 8-15 are Port B.
-const enc_pins = [NUM_ENCODERS]EncPins{
-    .{ .a = 10, .b = 9, .sw = 11 }, // ENC 0
-    .{ .a = 13, .b = 12, .sw = 14 }, // ENC 1
-    .{ .a = 2, .b = 1, .sw = 3 }, // ENC 2
-    .{ .a = 5, .b = 4, .sw = 6 }, // ENC 3
+pub const EncodersConfig = struct {
+    /// 7-bit I2C address of the expander.
+    address: u7,
+    pins: []const EncPins,
 };
 
-pub const Encoders = struct {
-    const Self = @This();
+pub fn McpEncoders(comptime cfg: EncodersConfig) type {
+    const NUM_ENCODERS = cfg.pins.len;
+    const enc_pins = cfg.pins[0..NUM_ENCODERS].*;
 
-    mcp: MCP23017,
-    decoders: [NUM_ENCODERS]encoder.Encoder,
-    last: [NUM_ENCODERS]Update,
+    return struct {
+        const Self = @This();
 
-    /// Initialize in place (see `keyboard.Keyboard.init` for the same rationale:
-    /// the MCP holds a copy of the I2C interface, and callers keep `Encoders` at
-    /// a stable address).
-    pub fn init(self: *Self, i2c_dev: I2C_Device) !void {
-        self.mcp = try MCP23017.init(i2c_dev, MCP_I2C_ADDRESS);
-        // All 16 pins are inputs; MCP23017.init already enabled the pull-ups.
-        try self.mcp.setPortMode(.A, 0xFF);
-        try self.mcp.setPortMode(.B, 0xFF);
+        pub const count = NUM_ENCODERS;
 
-        for (&self.decoders) |*d| d.* = encoder.Encoder.init();
-        for (&self.last) |*u| u.* = .{};
-    }
+        mcp: MCP23017,
+        decoders: [NUM_ENCODERS]encoder.Encoder,
+        last: [NUM_ENCODERS]Update,
 
-    /// Read all 16 expander inputs in one transaction and advance every encoder.
-    pub fn poll(self: *Self) !void {
-        // In the MCP's byte (non-sequential) mode a 2-byte read from GPIOA
-        // returns [GPIOA, GPIOB] — the whole 16-bit input port.
-        const ports = self.mcp.readRegisterPair(.GPIOA) catch return error.I2CError;
-        for (&self.decoders, 0..) |*d, i| {
-            const p = enc_pins[i];
-            self.last[i] = d.step(pinBit(ports, p.a), pinBit(ports, p.b), pinBit(ports, p.sw));
+        /// Initialize in place (see `keyboard.Keyboard.init` for the same rationale:
+        /// the MCP holds a copy of the I2C interface, and callers keep `Encoders` at
+        /// a stable address).
+        pub fn init(self: *Self, i2c_dev: I2C_Device) !void {
+            self.mcp = try MCP23017.init(i2c_dev, cfg.address);
+            // All 16 pins are inputs; MCP23017.init already enabled the pull-ups.
+            try self.mcp.setPortMode(.A, 0xFF);
+            try self.mcp.setPortMode(.B, 0xFF);
+
+            for (&self.decoders) |*d| d.* = encoder.Encoder.init();
+            for (&self.last) |*u| u.* = .{};
         }
-    }
 
-    /// Latest decoded state for encoder `i` (from the most recent `poll`).
-    pub fn get(self: *const Self, i: usize) Update {
-        return self.last[i];
-    }
+        /// Read all 16 expander inputs in one transaction and advance every encoder.
+        pub fn poll(self: *Self) !void {
+            // In the MCP's byte (non-sequential) mode a 2-byte read from GPIOA
+            // returns [GPIOA, GPIOB] — the whole 16-bit input port.
+            const ports = self.mcp.readRegisterPair(.GPIOA) catch return error.I2CError;
+            for (&self.decoders, 0..) |*d, i| {
+                const p = enc_pins[i];
+                self.last[i] = d.step(pinBit(ports, p.a), pinBit(ports, p.b), pinBit(ports, p.sw));
+            }
+        }
 
-    /// Extract expander pin `pin` (0-15) from a [Port A, Port B] byte pair.
-    fn pinBit(ports: [2]u8, pin: u8) u1 {
-        const port = ports[pin / 8];
-        return @intCast((port >> @intCast(pin % 8)) & 1);
-    }
-};
+        /// Latest decoded state for encoder `i` (from the most recent `poll`).
+        pub fn get(self: *const Self, i: usize) Update {
+            return self.last[i];
+        }
+
+        /// Extract expander pin `pin` (0-15) from a [Port A, Port B] byte pair.
+        fn pinBit(ports: [2]u8, pin: u4) u1 {
+            const port = ports[pin / 8];
+            return @intCast((port >> @intCast(pin % 8)) & 1);
+        }
+    };
+}

@@ -18,8 +18,19 @@ const enums = stm32_common.enums;
 // Import HAL modules
 const rcc = @import("rcc.zig");
 const gpio = @import("gpio.zig");
-const pins = @import("pins.zig");
 const clock = @import("clock.zig");
+const i2c_seg = @import("i2c_seg.zig");
+const i2c_regs = microzig.chip.types.peripherals.i2c_v2;
+
+fn reloadMode(more: bool) i2c_regs.RELOAD {
+    return if (more) .NotCompleted else .Completed;
+}
+
+/// Software end (TC, bus held) while more segments follow or a repeated START
+/// is wanted; otherwise automatic STOP after NBYTES.
+fn endMode(hold: bool) i2c_regs.AUTOEND {
+    return if (hold) .Software else .Automatic;
+}
 
 /// Re-export I2C_Device types from microzig
 pub const Address = drivers.base.I2C_Device.Address;
@@ -98,36 +109,47 @@ pub const Config = struct {
 
 /// Pin configuration for I2C
 pub const PinConfig = struct {
-    scl: struct { port: []const u8, pin: []const u8, af: gpio.AlternateFunction },
-    sda: struct { port: []const u8, pin: []const u8, af: gpio.AlternateFunction },
+    scl: gpio.AfPin,
+    sda: gpio.AfPin,
 };
 
 /// Default pin configurations for Daisy Seed board
 pub const daisy_pin_configs = struct {
     /// I2C1: PB8 (SCL), PB9 (SDA) - AF4
     pub const I2C1 = PinConfig{
-        .scl = .{ .port = "B", .pin = "8", .af = .af4 },
-        .sda = .{ .port = "B", .pin = "9", .af = .af4 },
+        .scl = .{ .pin = .{ .port = .B, .num = 8 }, .af = .af4 },
+        .sda = .{ .pin = .{ .port = .B, .num = 9 }, .af = .af4 },
     };
 
     /// I2C2: PB10 (SCL), PB11 (SDA) - AF4
     pub const I2C2 = PinConfig{
-        .scl = .{ .port = "B", .pin = "10", .af = .af4 },
-        .sda = .{ .port = "B", .pin = "11", .af = .af4 },
+        .scl = .{ .pin = .{ .port = .B, .num = 10 }, .af = .af4 },
+        .sda = .{ .pin = .{ .port = .B, .num = 11 }, .af = .af4 },
     };
 
     /// I2C3: PA8 (SCL), PC9 (SDA) - AF4
     pub const I2C3 = PinConfig{
-        .scl = .{ .port = "A", .pin = "8", .af = .af4 },
-        .sda = .{ .port = "C", .pin = "9", .af = .af4 },
+        .scl = .{ .pin = .{ .port = .A, .num = 8 }, .af = .af4 },
+        .sda = .{ .pin = .{ .port = .C, .num = 9 }, .af = .af4 },
     };
 
     /// I2C4: PD12 (SCL), PD13 (SDA) - AF4
     pub const I2C4 = PinConfig{
-        .scl = .{ .port = "D", .pin = "12", .af = .af4 },
-        .sda = .{ .port = "D", .pin = "13", .af = .af4 },
+        .scl = .{ .pin = .{ .port = .D, .num = 12 }, .af = .af4 },
+        .sda = .{ .pin = .{ .port = .D, .num = 13 }, .af = .af4 },
     };
 };
+
+/// Pulse the peripheral's RCC reset line.
+fn resetPeripheral(comptime peripheral: Peripheral) void {
+    const RCC = microzig.chip.peripherals.RCC;
+    const field = @tagName(peripheral) ++ "RST";
+    const reg = if (peripheral == .I2C4) &RCC.APB4RSTR else &RCC.APB1LRSTR;
+    reg.modify_one(field, 1);
+    clock.delay_us(10);
+    reg.modify_one(field, 0);
+    clock.delay_us(10);
+}
 
 /// I2C Device wrapper that provides zero-cost abstraction over microzig's I2C_Device
 pub const I2C_Device = struct {
@@ -158,8 +180,10 @@ pub const I2C_Device = struct {
             .I2C4 => daisy_pin_configs.I2C4,
         };
 
-        // Recover a bus left stuck by a reset mid-transfer, THEN switch the pins
-        // to the I2C alternate function.
+        // Reset the peripheral (clears a BUSY state left over from before a CPU
+        // reset), recover a bus left stuck mid-transfer, THEN switch the pins to
+        // the I2C alternate function.
+        resetPeripheral(peripheral);
         recover_bus(pin_cfg);
         configure_pins(pin_cfg);
 
@@ -220,7 +244,9 @@ pub const I2C_Device = struct {
         const start = clock.get_tick();
         while (true) {
             const isr = r.ISR.read();
-            if (@field(isr, flag) == 1) return;
+            // Errors first: after an address/data NACK the hardware still raises
+            // STOPF (AUTOEND) — if both are visible (poll preempted between them),
+            // the NACK must win or an absent device reads as ACK.
             if (isr.NACKF == 1) {
                 self.recover();
                 return Error.NoAcknowledge;
@@ -229,6 +255,7 @@ pub const I2C_Device = struct {
                 self.recover();
                 return Error.UnknownAbort;
             }
+            if (@field(isr, flag) == 1) return;
             if (clock.get_tick() -% start >= TRANSFER_TIMEOUT_MS) {
                 self.recover();
                 return Error.Timeout;
@@ -248,25 +275,42 @@ pub const I2C_Device = struct {
         }
     }
 
-    /// Master write of one datagram. `restart` leaves the bus held (AUTOEND off,
-    /// stops at TC) so a repeated-START read can follow; otherwise a STOP is
-    /// generated automatically.
-    fn transfer_write(self: *I2C_Device, address: Address, data: []const u8, comptime restart: bool) Error!void {
+    /// Master write of `chunks` as ONE transaction: a single START, the
+    /// concatenated bytes (NBYTES <= 255 per segment, RELOAD between segments),
+    /// then STOP. `restart` instead holds the bus (software end, wait for TC) so
+    /// a repeated-START read can follow.
+    fn transfer_write(self: *I2C_Device, address: Address, chunks: []const []const u8, comptime restart: bool) Error!void {
         const r = self.regs();
         r.ICR.write_raw(ICR_CLEAR_MASK); // drop any stale flags from a prior transfer
         try self.wait_not_busy();
 
+        var segs = i2c_seg.segments(i2c_seg.totalLen([]const u8, chunks));
+        var bytes = i2c_seg.ByteIter([]const u8){ .chunks = chunks };
+        // Zero-length write (address probe): NBYTES = 0.
+        var seg = segs.next() orelse i2c_seg.Segment{ .nbytes = 0, .reload = false };
+
         r.CR2.modify(.{
-            .NBYTES = @as(u8, @intCast(data.len)),
+            .NBYTES = seg.nbytes,
+            .RELOAD = reloadMode(seg.reload),
             .SADD = @as(u10, @intCast(@intFromEnum(address))) << 1,
-            .AUTOEND = if (restart) .Software else .Automatic,
+            .AUTOEND = endMode(seg.reload or restart),
             .DIR = .Write,
         });
         r.CR2.modify(.{ .START = 1 });
 
-        for (data) |byte| {
-            try self.wait_flag("TXIS");
-            r.TXDR.modify(.{ .TXDATA = byte });
+        while (true) {
+            for (0..seg.nbytes) |_| {
+                try self.wait_flag("TXIS");
+                r.TXDR.modify(.{ .TXDATA = bytes.next().?.* });
+            }
+            if (!seg.reload) break;
+            try self.wait_flag("TCR");
+            seg = segs.next().?;
+            r.CR2.modify(.{
+                .NBYTES = seg.nbytes,
+                .RELOAD = reloadMode(seg.reload),
+                .AUTOEND = endMode(seg.reload or restart),
+            });
         }
 
         if (restart) {
@@ -277,26 +321,51 @@ pub const I2C_Device = struct {
         }
     }
 
-    /// Master read of one datagram. Issues its own (repeated) START. When it
-    /// follows a `restart` write, `after_restart` must be true: the bus is
-    /// legitimately still BUSY (held for the repeated START), so skip the
-    /// bus-free wait that a standalone read performs.
-    fn transfer_read(self: *I2C_Device, address: Address, buffer: []u8, comptime after_restart: bool) Error!void {
+    /// Master read into `chunks` as ONE transaction (segmented like
+    /// `transfer_write`). Issues its own (repeated) START. When it follows a
+    /// `restart` write, `after_restart` must be true: the bus is legitimately
+    /// still BUSY (held for the repeated START), so skip the bus-free wait.
+    fn transfer_read(self: *I2C_Device, address: Address, chunks: []const []u8, comptime after_restart: bool) Error!void {
         const r = self.regs();
         r.ICR.write_raw(ICR_CLEAR_MASK);
         if (!after_restart) try self.wait_not_busy();
 
+        var segs = i2c_seg.segments(i2c_seg.totalLen([]u8, chunks));
+        var bytes = i2c_seg.ByteIter([]u8){ .chunks = chunks };
+        var seg = segs.next() orelse {
+            // Nothing to read. After a `restart` write the bus is still held
+            // (TC, SCL stretched): release it with a STOP, or the next transfer
+            // finds the bus BUSY.
+            if (after_restart) {
+                r.CR2.modify(.{ .STOP = 1 });
+                try self.wait_flag("STOPF");
+                r.ICR.write_raw(ICR_CLEAR_MASK);
+            }
+            return;
+        };
+
         r.CR2.modify(.{
-            .NBYTES = @as(u8, @intCast(buffer.len)),
+            .NBYTES = seg.nbytes,
+            .RELOAD = reloadMode(seg.reload),
             .SADD = @as(u10, @intCast(@intFromEnum(address))) << 1,
-            .AUTOEND = .Automatic,
+            .AUTOEND = endMode(seg.reload),
             .DIR = .Read,
         });
         r.CR2.modify(.{ .START = 1 });
 
-        for (buffer) |*slot| {
-            try self.wait_flag("RXNE");
-            slot.* = r.RXDR.read().RXDATA;
+        while (true) {
+            for (0..seg.nbytes) |_| {
+                try self.wait_flag("RXNE");
+                bytes.next().?.* = r.RXDR.read().RXDATA;
+            }
+            if (!seg.reload) break;
+            try self.wait_flag("TCR");
+            seg = segs.next().?;
+            r.CR2.modify(.{
+                .NBYTES = seg.nbytes,
+                .RELOAD = reloadMode(seg.reload),
+                .AUTOEND = endMode(seg.reload),
+            });
         }
 
         try self.wait_flag("STOPF");
@@ -312,20 +381,14 @@ pub const I2C_Device = struct {
     fn robust_writev(ctx: *anyopaque, address: Address, datagrams: []const []const u8) InterfaceError!void {
         const self: *I2C_Device = @ptrCast(@alignCast(ctx));
         address.check_reserved() catch return InterfaceError.TargetAddressReserved;
-        for (datagrams) |chunk| {
-            try self.transfer_write(address, chunk, false);
-        }
+        try self.transfer_write(address, datagrams, false);
     }
 
     fn robust_readv(ctx: *anyopaque, address: Address, datagrams: []const []u8) InterfaceError!usize {
         const self: *I2C_Device = @ptrCast(@alignCast(ctx));
         address.check_reserved() catch return InterfaceError.TargetAddressReserved;
-        var total: usize = 0;
-        for (datagrams) |chunk| {
-            try self.transfer_read(address, chunk, false);
-            total += chunk.len;
-        }
-        return total;
+        try self.transfer_read(address, datagrams, false);
+        return i2c_seg.totalLen([]u8, datagrams);
     }
 
     fn robust_writev_then_readv(
@@ -336,32 +399,30 @@ pub const I2C_Device = struct {
     ) InterfaceError!void {
         const self: *I2C_Device = @ptrCast(@alignCast(ctx));
         address.check_reserved() catch return InterfaceError.TargetAddressReserved;
-        for (write_chunks, 0..) |chunk, index| {
-            try self.transfer_write(address, chunk, true);
-            try self.transfer_read(address, read_chunks[index], true);
-        }
+        try self.transfer_write(address, write_chunks, true);
+        try self.transfer_read(address, read_chunks, true);
     }
 
     /// Write data to an I2C device (blocking)
-    pub fn write(self: *I2C_Device, address: Address, data: []const u8) Error!void {
+    pub fn write(self: *I2C_Device, address: Address, data: []const u8) InterfaceError!void {
         const dev = self.i2c_device();
         return dev.write(address, data);
     }
 
     /// Write multiple chunks to an I2C device (blocking)
-    pub fn writev(self: *I2C_Device, address: Address, chunks: []const []const u8) Error!void {
+    pub fn writev(self: *I2C_Device, address: Address, chunks: []const []const u8) InterfaceError!void {
         const dev = self.i2c_device();
         return dev.writev(address, chunks);
     }
 
     /// Read data from an I2C device (blocking)
-    pub fn read(self: *I2C_Device, address: Address, buffer: []u8) Error!usize {
+    pub fn read(self: *I2C_Device, address: Address, buffer: []u8) InterfaceError!usize {
         const dev = self.i2c_device();
         return dev.read(address, buffer);
     }
 
     /// Read multiple chunks from an I2C device (blocking)
-    pub fn readv(self: *I2C_Device, address: Address, buffers: []const []u8) Error!usize {
+    pub fn readv(self: *I2C_Device, address: Address, buffers: []const []u8) InterfaceError!usize {
         const dev = self.i2c_device();
         return dev.readv(address, buffers);
     }
@@ -373,7 +434,7 @@ pub const I2C_Device = struct {
         address: Address,
         write_data: []const u8,
         read_buffer: []u8,
-    ) Error!void {
+    ) InterfaceError!void {
         const dev = self.i2c_device();
         return dev.write_then_read(address, write_data, read_buffer);
     }
@@ -384,7 +445,7 @@ pub const I2C_Device = struct {
         address: Address,
         write_chunks: []const []const u8,
         read_chunks: []const []u8,
-    ) Error!void {
+    ) InterfaceError!void {
         const dev = self.i2c_device();
         return dev.writev_then_readv(address, write_chunks, read_chunks);
     }
@@ -396,7 +457,7 @@ pub const I2C_Device = struct {
         device_addr: Address,
         register_addr: u8,
         buffer: []u8,
-    ) Error!void {
+    ) InterfaceError!void {
         const reg_bytes = [_]u8{register_addr};
         return self.write_then_read(device_addr, &reg_bytes, buffer);
     }
@@ -408,7 +469,7 @@ pub const I2C_Device = struct {
         device_addr: Address,
         register_addr: u8,
         data: []const u8,
-    ) Error!void {
+    ) InterfaceError!void {
         const reg_bytes = [_]u8{register_addr};
         return self.writev(device_addr, &.{ &reg_bytes, data });
     }
@@ -423,13 +484,13 @@ pub const I2C_Device = struct {
 /// — until the slave finishes and releases SDA, then issue a STOP. Must run
 /// BEFORE `configure_pins` switches the pins to the I2C alternate function.
 fn recover_bus(comptime pin_cfg: PinConfig) void {
-    const scl = comptime gpio.Pin.init(pin_cfg.scl.port, pin_cfg.scl.pin, .{
+    const scl = comptime gpio.Pin.from(pin_cfg.scl.pin, .{
         .mode = .output,
         .otype = .OpenDrain,
         .pull = .PullUp,
         .speed = .VeryHighSpeed,
     });
-    const sda = comptime gpio.Pin.init(pin_cfg.sda.port, pin_cfg.sda.pin, .{
+    const sda = comptime gpio.Pin.from(pin_cfg.sda.pin, .{
         .mode = .output,
         .otype = .OpenDrain,
         .pull = .PullUp,
@@ -480,7 +541,7 @@ inline fn bit_delay() void {
 /// (~40kΩ) internal pull-ups would slow the rise time and are intentionally off.
 fn configure_pins(comptime pin_cfg: PinConfig) void {
     // Configure SCL pin
-    const scl_pin = comptime gpio.Pin.init(pin_cfg.scl.port, pin_cfg.scl.pin, .{
+    const scl_pin = comptime gpio.Pin.from(pin_cfg.scl.pin, .{
         .mode = .{ .alternate = pin_cfg.scl.af },
         .otype = .OpenDrain,
         .speed = .VeryHighSpeed,
@@ -489,7 +550,7 @@ fn configure_pins(comptime pin_cfg: PinConfig) void {
     scl_pin.configure();
 
     // Configure SDA pin
-    const sda_pin = comptime gpio.Pin.init(pin_cfg.sda.port, pin_cfg.sda.pin, .{
+    const sda_pin = comptime gpio.Pin.from(pin_cfg.sda.pin, .{
         .mode = .{ .alternate = pin_cfg.sda.af },
         .otype = .OpenDrain,
         .speed = .VeryHighSpeed,

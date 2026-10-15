@@ -112,6 +112,10 @@ fn poll(comptime ready: anytype) Error!void {
     }
 }
 
+/// Set by `enableMemoryMapped`. In memory-mapped mode BUSY stays set, so the
+/// next indirect command must abort first.
+var memory_mapped: bool = false;
+
 fn waitNotBusy() Error!void {
     return poll(struct {
         fn f(s: anytype) bool {
@@ -123,6 +127,10 @@ fn waitNotBusy() Error!void {
 /// Issue one indirect command: instruction (+ optional 24-bit address, dummy
 /// cycles, and single-line data phase). Unifies WREN/reset/status/read/program.
 fn transfer(op: Op, addr: ?u32, dcyc: u5, data: Data) Error!void {
+    if (memory_mapped) {
+        abort();
+        memory_mapped = false;
+    }
     try waitNotBusy();
 
     const len: usize = switch (data) {
@@ -293,6 +301,7 @@ pub fn enableMemoryMapped() Error!void {
     abort();
     try waitNotBusy();
     setCcr(.{ .op = .fast_read, .admode = 0b01, .dmode = 0b01, .fmode = 0b11, .dcyc = READ_DUMMY });
+    memory_mapped = true;
 }
 
 // --- Pins --------------------------------------------------------------------
@@ -302,10 +311,10 @@ pub fn enableMemoryMapped() Error!void {
 /// deasserted.
 fn configurePins() void {
     gpio.configureAlternates(&.{
-        .{ .port = "G", .num = "6", .af = .af10 }, // NCS
-        .{ .port = "F", .num = "10", .af = .af9 }, // CLK
-        .{ .port = "F", .num = "8", .af = .af10 }, // IO0
-        .{ .port = "F", .num = "9", .af = .af10 }, // IO1
+        .{ .pin = .{ .port = .G, .num = 6 }, .af = .af10 }, // NCS
+        .{ .pin = .{ .port = .F, .num = 10 }, .af = .af9 }, // CLK
+        .{ .pin = .{ .port = .F, .num = 8 }, .af = .af10 }, // IO0
+        .{ .pin = .{ .port = .F, .num = 9 }, .af = .af10 }, // IO1
     });
 
     // IO3 = PF6, IO2 = PF7 (WP#/HOLD#): GPIO output driven HIGH — this

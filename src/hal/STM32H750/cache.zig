@@ -59,7 +59,7 @@ const SCB_DCISW_WAY_Pos = 30;
 const SCB_DCISW_WAY_Msk = (0x3 << SCB_DCISW_WAY_Pos);
 
 pub inline fn enableDCache() void {
-    if (scb.CCR.read().DC != 0) unreachable; // already enabled
+    if (scb.CCR.read().DC != 0) return; // already on (e.g. left enabled by a bootloader)
 
     scb.CSSELR = 0; // select Level 1 data cache
     cpu.dsb();

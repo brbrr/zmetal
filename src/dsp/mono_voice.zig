@@ -12,22 +12,23 @@
 
 const std = @import("std");
 
-/// Number of keys treated as chromatic notes (indices 0..NOTE_KEYS-1).
-/// Higher key indices are non-note keys and are ignored.
-pub const NOTE_KEYS: u8 = 24;
+pub const VoiceConfig = struct {
+    /// Number of keys treated as chromatic notes (indices 0..note_keys-1).
+    /// Higher key indices are non-note keys and are ignored.
+    note_keys: u8 = 24,
+    /// MIDI note number of key 0. 60 = C4, so keys 0..23 span C4..B5.
+    base_midi: u8 = 60,
+};
 
-/// MIDI note number of key 0. 60 = C4, so keys 0..23 span C4..B5.
-pub const BASE_MIDI: u8 = 60;
+/// Defaults (WoopyOne layout): `MonoVoice = MonoVoiceFor(.{})`.
+pub const NOTE_KEYS: u8 = (VoiceConfig{}).note_keys;
+pub const BASE_MIDI: u8 = (VoiceConfig{}).base_midi;
 
 /// Lowest and highest octave shift, in whole octaves, that `shiftOctave` allows.
 pub const OCTAVE_MIN: i8 = -4;
 pub const OCTAVE_MAX: i8 = 4;
 
-/// Equal-tempered frequency (Hz) for a MIDI note number, from A4(69)=440Hz.
-pub fn midiToFreq(midi: i32) f32 {
-    const m: f32 = @floatFromInt(midi);
-    return 440.0 * std.math.pow(f32, 2.0, (m - 69.0) / 12.0);
-}
+pub const midiToFreq = @import("util.zig").midiToFreq;
 
 /// Chromatic frequency (Hz) for a note-key index at octave 0, from A4=440Hz.
 /// Only valid for `key < NOTE_KEYS`.
@@ -35,68 +36,77 @@ pub fn keyToFreq(key: u8) f32 {
     return midiToFreq(@as(i32, BASE_MIDI) + key);
 }
 
-pub const MonoVoice = struct {
-    /// Stack of currently-held note-key indices, oldest at [0], newest on top.
-    held: [NOTE_KEYS]u8 = undefined,
-    count: usize = 0,
-    /// Whole-octave transpose applied to every note, clamped to [OCTAVE_MIN, MAX].
-    octave: i8 = 0,
+pub const MonoVoice = MonoVoiceFor(.{});
 
-    pub fn init() MonoVoice {
-        return .{ .count = 0, .octave = 0 };
-    }
+/// Monophonic last-key-priority voice for a given key layout.
+pub fn MonoVoiceFor(comptime cfg: VoiceConfig) type {
+    return struct {
+        const Self = @This();
+        pub const note_keys = cfg.note_keys;
+        pub const base_midi = cfg.base_midi;
 
-    /// Transpose by `delta` octaves, clamped to the allowed range.
-    pub fn shiftOctave(self: *MonoVoice, delta: i8) void {
-        const next = std.math.clamp(
-            @as(i32, self.octave) + delta,
-            OCTAVE_MIN,
-            OCTAVE_MAX,
-        );
-        self.octave = @intCast(next);
-    }
+        /// Stack of currently-held note-key indices, oldest at [0], newest on top.
+        held: [cfg.note_keys]u8 = undefined,
+        count: usize = 0,
+        /// Whole-octave transpose applied to every note, clamped to [OCTAVE_MIN, MAX].
+        octave: i8 = 0,
 
-    /// Register a key press. Non-note keys and already-held keys are ignored.
-    pub fn press(self: *MonoVoice, key: u8) void {
-        if (key >= NOTE_KEYS) return;
-        for (self.held[0..self.count]) |k| {
-            if (k == key) return; // already held, keep its position
+        pub fn init() Self {
+            return .{ .count = 0, .octave = 0 };
         }
-        self.held[self.count] = key;
-        self.count += 1;
-    }
 
-    /// Register a key release. Removes the key from the held stack (if present),
-    /// preserving the order of the remaining held keys.
-    pub fn release(self: *MonoVoice, key: u8) void {
-        if (key >= NOTE_KEYS) return;
-        var i: usize = 0;
-        while (i < self.count) : (i += 1) {
-            if (self.held[i] == key) {
-                var j = i;
-                while (j + 1 < self.count) : (j += 1) {
-                    self.held[j] = self.held[j + 1];
+        /// Transpose by `delta` octaves, clamped to the allowed range.
+        pub fn shiftOctave(self: *Self, delta: i8) void {
+            const next = std.math.clamp(
+                @as(i32, self.octave) + delta,
+                OCTAVE_MIN,
+                OCTAVE_MAX,
+            );
+            self.octave = @intCast(next);
+        }
+
+        /// Register a key press. Non-note keys and already-held keys are ignored.
+        pub fn press(self: *Self, key: u8) void {
+            if (key >= cfg.note_keys) return;
+            for (self.held[0..self.count]) |k| {
+                if (k == key) return; // already held, keep its position
+            }
+            self.held[self.count] = key;
+            self.count += 1;
+        }
+
+        /// Register a key release. Removes the key from the held stack (if present),
+        /// preserving the order of the remaining held keys.
+        pub fn release(self: *Self, key: u8) void {
+            if (key >= cfg.note_keys) return;
+            var i: usize = 0;
+            while (i < self.count) : (i += 1) {
+                if (self.held[i] == key) {
+                    var j = i;
+                    while (j + 1 < self.count) : (j += 1) {
+                        self.held[j] = self.held[j + 1];
+                    }
+                    self.count -= 1;
+                    return;
                 }
-                self.count -= 1;
-                return;
             }
         }
-    }
 
-    /// True when at least one note key is held (oscillator should sound).
-    pub fn active(self: *const MonoVoice) bool {
-        return self.count > 0;
-    }
+        /// True when at least one note key is held (oscillator should sound).
+        pub fn active(self: *const Self) bool {
+            return self.count > 0;
+        }
 
-    /// Frequency (Hz) of the sounding note: the most recently pressed key that
-    /// is still held, transposed by the current octave. Only call when
-    /// `active()` is true.
-    pub fn freq(self: *const MonoVoice) f32 {
-        std.debug.assert(self.count > 0);
-        const midi = @as(i32, BASE_MIDI) + self.held[self.count - 1] + @as(i32, self.octave) * 12;
-        return midiToFreq(midi);
-    }
-};
+        /// Frequency (Hz) of the sounding note: the most recently pressed key that
+        /// is still held, transposed by the current octave. Only call when
+        /// `active()` is true.
+        pub fn freq(self: *const Self) f32 {
+            std.debug.assert(self.count > 0);
+            const midi = @as(i32, cfg.base_midi) + self.held[self.count - 1] + @as(i32, self.octave) * 12;
+            return midiToFreq(midi);
+        }
+    };
+}
 
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;

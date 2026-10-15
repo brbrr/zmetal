@@ -67,31 +67,32 @@ pub const SineOsc = struct {
 pub const WavetableOsc = struct {
     const TableSize = 2048; // power of two preferred
 
+    /// One sine period, computed at compile time and shared by every instance
+    /// (read-only data, not a per-instance 8 KB copy in RAM).
+    const table: [TableSize]f32 = blk: {
+        @setEvalBranchQuota(100_000);
+        var t: [TableSize]f32 = undefined;
+        for (&t, 0..) |*sample, i| {
+            const phase = @as(f32, @floatFromInt(i)) / TableSize;
+            sample.* = @sin(phase * std.math.tau);
+        }
+        break :blk t;
+    };
+
     sample_rate: f32,
     freq: f32,
     phase: f32, // 0..TableSize
     amplitude: f32,
     phase_inc: f32,
-    table: [TableSize]f32,
 
     pub fn init(freq: f32, sample_rate: f32, amplitude: f32) WavetableOsc {
-        @setEvalBranchQuota(10000);
         var osc = WavetableOsc{
             .sample_rate = sample_rate,
             .freq = freq,
             .phase = 0.0,
             .amplitude = amplitude,
             .phase_inc = 0.0,
-            .table = undefined,
         };
-
-        // Generate one sine period
-        for (osc.table, 0..) |sample, i| {
-            _ = sample;
-            const phase = @as(f32, @floatFromInt(i)) / TableSize;
-            osc.table[i] = std.math.sin(phase * std.math.tau);
-        }
-
         osc.setFreq(freq);
         return osc;
     }
@@ -106,8 +107,8 @@ pub const WavetableOsc = struct {
         const frac = self.phase - @as(f32, @floatFromInt(index));
 
         // Linear interpolation
-        const a = self.table[index];
-        const b = self.table[(index + 1) & (TableSize - 1)];
+        const a = table[index];
+        const b = table[(index + 1) & (TableSize - 1)];
 
         const sample = a + (b - a) * frac;
 
@@ -119,3 +120,15 @@ pub const WavetableOsc = struct {
         return sample * self.amplitude;
     }
 };
+
+test "WavetableOsc does not carry its own table" {
+    try std.testing.expect(@sizeOf(WavetableOsc) <= 64);
+}
+
+test "WavetableOsc produces a sine" {
+    var o = WavetableOsc.init(1000, 48000, 1.0);
+    _ = o.nextSample(); // phase 0 -> sin(0)
+    var peak: f32 = 0;
+    for (0..48) |_| peak = @max(peak, o.nextSample());
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), peak, 0.01);
+}

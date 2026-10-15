@@ -94,7 +94,8 @@ pub const MCP23017 = struct {
             .pin_data = [_]u8{ 0, 0 },
         };
 
-        // Configure IOCON: Sequential operation enabled, open-drain disabled
+        // IOCON = 0x20: SEQOP=1 -> sequential addressing DISABLED (byte mode;
+        // the register-pair helpers rely on it), BANK=0, open-drain INT off.
         try self.writeRegister(.IOCON, 0x20);
 
         // Enable all pull-ups by default (will only affect inputs)

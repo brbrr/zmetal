@@ -5,8 +5,8 @@
 
 const std = @import("std");
 const microzig = @import("microzig");
-const hal = microzig.hal;
-const ili9341 = @import("drivers/ili9341.zig");
+const hal = @import("zmetal").hal;
+const ili9341 = @import("zmetal").drivers.ili9341;
 
 const display_spi_config = hal.spi.Config{
     .mode = .Mode0,
@@ -15,13 +15,19 @@ const display_spi_config = hal.spi.Config{
     .direction = .FullDuplex,
 };
 
-const display_dc_pin = hal.gpio.Pin.init("A", "3", .{ .mode = .output, .speed = .VeryHighSpeed });
-const display_rst_pin = hal.gpio.Pin.init("A", "5", .{ .mode = .output, .speed = .VeryHighSpeed });
-const display_cs_pin = hal.gpio.Pin.init("G", "10", .{ .mode = .output, .speed = .VeryHighSpeed });
+const seed_pins = @import("zmetal").pins;
+const display_dc_pin = hal.gpio.Pin.from(seed_pins.D16, .{ .mode = .output, .speed = .VeryHighSpeed }); // PA3
+const display_rst_pin = hal.gpio.Pin.from(seed_pins.D22, .{ .mode = .output, .speed = .VeryHighSpeed }); // PA5
+const display_cs_pin = hal.gpio.Pin.from(seed_pins.D7, .{ .mode = .output, .speed = .VeryHighSpeed }); // PG10
 const Display = ili9341.ILI9341_DMA(display_dc_pin, display_rst_pin, display_cs_pin);
 
 var display_spi: hal.spi.SPI_Device = undefined;
 var display: Display = undefined;
+
+// Panel framebuffer + per-tile staging buffer: DMA-read, so D2 SRAM
+// (`.sram1_bss`, non-cacheable). NOLOAD — zeroed in init() before use.
+var framebuffer: [ili9341.FB_SIZE]u8 align(4) linksection(".sram1_bss") = undefined;
+var scratch: [ili9341.TILE_BYTES]u8 align(4) linksection(".sram1_bss") = undefined;
 var display_ready = false;
 var display_frame: u32 = 0;
 
@@ -43,7 +49,10 @@ pub fn init() !void {
     display_spi.apply();
     hal.clock.delay_ms(100);
 
-    display = try Display.init(&display_spi, &ili9341.display_framebuffer);
+    // Word-sized zeroing: initializes D2 SRAM ECC before any byte access.
+    @memset(@as(*[ili9341.FB_SIZE / 4]u32, @ptrCast(&framebuffer)), 0);
+    @memset(@as(*[ili9341.TILE_BYTES / 4]u32, @ptrCast(&scratch)), 0);
+    display = try Display.init(&display_spi, &framebuffer, &scratch);
     try display.set_orientation(.Landscape);
 
     display.fill_screen(ili9341.Colors.Black);
@@ -58,7 +67,7 @@ pub fn init() !void {
     display_ready = true;
 }
 
-pub fn service(load_meter: *hal.cpu_load.CpuLoadMeter) void {
+pub fn service(seed: *@import("zmetal").Seed) void {
     if (!display_ready) return;
 
     // A partial flush spanning multiple tiles is advanced here, in the
@@ -68,7 +77,7 @@ pub fn service(load_meter: *hal.cpu_load.CpuLoadMeter) void {
         return;
     }
 
-    if (hal.clock.get_tick() - tast_f_time < 16) {
+    if (hal.clock.elapsed_ms(tast_f_time) < 16) {
         // return;
     }
 
@@ -88,14 +97,14 @@ pub fn service(load_meter: *hal.cpu_load.CpuLoadMeter) void {
     // Update FPS once per second based on flushes in the elapsed window.
     fps_frame_count += 1;
     const now = hal.clock.get_tick();
-    const elapsed = now - fps_window_start;
+    const elapsed = now -% fps_window_start;
     if (elapsed >= 1000) {
         fps_value = fps_frame_count * 1000 / elapsed;
         fps_frame_count = 0;
         fps_window_start = now;
 
         // Sample the audio CPU load (resets its peak-hold, so peak is per-second).
-        const load = load_meter.read();
+        const load = seed.cpuLoad();
         cpu_avg = @intFromFloat(@min(load.avg, 9.99) * 100);
         cpu_peak = @intFromFloat(@min(load.peak, 9.99) * 100);
     }

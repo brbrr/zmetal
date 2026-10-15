@@ -15,7 +15,7 @@
         "-d",
         "${workspaceRoot}"
       ],
-      "executable": "${workspaceRoot}/zig-out/firmware/blinky.elf",
+      "executable": "${workspaceRoot}/zig-out/firmware/synth.elf",
       "interface": "swd",
       "showDevDebugOutput": "raw",
       "openOCDLaunchCommands": [
@@ -42,7 +42,7 @@
     {
       "name": "STlinkdebug-flash",
       "cwd": "${workspaceRoot}",
-      "executable": "${workspaceRoot}/zig-out/firmware/blinky-flash.elf",
+      "executable": "${workspaceRoot}/zig-out/firmware/synth.elf",
       "request": "launch",
       "type": "cortex-debug",
       "servertype": "stlink",

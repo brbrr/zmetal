@@ -194,12 +194,66 @@ pub fn configure(subslot: u8, resolution: u8, ep_size: u16) void {
     config_buf[OFF_MIC_EPSZ + 1] = ep[1];
 }
 
+// ---- Identity (VID/PID/strings) ----
+
+/// USB identity reported to the host. Defaults are TinyUSB's example VID/PID —
+/// fine for local bring-up; set your own (e.g. a pid.codes allocation) to ship.
+pub const Identity = struct {
+    vid: u16 = 0xCafe,
+    pid: u16 = 0x4001,
+    manufacturer: []const u8 = "zmetal",
+    product: []const u8 = "Daisy Audio+MIDI+CDC",
+    /// null: derive from the STM32 96-bit unique ID (24 hex digits).
+    serial: ?[]const u8 = null,
+};
+
+var identity: Identity = .{};
+var uid_serial: [24]u8 = @splat('0');
+
+/// Apply `id` to the device descriptor and string table. Call before the
+/// device connects (`usb.init` does this).
+pub fn setIdentity(id: Identity) void {
+    identity = id;
+    const vid = u16le(id.vid);
+    const pid = u16le(id.pid);
+    device_desc[8] = vid[0];
+    device_desc[9] = vid[1];
+    device_desc[10] = pid[0];
+    device_desc[11] = pid[1];
+    if (id.serial == null and @import("builtin").os.tag == .freestanding) {
+        // STM32H7 unique device ID: 3 words at 0x1FF1E800 (RM0433 §61.1).
+        const uid: *const volatile [3]u32 = @ptrFromInt(0x1FF1_E800);
+        uid_serial = uidHex(uid.*);
+    }
+}
+
+/// 96-bit unique ID as 24 uppercase hex digits, word 0 first.
+pub fn uidHex(uid: [3]u32) [24]u8 {
+    // Hand-rolled (std.fmt would pull ~2 KB of formatting into the image).
+    var out: [24]u8 = undefined;
+    for (uid, 0..) |word, w| {
+        for (0..8) |i| {
+            const nibble: u4 = @truncate(word >> @intCast(28 - i * 4));
+            out[w * 8 + i] = "0123456789ABCDEF"[nibble];
+        }
+    }
+    return out;
+}
+
+/// Encode an ASCII string as a USB string descriptor into `dst` (header + up to
+/// 31 UTF-16 code units; longer strings are truncated).
+pub fn encodeString(dst: *[32]u16, s: []const u8) []const u16 {
+    const n: usize = @min(s.len, dst.len - 1); // (explicit type: @min narrows to u5)
+    // Header, little-endian u16: low byte = bLength, high byte = 0x03 (STRING).
+    dst[0] = (@as(u16, 0x03) << 8) | @as(u16, @intCast(n * 2 + 2));
+    for (s[0..n], 0..) |ch, i| dst[i + 1] = ch;
+    return dst[0 .. n + 1];
+}
+
 // ---- Device descriptor (18) ----
-const VID: u16 = 0xCafe; // TinyUSB example VID; fine for local bring-up
-const PID: u16 = 0x4001;
-const device_desc: [18]u8 = blk: {
-    const vid = u16le(VID);
-    const pid = u16le(PID);
+var device_desc: [18]u8 = blk: {
+    const vid = u16le((Identity{}).vid);
+    const pid = u16le((Identity{}).pid);
     const bcd = u16le(0x0200); // USB 2.0
     const dev = u16le(0x0100);
     break :blk [_]u8{
@@ -224,9 +278,7 @@ fn strDesc(comptime s: []const u8) [s.len + 1]u16 {
     for (s, 0..) |ch, i| out[i + 1] = ch;
     return out;
 }
-const str_mfr = strDesc("zmetal");
-const str_product = strDesc("Daisy Audio+MIDI+CDC");
-const str_serial = strDesc("123456");
+const str_mfr = strDesc("zmetal"); // header-format check (test below)
 
 export fn tud_descriptor_device_cb() callconv(.c) [*]const u8 {
     return &device_desc;
@@ -236,17 +288,19 @@ export fn tud_descriptor_configuration_cb(index: u8) callconv(.c) [*]const u8 {
     return &config_buf;
 }
 var string_buf: [32]u16 = undefined;
-export fn tud_descriptor_string_cb(index: u8, langid: u16) callconv(.c) [*]const u16 {
+/// TinyUSB string callback. Unknown indices return null (STALL), never LANGID.
+export fn tud_descriptor_string_cb(index: u8, langid: u16) callconv(.c) ?[*]const u16 {
     _ = langid;
-    const src: []const u16 = switch (index) {
-        0 => &str_lang,
-        1 => &str_mfr,
-        2 => &str_product,
-        3 => &str_serial,
-        else => &str_lang,
-    };
-    @memcpy(string_buf[0..src.len], src);
-    return &string_buf;
+    switch (index) {
+        0 => {
+            @memcpy(string_buf[0..str_lang.len], &str_lang);
+            return &string_buf;
+        },
+        1 => return encodeString(&string_buf, identity.manufacturer).ptr,
+        2 => return encodeString(&string_buf, identity.product).ptr,
+        3 => return encodeString(&string_buf, identity.serial orelse &uid_serial).ptr,
+        else => return null,
+    }
 }
 
 test "config descriptor total length and interface count" {
@@ -289,4 +343,30 @@ test "string descriptor header: bLength low byte, type 0x03 high byte" {
     try std.testing.expectEqual(@as(u16, (@as(u16, 0x03) << 8) | 14), str_mfr[0]);
     // langid descriptor stays correct: bLength=4, type=0x03.
     try std.testing.expectEqual(@as(u16, (@as(u16, 0x03) << 8) | 4), str_lang[0]);
+}
+
+test "long strings are truncated to fit the 32-unit buffer" {
+    var buf: [32]u16 = undefined;
+    const long: [40]u8 = @splat('a');
+    const s = encodeString(&buf, &long);
+    try std.testing.expectEqual(@as(usize, 32), s.len); // header + 31 chars
+    try std.testing.expectEqual(@as(u16, (0x03 << 8) | 64), s[0]);
+}
+
+test "uid serial is 24 uppercase hex digits, word 0 first" {
+    const hex = uidHex(.{ 0x0012_ABCD, 0xDEAD_BEEF, 0x0000_0001 });
+    try std.testing.expectEqualStrings("0012ABCDDEADBEEF00000001", &hex);
+}
+
+test "device descriptor carries the configured VID/PID" {
+    setIdentity(.{ .vid = 0x1209, .pid = 0x0001 });
+    try std.testing.expectEqual(@as(u8, 0x09), device_desc[8]);
+    try std.testing.expectEqual(@as(u8, 0x12), device_desc[9]);
+    try std.testing.expectEqual(@as(u8, 0x01), device_desc[10]);
+    try std.testing.expectEqual(@as(u8, 0x00), device_desc[11]);
+    setIdentity(.{}); // restore
+}
+
+test "unknown string index returns null" {
+    try std.testing.expectEqual(@as(?[*]const u16, null), tud_descriptor_string_cb(9, 0x0409));
 }

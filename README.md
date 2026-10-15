@@ -1,63 +1,104 @@
-# ZMetal - Daisy Seed Firmware
+# zmetal — Daisy Seed library for Zig
 
-Zig-based firmware for Daisy Seed (STM32H750IB).
+A Zig library for the Electrosmith Daisy Seed (STM32H750IB), in the spirit of
+libDaisy, built on [microzig](https://github.com/ZigEmbeddedGroup/microzig).
+Examples live in `examples/` and are built by `zig build`.
 
-## Quick Start
-
-```bash
-# Build for bootloader (default)
-zig build
-
-# Output shows memory usage:
-# === Memory Usage Report: blinky-sram ===
-# Memory region       Used Size  Region Size  %age Used
-# ----------------------------------------------------------
-# FLASH                   0 B       128 KB    0.00%
-# DTCMRAM               832 B       128 KB    0.63%
-# SRAM                  92 KB       480 KB   19.14%
-# ...
-
-# Flash via USB DFU
-dfu-util -a 0 -s 0x90040000:leave -D zig-out/firmware/blinky-sram.bin -d ,0483:df11
-
-
-// INTERNAL_ADDRESS = 0x08000000
-// FLASH_ADDRESS ?= $(INTERNAL_ADDRESS)
-// dfu-util -a 0 -s 0x08000000:leave -D zig-out/firmware/blinky.bin -d ,0483:df11
-// openocd -s /usr/local/share/openocd/scripts -f interface/stlink.cfg -f target/stm32h7x.cfg -c "program ./zig-out/firmware/blinky.elf verify reset exit"
-
-```
-
-## Build Commands
+## Build
 
 ```bash
-zig build          # Default: SRAM mode (bootloader)
-zig build sram     # Explicit SRAM mode
-zig build flash    # Flash mode (direct, no bootloader)
-zig build --help   # Show all options
+zig build -Doptimize=safe                  # every example
+zig build synth -Doptimize=safe            # one example
+zig build synth -Doptimize=safe -Dmemory=sram   # SRAM image for the Daisy bootloader
+zig build test                             # host unit tests (std-only modules)
+zig build --help                           # all steps and options
 ```
 
-## Documentation
+Artifacts land in `zig-out/firmware/<example>.{elf,bin}`, and each build
+prints a memory usage report. Use `-Doptimize=safe`: the synth example's
+Debug build does not fit the 128 KB internal flash.
 
-- **[BUILD_MODES.md](docs/BUILD_MODES.md)** - Detailed guide on SRAM vs Flash modes
+### Examples
 
-## Tasks
+| Example | What it shows |
+|---|---|
+| `synth` | Mono synth: keyboard + encoders (MCP23017), ILI9341 display, DIN/USB MIDI, SD card |
+| `synth_usb_audio` | Same, with USB Audio (UAC2) routed through the codec |
+| `usb_loopback` | USB CDC + MIDI echo device |
+| `i2c` | AHT30 temperature/humidity sensor over I2C1 |
 
-- Build tasks: `build-sram`, `build-flash`
-- Flash tasks: `program-sram-dfu`, `program-flash-openocd`, etc.
+### Flashing
 
-## Architecture
+```bash
+# Internal flash over SWD (default -Dmemory=flash)
+openocd -f interface/stlink.cfg -f target/stm32h7x.cfg \
+  -c "program zig-out/firmware/synth.elf verify reset exit"
 
-- **Chip**: STM32H750IB (Cortex-M7 @ 480MHz)
-- **Bootloader**: Daisy closed-source bootloader in internal flash
-- **Code execution**: SRAM (0x24000000) - copied from QSPI by bootloader
-- **Storage**: QSPI Flash (0x90040000) - firmware lives here
+# SRAM image via the Daisy bootloader (-Dmemory=sram)
+dfu-util -a 0 -s 0x90040000:leave -D zig-out/firmware/synth.bin -d ,0483:df11
+```
 
-## Features
+## Using the library
 
-- ✅ Dual-mode build system (SRAM/Flash)
-- ✅ Automatic memory usage reporting after build
-- ✅ Compatible with Daisy bootloader
-- ✅ Direct SWD/JTAG debugging support
+An application root imports `zmetal`. The HAL's early init and its interrupt
+handlers (SysTick, faults, audio DMA/SAI, display SPI, MIDI UART, USB) are
+installed automatically, so a minimal audio app is:
 
-See `docs/BUILD_MODES.md` for full memory layout details.
+```zig
+const microzig = @import("microzig");
+const zmetal = @import("zmetal");
+
+comptime {
+    _ = microzig.export_startup();
+}
+pub const panic = microzig.panic;
+pub const std_options = microzig.std_options(.{});
+
+var seed: zmetal.Seed = .{}; // module scope: audio DMA keeps pointers into it
+
+fn audio(in: []const f32, out: []f32) void {
+    @memcpy(out, in); // interleaved stereo passthrough; `out` arrives zeroed
+}
+
+pub fn main() !void {
+    try seed.init(.{}); // .audio = sample rate/bit depth/block size, .sdram, .qspi
+    try seed.startAudio(audio); // or seed.startAudioCtx(&state, State.process)
+
+    const button = zmetal.hal.Gpio.init(zmetal.pins.D7, .{ .mode = .input, .pull = .up });
+    while (true) {
+        seed.setLed(!button.read());
+        zmetal.time.delayMs(1);
+    }
+}
+```
+
+What's in `zmetal`:
+
+| | |
+|---|---|
+| `zmetal.Seed` | board: `init(config)`, `startAudio`/`startAudioCtx`, `setLed`/`toggleLed`, `cpuLoad` |
+| `zmetal.pins` | header pin names `D0..D32`, `A0..A13`, `LED` |
+| `zmetal.hal` | drivers: `Gpio`, `pin("PC7")`, `i2c`, `spi`, `usart`, `sdmmc`, `sdram`, `qspi`, `usb` (`init`/`initWithAudio`, identity), `clock.frequencies()` |
+| `zmetal.time` | `nowMs`, `nowUs`, `delayMs`, `delayUs` |
+| `zmetal.drivers` | ILI9341 display, MCP23017 I/O expander |
+| `zmetal.hid` | MIDI parser/ports, `McpMatrixKeyboard`, `McpEncoders`, debounce |
+| `zmetal.dsp` | oscillators, mono voice, `midiToFreq` (std-only, host-testable) |
+| `zmetal.audio` | `AudioInterface(Program, .{ .usb })` patchbay |
+| `zmetal.fat` | FatFs on the SD card (firmware built with `.fat = true`) |
+
+New firmware is added to the `examples` table in `build.zig`, or built with
+`addFirmware(b, ctx, .{ .name, .root_source_file, .usb, .fat, ... })`.
+
+## Layout
+
+```
+src/zmetal.zig        public facade: hal, board, drivers, hid, dsp, audio, fat
+src/hal/STM32H750/    HAL (injected as microzig's chip hal) + Daisy board init
+src/drivers/          ILI9341 display, MCP23017 I/O expander
+src/hid/              MIDI, encoders, keyboard matrix, debounce
+src/dsp/              std-only DSP (zmetal_dsp module, host-testable)
+src/audio/            audio interface / Program patchbay
+src/ld/               flash.ld, sram.ld
+examples/             example firmwares
+lib/                  microzig, tinyusb, zfat submodules + C shims
+```

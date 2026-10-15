@@ -22,7 +22,7 @@ MEMORY
 	DTCMRAM     (RWX) : ORIGIN = 0x20000000, LENGTH = 128K
 	SRAM        (RWX) : ORIGIN = 0x24000000, LENGTH = 480K
 	RAM_D2_DMA  (RWX) : ORIGIN = 0x30000000, LENGTH = 192K
-	RAM_D2      (RWX) : ORIGIN = 0x30031000, LENGTH = 96K
+	RAM_D2      (RWX) : ORIGIN = 0x30030000, LENGTH = 96K
 	RAM_D3      (RWX) : ORIGIN = 0x38000000, LENGTH = 64K
 	BACKUP_SRAM (RWX) : ORIGIN = 0x38800000, LENGTH = 4K
 	ITCMRAM     (RWX) : ORIGIN = 0x00000000, LENGTH = 64K
@@ -64,7 +64,7 @@ SECTIONS
 	.ARM.extab :
 	{
 		. = ALIGN(4);
-		*(.ARM.extab)
+		*(.ARM.extab .ARM.extab.*)
 		*(.gnu.linkonce.armextab.*)
 		. = ALIGN(4);
 	} > SRAM
@@ -110,7 +110,7 @@ SECTIONS
 		. = ALIGN(4);
 		_ssram1_bss = .;
 
-		PROVIDE(__sram1_bss_start__ = _sram1_bss);
+		PROVIDE(__sram1_bss_start__ = _ssram1_bss);
 		*(.sram1_bss)
 		*(.sram1_bss*)
 		. = ALIGN(4);
@@ -213,32 +213,21 @@ SECTIONS
 	} > BACKUP_SRAM
 
 	/* QSPI Flash sections */
+	/* No start/end symbols: an empty output section that only holds symbol
+	 * assignments is still emitted, and as zero-size PROGBITS it lands inside
+	 * an empty PT_LOAD, which made zig objcopy pick that segment as the .bin
+	 * base (64 MB SRAM image). Without them lld drops the section when unused.
+	 * Code/data placed here must be programmed to QSPI separately. */
 	.qspiflash_text :
 	{
-		. = ALIGN(4);
-		_sqspiflash_text = .;
-
-		PROVIDE(__qspiflash_text_start = _sqspiflash_text);
 		*(.qspiflash_text)
 		*(.qspiflash_text*)
-		. = ALIGN(4);
-		_eqspiflash_text = .;
-
-		PROVIDE(__qspiflash_text_end = _eqspiflash_text);
 	} > QSPIFLASH
 
 	.qspiflash_data :
 	{
-		. = ALIGN(4);
-		_sqspiflash_data = .;
-
-		PROVIDE(__qspiflash_data_start = _sqspiflash_data);
 		*(.qspiflash_data)
 		*(.qspiflash_data*)
-		. = ALIGN(4);
-		_eqspiflash_data = .;
-
-		PROVIDE(__qspiflash_data_end = _eqspiflash_data);
 	} > QSPIFLASH
 
 	.qspiflash_bss (NOLOAD) :

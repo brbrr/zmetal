@@ -2,7 +2,7 @@
   "tasks": [
     {
       "label": "build-sram",
-      "command": "zig build sram",
+      "command": "zig build synth -Doptimize=safe -Dmemory=sram",
       "type": "shell",
       "group": {
         "isDefault": true,
@@ -12,7 +12,7 @@
     },
     {
       "label": "build-flash",
-      "command": "zig build flash",
+      "command": "zig build synth -Doptimize=safe",
       "type": "shell",
       "group": {
         "kind": "build"
@@ -22,35 +22,35 @@
 
     {
       "label": "create-bin-sram",
-      "command": "llvm-objcopy -O binary zig-out/firmware/blinky-sram.elf zig-out/firmware/blinky-sram.bin && echo 'Created blinky-sram.bin'",
+      "command": "llvm-objcopy -O binary zig-out/firmware/synth.elf zig-out/firmware/synth.bin && echo 'Created synth.bin'",
       "type": "shell",
       "dependsOn": ["build-sram"]
     },
 
     {
       "label": "create-bin-flash",
-      "command": "llvm-objcopy -O binary zig-out/firmware/blinky-flash.elf zig-out/firmware/blinky-flash.bin && echo 'Created blinky-flash.bin'",
+      "command": "llvm-objcopy -O binary zig-out/firmware/synth.elf zig-out/firmware/synth.bin && echo 'Created synth.bin'",
       "type": "shell",
       "dependsOn": ["build-flash"]
     },
 
     {
       "label": "program-sram-dfu",
-      "command": "dfu-util -a 0 -s 0x90040000:leave -D zig-out/firmware/blinky-sram.bin -d ,0483:df11",
+      "command": "dfu-util -a 0 -s 0x90040000:leave -D zig-out/firmware/synth.bin -d ,0483:df11",
       "type": "shell",
       "dependsOn": ["create-bin-sram"]
     },
 
     {
       "label": "program-flash-dfu",
-      "command": "dfu-util -a 0 -s 0x08000000:leave -D zig-out/firmware/blinky-flash.bin -d ,0483:df11",
+      "command": "dfu-util -a 0 -s 0x08000000:leave -D zig-out/firmware/synth.bin -d ,0483:df11",
       "type": "shell",
       "dependsOn": ["create-bin-flash"]
     },
 
     {
       "label": "program-flash-openocd",
-      "command": "openocd -s /usr/local/share/openocd/scripts -f interface/stlink.cfg -f target/stm32h7x.cfg -c 'program ./zig-out/firmware/blinky-flash.elf verify reset exit' && echo success!",
+      "command": "openocd -s /usr/local/share/openocd/scripts -f interface/stlink.cfg -f target/stm32h7x.cfg -c 'program ./zig-out/firmware/synth.elf verify reset exit' && echo success!",
       "problemMatcher": [],
       "type": "shell",
       "dependsOn": ["build-flash"]
@@ -58,7 +58,7 @@
 
     {
       "label": "program-sram-openocd",
-      "command": "zig build sram && openocd -s /usr/local/share/openocd/scripts -f interface/stlink.cfg -f target/stm32h7x.cfg -c 'program ./zig-out/firmware/blinky.elf verify reset exit' && echo success!",
+      "command": "zig build synth -Doptimize=safe -Dmemory=sram && openocd -s /usr/local/share/openocd/scripts -f interface/stlink.cfg -f target/stm32h7x.cfg -c 'program ./zig-out/firmware/synth.elf verify reset exit' && echo success!",
       "problemMatcher": [],
       "type": "shell"
     }

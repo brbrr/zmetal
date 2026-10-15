@@ -5,6 +5,7 @@ const hal = @import("hal.zig");
 const daisy = @import("daisy.zig");
 const audio = @import("audio.zig");
 const dwt = @import("dwt.zig");
+const sai_math = @import("sai_math.zig");
 const CpuLoadMeter = @import("cpu_load.zig").CpuLoadMeter;
 const regs = microzig.chip.peripherals;
 const sai_types = microzig.chip.types.peripherals.sai_v3_4pdm;
@@ -86,7 +87,12 @@ pub fn configFromAudio(cfg: audio.AudioConfig) SaiConfig {
     };
 }
 
-pub const AudioCallback = fn (input: []const f32, output: []f32, size: u16) void;
+/// Interleaved stereo block callback with a context pointer. `in` and `out`
+/// have the same length (frames * 2); `out` arrives zeroed.
+pub const Callback = struct {
+    ctx: ?*anyopaque,
+    func: *const fn (ctx: ?*anyopaque, in: []const f32, out: []f32) void,
+};
 
 // ============================================================================
 // DMA Channels (fixed for SAI1: Stream0=TX, Stream1=RX)
@@ -141,7 +147,7 @@ const codec_reset = hal.gpio.Pin.init("B", "11", .{
 pub const SaiDriver = struct {
     config: SaiConfig,
     transfer_size: u16 = 0,
-    user_callback: ?*const AudioCallback = null,
+    user_callback: ?Callback = null,
     /// Optional CPU-load meter (owned by daisy), updated once per block.
     load_meter: ?*CpuLoadMeter = null,
 
@@ -152,7 +158,9 @@ pub const SaiDriver = struct {
     /// Create and initialize the SAI peripheral.
     /// Configures clocks, pins, codec, and SAI register blocks.
     /// Does NOT start audio — call start() for that.
-    pub fn init(config: SaiConfig) SaiDriver {
+    pub fn init(config: SaiConfig) !SaiDriver {
+        // DMA halves hold HalfBuffer interleaved stereo samples -> HalfBuffer/2 frames.
+        try sai_math.validate(@intFromEnum(config.bit_depth), config.blocksize, HalfBuffer / 2);
         var self = SaiDriver{ .config = config };
 
         // Enable SAI1 clock
@@ -172,8 +180,8 @@ pub const SaiDriver = struct {
         // Reset codec (AK4556)
         resetCodec();
 
-        tx_chan.claim() catch unreachable;
-        rx_chan.claim() catch unreachable;
+        try tx_chan.claim();
+        try rx_chan.claim();
 
         self.transfer_size = self.config.blocksize * 2 * 2; // blocksize * 2 channels * 2 halves
 
@@ -181,14 +189,14 @@ pub const SaiDriver = struct {
         @memset(&tx_buffer, 0);
 
         // Configure SAI register blocks
-        self.initSaiBlocks();
+        try self.initSaiBlocks();
 
         return self;
     }
 
     /// Start DMA audio streaming with the given callback.
     /// Follows libdaisy's start sequence: slave (RX) first, then master (TX).
-    pub fn start(self: *SaiDriver, callback: *const AudioCallback, load_meter: ?*CpuLoadMeter) !void {
+    pub fn start(self: *SaiDriver, callback: Callback, load_meter: ?*CpuLoadMeter) !void {
         self.user_callback = callback;
         self.load_meter = load_meter;
 
@@ -257,6 +265,11 @@ pub const SaiDriver = struct {
     // SAI1 Error Interrupt Handler
     // ------------------------------------------------------------------
 
+    pub const ErrorCounts = struct { ovrudr: u32 = 0, wckcfg: u32 = 0, cnrdy: u32 = 0, afsdet: u32 = 0, lfsdet: u32 = 0 };
+    /// SAI1 error-flag counters (IRQ context). Errors are counted and cleared,
+    /// never fatal: an audio-callback overrun or a debugger halt raises OVRUDR.
+    pub var error_counts: ErrorCounts = .{};
+
     pub fn sai1_irq_handler() callconv(.c) void {
 
         // Block A (master TX) errors
@@ -267,24 +280,24 @@ pub const SaiDriver = struct {
 
             if (sr.OVRUDR == 1 and im.OVRUDRIE == 1) {
                 clr_r.modify(.{ .COVRUDR = 1 });
-                @panic("QQ");
+                error_counts.ovrudr +%= 1;
             }
             if (@intFromEnum(sr.WCKCFG) == 1 and im.WCKCFGIE == 1) {
                 clr_r.modify(.{ .CWCKCFG = 1 });
-                @panic("QQ");
+                error_counts.wckcfg +%= 1;
             }
 
             if (@intFromEnum(sr.CNRDY) == 1 and im.CNRDYIE == 1) {
                 clr_r.modify(.{ .CCNRDY = 1 });
-                @panic("QQ");
+                error_counts.cnrdy +%= 1;
             }
             if (sr.AFSDET == 1 and im.AFSDETIE == 1) {
                 clr_r.modify(.{ .CAFSDET = 1 });
-                @panic("QQ");
+                error_counts.afsdet +%= 1;
             }
             if (sr.LFSDET == 1 and im.LFSDETIE == 1) {
                 clr_r.modify(.{ .CLFSDET = 1 });
-                @panic("QQ");
+                error_counts.lfsdet +%= 1;
             }
         }
 
@@ -295,24 +308,24 @@ pub const SaiDriver = struct {
 
             if (sr.OVRUDR == 1 and im.OVRUDRIE == 1) {
                 clr_r.modify(.{ .COVRUDR = 1 });
-                @panic("QQ");
+                error_counts.ovrudr +%= 1;
             }
             if (@intFromEnum(sr.WCKCFG) == 1 and im.WCKCFGIE == 1) {
                 clr_r.modify(.{ .CWCKCFG = 1 });
-                @panic("QQ");
+                error_counts.wckcfg +%= 1;
             }
 
             if (@intFromEnum(sr.CNRDY) == 1 and im.CNRDYIE == 1) {
                 clr_r.modify(.{ .CCNRDY = 1 });
-                @panic("QQ");
+                error_counts.cnrdy +%= 1;
             }
             if (sr.AFSDET == 1 and im.AFSDETIE == 1) {
                 clr_r.modify(.{ .CAFSDET = 1 });
-                @panic("QQ");
+                error_counts.afsdet +%= 1;
             }
             if (sr.LFSDET == 1 and im.LFSDETIE == 1) {
                 clr_r.modify(.{ .CLFSDET = 1 });
-                @panic("QQ");
+                error_counts.lfsdet +%= 1;
             }
 
             // if (sr.FREQ == 1 and im.FREQIE == 1) {
@@ -320,7 +333,6 @@ pub const SaiDriver = struct {
             //     @panic("QQ");
             // }
         }
-        @panic("QQQ");
     }
 
     // ------------------------------------------------------------------
@@ -345,9 +357,9 @@ pub const SaiDriver = struct {
     // SAI Block Configuration
     // ------------------------------------------------------------------
 
-    fn initSaiBlocks(self: *SaiDriver) void {
+    fn initSaiBlocks(self: *SaiDriver) !void {
         const data = self.config.getSaiRegFlags();
-        const mck_div = computeMckDiv(daisy.clock_outputs.SAI1output, @intFromEnum(self.config.sample_rate), data.frame_length, false, false);
+        const mck_div = try sai_math.computeMckDiv(daisy.clock_outputs.SAI1output, @intFromEnum(self.config.sample_rate), data.frame_length, false, false);
 
         // regs.SAI1.GCR.raw = 0;
 
@@ -513,14 +525,14 @@ pub const SaiDriver = struct {
 
     pub fn fillTxBuffer(self: *SaiDriver, offset: u32) void {
         const half_size = self.transfer_size / 2;
-        std.debug.assert(half_size <= HalfBuffer);
 
         // Time the whole per-block audio work (convert + callback + convert) for
         // the CPU-load meter.
         if (self.load_meter) |m| m.beginBlock(dwt.cycles());
 
         var f_in: [HalfBuffer]f32 = undefined;
-        var f_out: [HalfBuffer]f32 = undefined;
+        // A callback that writes nothing must output silence, not stack garbage.
+        var f_out: [HalfBuffer]f32 = @splat(0);
 
         // --- Read rx_buffer (SRAM1) into stack-local f_in (DTCM) ---
         switch (self.config.bit_depth) {
@@ -534,12 +546,13 @@ pub const SaiDriver = struct {
                     f_in[i] = s32tof(rx_buffer[offset + i]);
                 }
             },
-            else => unreachable,
+            // 16-bit is rejected by init (sai_math.validate).
+            .@"16bit" => @memset(f_in[0..half_size], 0),
         }
 
         // --- User callback: DTCM → DTCM (no SRAM1 access) ---
         if (self.user_callback) |cb| {
-            cb(f_in[0..half_size], f_out[0..half_size], @intCast(half_size));
+            cb.func(cb.ctx, f_in[0..half_size], f_out[0..half_size]);
         }
 
         // --- Convert to i32 in staging buffer (DTCM, no SRAM1 access) ---
@@ -554,44 +567,13 @@ pub const SaiDriver = struct {
                     tx_buffer[offset + i] = fto32(f_out[i]);
                 }
             },
-            else => unreachable,
+            .@"16bit" => @memset(tx_buffer[offset..][0..half_size], 0),
         }
 
         cpu.dsb();
         cpu.dmb();
 
         if (self.load_meter) |m| m.endBlock(dwt.cycles());
-    }
-
-    // ------------------------------------------------------------------
-    // Clock Divider Calculation
-    // ------------------------------------------------------------------
-
-    /// Compute MCKDIV matching the C HAL formula with *10 rounding precision.
-    /// Reference: stm32h7xx_hal_sai.c lines 614-660
-    pub fn computeMckDiv(
-        sai_ck: u32,
-        audio_freq: u32,
-        frame_length: u32,
-        no_divider: bool,
-        oversampling: bool,
-    ) u4 {
-        var tmpval: u32 = undefined;
-
-        if (no_divider) {
-            // NODIV = 1: MCKDIV = SAI_CK / (FS * FRL)
-            tmpval = (sai_ck * 10) / (audio_freq * frame_length);
-        } else {
-            // NODIV = 0: MCKDIV = SAI_CK / (FS * (OSR+1) * 256)
-            const osr: u32 = if (oversampling) 2 else 1;
-            tmpval = (sai_ck * 10) / (audio_freq * osr * 256);
-        }
-
-        var mckdiv: u32 = tmpval / 10;
-        if ((tmpval % 10) > 8) {
-            mckdiv += 1;
-        }
-        return @intCast(mckdiv);
     }
 };
 

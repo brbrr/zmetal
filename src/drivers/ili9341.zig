@@ -8,7 +8,7 @@ pub const Font = font.Font;
 
 pub const WIDTH = 320;
 pub const HEIGHT = 240;
-const FB_SIZE = WIDTH * HEIGHT * 2; // 153,600 bytes
+pub const FB_SIZE = WIDTH * HEIGHT * 2; // 153,600 bytes
 pub const Color = u16;
 
 // Tile grid for checksum-diff partial flush. WIDTH/HEIGHT must divide evenly.
@@ -17,7 +17,7 @@ pub const TILE_H = 48;
 pub const TILE_COLS = WIDTH / TILE_W; // 10
 pub const TILE_ROWS = HEIGHT / TILE_H; // 5
 pub const TILE_COUNT = TILE_COLS * TILE_ROWS; // 50
-const TILE_BYTES = TILE_W * TILE_H * 2; // 3072
+pub const TILE_BYTES = TILE_W * TILE_H * 2; // 3072
 
 pub const Colors = struct {
     pub const Black: Color = 0x0000;
@@ -228,10 +228,6 @@ pub fn ILI9341_Transport(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gp
     };
 }
 
-pub var display_framebuffer: [FB_SIZE]u8 align(4) linksection(".sram1_bss") = @splat(0);
-
-// Contiguous staging buffer for one dirty tile (partial flush).
-var display_scratch: [TILE_BYTES]u8 align(4) linksection(".sram1_bss") = @splat(0);
 
 /// ILI9341 driver with chunked DMA framebuffer transfers
 pub fn ILI9341_DMA(
@@ -248,6 +244,8 @@ pub fn ILI9341_DMA(
         spi: *hal.spi.SPI_Device,
         orientation: Orientation,
         framebuffer: []u8,
+        /// Contiguous staging buffer for one dirty tile (partial flush).
+        scratch: []u8,
 
         // Chunking state
         chunk_remaining: usize = 0,
@@ -266,9 +264,15 @@ pub fn ILI9341_DMA(
         pump_idx: usize = 0,
         needs_pump: bool = false,
 
-        pub fn init(spi: *hal.spi.SPI_Device, framebuffer: []u8) !Self {
+        /// `framebuffer` (>= FB_SIZE) and `scratch` (>= TILE_BYTES) are owned by
+        /// the caller and read by DMA: place them in `linksection(".sram1_bss")`,
+        /// word-aligned. They are not zero-initialized — `@memset` them first.
+        pub fn init(spi: *hal.spi.SPI_Device, framebuffer: []u8, scratch: []u8) !Self {
             if (framebuffer.len < FB_SIZE) {
                 return error.FramebufferTooSmall;
+            }
+            if (scratch.len < TILE_BYTES) {
+                return error.ScratchTooSmall;
             }
 
             const transport = try Transport.init(spi);
@@ -277,7 +281,10 @@ pub fn ILI9341_DMA(
                 .transport = transport,
                 .spi = spi,
                 .orientation = .Portrait,
-                .framebuffer = framebuffer,
+                // Exact sizes: flush streams framebuffer.len bytes, so a larger
+                // caller buffer would overrun the 320x240 window.
+                .framebuffer = framebuffer[0..FB_SIZE],
+                .scratch = scratch[0..TILE_BYTES],
             };
 
             try self.transport.init_display();
@@ -383,6 +390,7 @@ pub fn ILI9341_DMA(
 
         /// Draw a rectangle outline
         pub fn draw_rect(self: *Self, x: u16, y: u16, w: u16, h: u16, color: Color) void {
+            if (w == 0 or h == 0) return; // `+ h - 1` / `+ w - 1` would underflow
             self.draw_hline(x, y, w, color);
             self.draw_hline(x, y + h - 1, w, color);
             self.draw_vline(x, y, h, color);
@@ -442,6 +450,7 @@ pub fn ILI9341_DMA(
             }
 
             self.done = false;
+            errdefer self.done = true; // a failed start must not look in-flight forever
             // Setup address window for full screen
             try self.transport.set_address_window(0, 0, WIDTH - 1, HEIGHT - 1);
 
@@ -554,7 +563,7 @@ pub fn ILI9341_DMA(
                 const src_off = ((y0 + r) * WIDTH + x0) * 2;
                 const dst_off = r * TILE_W * 2;
                 @memcpy(
-                    display_scratch[dst_off..][0 .. TILE_W * 2],
+                    self.scratch[dst_off..][0 .. TILE_W * 2],
                     self.framebuffer[src_off..][0 .. TILE_W * 2],
                 );
             }
@@ -570,7 +579,7 @@ pub fn ILI9341_DMA(
                 cs.write(.Low);
             }
 
-            self.dma_src = &display_scratch;
+            self.dma_src = self.scratch[0..TILE_BYTES];
             self.chunk_offset = 0;
             self.chunk_remaining = TILE_BYTES;
             try self.send_next_chunk();
@@ -613,6 +622,7 @@ pub fn ILI9341_DMA(
             }
 
             self.done = false;
+            errdefer self.done = true; // a failed start must not look in-flight forever
             try self.start_tile(self.dirty_tiles[0]);
         }
 
@@ -644,14 +654,18 @@ pub fn ILI9341_DMA(
                 }
             }.callback);
 
-            while (!self.done) {
+            // `done` is set from the DMA/SPI completion ISR: atomic load so the
+            // read cannot be hoisted out of the loop.
+            while (!@atomicLoad(bool, &self.done, .acquire)) {
                 microzig.cpu.nop();
             }
         }
 
         /// Check if flush is complete
         pub fn is_flush_complete(self: *const Self) bool {
-            return !self.spi.is_dma_busy() and self.chunk_remaining == 0;
+            // `done` covers the whole flush, including diff tiles still waiting
+            // to be pumped (DMA idle + chunk_remaining == 0 is true between tiles).
+            return @atomicLoad(bool, &self.done, .acquire);
         }
 
         pub fn rgb565(r: u8, g: u8, b: u8) Color {

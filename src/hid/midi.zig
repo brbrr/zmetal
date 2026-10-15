@@ -99,7 +99,9 @@ pub const Parser = struct {
             .kind = kindOf(self.status),
             .channel = @intCast(self.status & 0x0F),
             .data1 = self.data[0],
-            .data2 = self.data[1],
+            // 1-data-byte messages (program change, channel pressure) must not
+            // leak the previous message's second byte.
+            .data2 = if (expectedData(self.status) == 2) self.data[1] else 0,
         };
     }
 };
@@ -242,4 +244,12 @@ test "MessageQueue: drops on full, keeps oldest, no corruption" {
     }
     try expectEqual(@as(usize, 63), count);
     try expectEqual(@as(u8, 62), last);
+}
+
+test "1-data-byte message after a 2-byte one reports data2 = 0" {
+    var p = Parser.init();
+    _ = feedAll(&p, &.{ 0x90, 0x3C, 0x64 }).?; // note on, data2 = 100
+    const pc = feedAll(&p, &.{ 0xC0, 0x05 }).?; // program change 5
+    try expectEqual(@as(u8, 5), pc.data1);
+    try expectEqual(@as(u8, 0), pc.data2);
 }

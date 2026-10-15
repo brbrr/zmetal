@@ -22,82 +22,45 @@ pub const std_options = microzig.std_options(.{});
 const chip_peri = chip.peripherals;
 const RCC = chip_peri.RCC;
 const time = microzig.drivers.time;
-pub const hal = microzig.hal;
+const hal = zmetal.hal;
 const usb = hal.usb;
 
 // Daisy board support
 const ssai = hal.sai;
 const SaiDriver = ssai.SaiDriver;
 
-const keyboard = @import("hid/keyboard.zig");
-const encoders_mod = @import("hid/encoders.zig");
-const MidiPort = @import("hid/midi_port.zig").MidiPort;
+const zmetal = @import("zmetal");
+const layout = @import("layout.zig");
+const MidiPort = zmetal.hid.midi_port.MidiPort;
 const synth = @import("synth.zig");
-const ui = @import("ui");
-const fat = @import("fat.zig");
+const ui = @import("ui.zig");
+const fat = zmetal.fat;
 const build_config = @import("build_config");
-const audio = @import("audio_interface.zig");
+const audio = zmetal.audio;
 const program_mod = @import("program.zig");
-const usb_audio = hal.usb_audio;
 
-pub const microzig_options: microzig.Options = .{
-    .interrupts = .{
-        .SysTick = .{ .c = sys_tick_handler },
-        .HardFault = .{ .naked = hal.fault.hard_fault },
-        .NMI = .{ .c = hal.fault.nmi_handler },
-        .MemManageFault = .{ .naked = hal.fault.mem_manage_fault },
-        .BusFault = .{ .naked = hal.fault.bus_fault },
-        .UsageFault = .{ .naked = hal.fault.usage_fault },
-        .SVCall = .{ .c = hal.fault.sv_call_handler },
-        .PendSV = .{ .c = hal.fault.hw_handler },
+// SysTick, fault, audio (SAI/DMA), display (SPI1/DMA), MIDI (USART1) and USB
+// interrupt handlers come from hal.default_interrupts; the HAL's `init` runs
+// automatically before main.
+pub const microzig_options: microzig.Options = .{};
 
-        .DMA1_Stream0 = .{ .c = ssai.dma1_0_handler },
-        .DMA1_Stream1 = .{ .c = ssai.dma1_1_handler },
-        .SAI1 = .{ .c = ssai.SaiDriver.sai1_irq_handler },
+var seed: zmetal.Seed = .{};
 
-        .SPI1 = .{ .c = hal.spi.spi1_irq_handler },
-        // SPI TX
-        .DMA2_Stream3 = .{ .c = hal.spi.tx_dma_irq_handler },
-        // SPI RX
-        // .DMA2_Stream2 = .{ .c = hal.spi.dma1_str3_handler },
-        // MIDI IN (USART1 RX / DIN)
-        .USART1 = .{ .c = hal.usart.UartStream(.USART1).irqHandler },
-
-        // USB OTG device. Only the active controller's NVIC line is enabled (by
-        // usb.init), so the other handler never fires.
-        .OTG_FS = .{ .c = hal.usb.otg_fs_irq_handler },
-        .OTG_HS = .{ .c = hal.usb.otg_hs_irq_handler },
-    },
-};
-
-var blink_ctr: u32 = 0;
-fn sys_tick_handler() callconv(.c) void {
-    hal.clock.inc_tick();
-    blink_ctr +%= 1;
-    if (blink_ctr >= 500) { // 1 kHz tick -> ~1 Hz blink
-        blink_ctr = 0;
-        // hw.led.toggle();
-    }
-}
-
-pub fn init() void {
-    // FIXME: For SRAM build, no need to call below
-    hal.init_vector_table();
-}
-
-var hw: hal.daisy.Daisy = hal.daisy.Daisy.create() catch unreachable;
+// I2C1 on D11/D12 (PB8 SCL / PB9 SDA): both MCP23017 expanders (keyboard 0x21,
+// encoders 0x20). Module-level: the drivers keep pointers to it.
+var i2c: hal.i2c.I2C_Device = undefined;
 
 // USB-audio (interface) mode: the audio engine drives a Program (the DSP brain).
-// Module-level so `&audio_iface` is a comptime-known pointer for saiCallback.
 var program: program_mod.SynthProgram = .{};
-var audio_iface = audio.AudioInterface(program_mod.SynthProgram).init(&program);
+const AudioIface = audio.AudioInterface(program_mod.SynthProgram, .{ .usb = true });
+var audio_iface = AudioIface.init(&program);
 
-// DIN MIDI IN: USART1 @ 31250 baud (PB6=TX/PB7=RX). The kernel clock is derived
+// DIN MIDI IN: USART1 @ 31250 baud (D13/PB6 = TX, D14/PB7 = RX). The kernel clock is derived
 // from the clock tree inside the UART driver — no app-level clock config.
 const DIN_UART_CONFIG = hal.usart.Config{
     .baud_rate = 31250,
-    .tx = .{ .port = "B", .pin = "6", .af = .af7 },
-    .rx = .{ .port = "B", .pin = "7", .af = .af7 },
+    .tx = .{ .pin = zmetal.pins.D13, .af = .af7 }, // PB6
+    .rx = .{ .pin = zmetal.pins.D14, .af = .af7 }, // PB7
 };
 
 const DinMidi = MidiPort(.{ .Stream = hal.usart.UartStream(.USART1) });
@@ -105,30 +68,28 @@ const UsbMidi = MidiPort(.{ .Stream = hal.usb.MidiStream });
 var din_midi: DinMidi = undefined;
 var usb_midi: UsbMidi = undefined;
 
-// Daisy Seed on-board user LED (PC7) — used here as a USB mount indicator.
-const led_pin = hal.gpio.Pin.init("C", "7", .{ .mode = .output, .speed = .LowSpeed });
-const Led = hal.gpio.OutputGPIO(led_pin);
-
 pub fn main() !void {
-    try hw.init();
-    Led.configure();
+    try seed.init(.{});
+
+    i2c = try hal.i2c.I2C_Device.init(.I2C1, .{ .speed = .I2C_400KHZ });
+    i2c.apply();
 
     // In USB-audio mode the SAI callback is the audio interface driving the
     // Program (synth + USB in/out routed through the DSP seam); otherwise it is
     // the plain DSP synth. Selected at compile time via -Dusb-audio.
     if (build_config.usb_audio) {
-        try hw.startAudio(@TypeOf(audio_iface).saiCallback(&audio_iface));
+        try seed.startAudioCtx(&audio_iface, AudioIface.render);
     } else {
-        try hw.startAudio(&synth.audioCallback);
+        try seed.startAudio(synth.audioCallback);
     }
 
     try ui.init();
 
-    var kbd: keyboard.Keyboard = undefined;
-    try kbd.init(hw.i2c.i2c_device());
+    var kbd: layout.Keyboard = undefined;
+    try kbd.init(i2c.i2c_device());
 
-    var encoders: encoders_mod.Encoders = undefined;
-    try encoders.init(hw.i2c.i2c_device());
+    var encoders: layout.Encoders = undefined;
+    try encoders.init(i2c.i2c_device());
 
     // SD card: identify (4-bit + IDMA) and mount the FAT filesystem.
     try hal.sdmmc.init();
@@ -136,13 +97,12 @@ pub fn main() !void {
 
     din_midi = DinMidi.init(hal.usart.UartStream(.USART1).init(DIN_UART_CONFIG));
 
-    // Match the USB audio format to the SAI config (descriptor, reported clock
-    // rate, conversion stride) before enumeration.
-    if (build_config.usb_audio) usb_audio.configure(hw.audio);
 
     // USB device (CDC + MIDI) and DIN MIDI. USB runs at .lowest IRQ priority,
     // strictly below the audio DMA/SAI ISRs, so it never preempts audio.
-    hal.usb.init(.{});
+    // In USB-audio mode the audio format (descriptor, reported clock rate,
+    // conversion stride) is matched to the codec before enumeration.
+    if (build_config.usb_audio) hal.usb.initWithAudio(.{}, seed.audio) else hal.usb.init(.{});
     usb_midi = UsbMidi.init(.{});
 
     // Peripheral polling is time-gated off the 1 kHz millisecond tick, so its
@@ -182,7 +142,7 @@ pub fn main() !void {
             last_kbd_ms = now_ms;
             if (kbd.process()) |events| {
                 for (events.slice()) |evt| {
-                    synth.handleKey(keyboard.logicalKey(evt.key), evt.event == .pressed);
+                    synth.handleKey(layout.logicalKey(evt.key), evt.event == .pressed);
                 }
             } else |_| {
                 // Ignore transient keyboard I2C errors.
@@ -205,7 +165,7 @@ pub fn main() !void {
             }
         }
 
-        ui.service(&hw.load_meter);
+        ui.service(&seed);
         cpu.wfi();
     }
 }

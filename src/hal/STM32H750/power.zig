@@ -141,85 +141,10 @@ pub fn config_ext_power_supply(mode: PwrSupplyMode) bool {
 
     // Wait till voltage level flag is set
     while (!get_flag(.ACTVOSRDY)) {
-        if ((hal.clock.get_tick() - tickstart) > PWR_FLAG_SETTING_DELAY) {
+        if (hal.clock.elapsed_ms(tickstart) > PWR_FLAG_SETTING_DELAY) {
             return false;
         }
     }
 
     return true;
-}
-
-pub const PvdThreshold = enum(u3) {
-    V2_2,
-    V2_3,
-    V2_4,
-    V2_5,
-    V2_6,
-    V2_7,
-    V2_8,
-    V2_9,
-};
-
-pub const DeepsleepModes = enum(u1) {
-    stop,
-    standby,
-};
-
-pub const VoltRegulatorMode = enum(u1) {
-    on,
-    off,
-};
-
-pub const Events = packed struct(u2) {
-    Standby: bool = false,
-    Wakeup: bool = false,
-};
-
-pub const PowerConfig = struct {
-    pvd_threshold: PvdThreshold = .V2_9,
-    deepsleep_mode: DeepsleepModes = .stop, //define the deepsleep behavior
-    volt_regulator_mode: VoltRegulatorMode = .on, //define the voltage regulator behavior , only used if `deepsleep_mode` is set to `stop`
-    wakeup_pin: bool = false, //enable/disable the wakeup pin
-};
-
-pub inline fn apply(config: PowerConfig) void {
-    _ = config;
-    // pwr.CR.modify(.{
-    //     .PLS = @intFromEnum(config.pvd_threshold),
-    //     .PDDS = @as(PDDS, @enumFromInt(@intFromEnum(config.deepsleep_mode))),
-    //     .LPDS = @intFromEnum(config.volt_regulator_mode),
-    // });
-    // pwr.CSR.modify(.{ .EWUP = @intFromBool(config.wakeup_pin) });
-}
-
-///enable/disable the power voltage detection peripheral.
-pub inline fn set_pvd(set: bool) void {
-    pwr.CR.modify(.{ .PVDE = @intFromBool(set) });
-}
-
-///get the current power detection status.
-///0 = VDD/VDDA is higher than the threshold.
-///1 = VDD/VDDA is lower than the threshold.
-pub inline fn pvd_status() u1 {
-    return pwr.CSR.read().PVDO;
-}
-
-///enable/disable the backup domain write protection.
-///this is used to protect the RTC and backup registers.
-///
-///this function also exists in the `hal.backup` module.
-pub inline fn backup_domain_protection(set: bool) void {
-    pwr.CR.modify(.{ .DBP = @intFromBool(!set) });
-}
-
-pub inline fn get_events() Events {
-    const csr = pwr.CSR.read();
-    return Events{
-        .Standby = csr.SBF != 0,
-        .Wakeup = csr.WUF != 0,
-    };
-}
-
-pub inline fn clear_events() void {
-    pwr.CR.modify(.{ .CWUF = 1, .CSBF = 1 });
 }

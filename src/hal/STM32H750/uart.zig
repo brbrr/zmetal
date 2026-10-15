@@ -44,11 +44,7 @@ pub const Peripheral = enum {
     }
 };
 
-pub const PinSpec = struct {
-    port: []const u8,
-    pin: []const u8,
-    af: gpio.AlternateFunction,
-};
+pub const PinSpec = gpio.AfPin;
 
 pub const Config = struct {
     baud_rate: u32 = 115200,
@@ -77,7 +73,7 @@ pub fn Uart(comptime peripheral: Peripheral) type {
             regs.CR3.write_raw(0);
 
             // BRR = f_ck / baud (OVER8 = 0). f_ck is derived from the clock tree.
-            const usartdiv = @divTrunc(peripheral.kernel_clock_hz(), config.baud_rate);
+            const usartdiv = (peripheral.kernel_clock_hz() + config.baud_rate / 2) / config.baud_rate; // rounded
             regs.BRR.write(.{ .BRR = @intCast(usartdiv) });
 
             // Enable the peripheral, transmitter and receiver.
@@ -162,11 +158,11 @@ pub fn UartStream(comptime peripheral: Peripheral) type {
             return n;
         }
 
-        /// DIN MIDI TX is not wired; accept-and-drop so callers treat every
-        /// send as delivered (matches the old midi_io behavior of not
-        /// supporting DIN OUT at all).
+        /// TX is not implemented (DIN MIDI OUT is not wired). Report that
+        /// instead of silently dropping bytes; `MidiPort.send` returns false.
         pub fn write(_: Self, bytes: []const u8) StreamDevice.WriteError!usize {
-            return bytes.len;
+            _ = bytes;
+            return error.Unsupported;
         }
     };
 }
@@ -185,7 +181,7 @@ fn irq(comptime peripheral: Peripheral) @TypeOf(.enum_literal) {
 }
 
 fn configure_pins(comptime tx: PinSpec, comptime rx: PinSpec) void {
-    const tx_pin = comptime gpio.Pin.init(tx.port, tx.pin, .{
+    const tx_pin = comptime gpio.Pin.from(tx.pin, .{
         .mode = .{ .alternate = tx.af },
         .otype = .PushPull,
         .speed = .VeryHighSpeed,
@@ -193,7 +189,7 @@ fn configure_pins(comptime tx: PinSpec, comptime rx: PinSpec) void {
     });
     tx_pin.configure();
 
-    const rx_pin = comptime gpio.Pin.init(rx.port, rx.pin, .{
+    const rx_pin = comptime gpio.Pin.from(rx.pin, .{
         .mode = .{ .alternate = rx.af },
         .speed = .VeryHighSpeed,
         .pull = .PullUp, // idle-high line

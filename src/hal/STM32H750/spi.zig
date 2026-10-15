@@ -5,7 +5,7 @@ const chip = microzig.chip;
 const rcc = @import("rcc.zig");
 const gpio = @import("gpio.zig");
 const clock = @import("clock.zig");
-const dma = @import("dma_custom_backup.zig");
+const dma = @import("dma.zig");
 const dma_utils = @import("dma_utils.zig");
 const cache = @import("cache.zig");
 
@@ -105,10 +105,10 @@ pub const SpiError = packed struct(u8) {
 };
 
 pub const PinConfig = struct {
-    sclk: struct { port: []const u8, pin: []const u8, af: u8 },
-    miso: struct { port: []const u8, pin: []const u8, af: u8 },
-    mosi: struct { port: []const u8, pin: []const u8, af: u8 },
-    nss: struct { port: []const u8, pin: []const u8, af: u8 },
+    sclk: gpio.AfPin,
+    miso: gpio.AfPin,
+    mosi: gpio.AfPin,
+    nss: gpio.AfPin,
 };
 
 pub const Config = struct {
@@ -122,11 +122,12 @@ pub const Config = struct {
 
 // Single global instance pointer for IRQ handler
 pub var spi_instances: [1]?*SPI_Device = [_]?*SPI_Device{null};
-// dma1_s2
-// pub const rx_dma_channel: dma.Channel = dma.channel(10);
-// dma1_s3
+// SPI TX uses DMA2 Stream3 (channel 11 = DMA(11/8+1) stream 11%8).
 pub const tx_dma_channel: dma.Channel = dma.channel(11);
-// [0, 7] = 8,
+
+/// SPI transfer errors seen in the IRQ (OVR/MODF/UDR/TIFRE or a close_transfer
+/// error). Counted, never fatal; the transfer is ended and the callback runs.
+pub var error_count: u32 = 0;
 
 pub fn tx_dma_irq_handler() callconv(.c) void {
     dma.dma_irq_handler(tx_dma_channel);
@@ -146,12 +147,7 @@ pub fn spi1_irq_handler() callconv(.c) void {
             spi.IER.modify(.{ .EOTIE = 0 });
 
             const err = dev.close_transfer();
-
-            if (err.any()) {
-                // call error callback if you add one, or fold into user_callback with a result param
-                @breakpoint();
-                @panic("SPI error");
-            }
+            if (err.any()) error_count +%= 1;
 
             // Mark not busy
             dev.dma_busy = false;
@@ -178,18 +174,16 @@ pub fn spi1_irq_handler() callconv(.c) void {
             while (regs.CR.read().EN != 0 and timeout > 0) : (timeout -= 1) {}
 
             dev.dma_channel.clear_flags();
+            error_count +%= 1;
             dev.dma_busy = false;
-
-            @panic("SPI error");
+            dev.transfer_state = .idle;
+            // Still notify the owner so nothing waits forever on a dead transfer.
+            if (dev.user_callback) |cb| cb(dev.user_context);
+            return;
         }
 
-        const err = dev.close_transfer();
-
-        if (err.any()) {
-            // call error callback if you add one, or fold into user_callback with a result param
-            @breakpoint();
-            @panic("SPI error");
-        }
+        // Neither EOT nor an error flag: spurious entry. Leave the transfer
+        // running (closing it here would drop SPE mid-transfer).
     }
 }
 
@@ -244,6 +238,12 @@ pub const SPI_Device = struct {
     pub fn apply(self: *SPI_Device) void {
         spi_instances[0] = self;
 
+        // Only SPI1 has a handler in hal.default_interrupts.
+        if (self.peripheral == .SPI1) {
+            microzig.cpu.interrupt.set_priority(.SPI1, .highest);
+            microzig.cpu.interrupt.enable(.SPI1);
+        }
+
         // Disable SPI
         self.spi.CR1.modify(.{ .SPE = 0 });
         self.spi.CR1.raw = 0;
@@ -284,6 +284,7 @@ pub const SPI_Device = struct {
     /// Blocking transmit
     pub fn write_blocking(self: *const SPI_Device, data: []const u8) !void {
         if (data.len == 0) return;
+        if (data.len > 65535) return error.InvalidSize; // TSIZE is 16-bit
 
         self.spi.CR1.modify(.{ .SPE = 0 });
         self.spi.CFG2.modify(.{ .COMM = @as(spi_types.COMM, @enumFromInt(0b01)) }); // TX only
@@ -292,8 +293,11 @@ pub const SPI_Device = struct {
         self.spi.CR1.modify(.{ .CSTART = 1 });
 
         const txdr_ptr: *volatile u8 = @ptrCast(&self.spi.TXDR8);
+        const start = clock.get_tick();
         for (data) |byte| {
-            while (self.spi.SR.read().TXP == 0) {}
+            while (self.spi.SR.read().TXP == 0) {
+                if (clock.elapsed_ms(start) > 1000) return error.Timeout;
+            }
             txdr_ptr.* = byte;
         }
 
@@ -308,7 +312,7 @@ pub const SPI_Device = struct {
         const start_ms = clock.get_tick();
 
         while (self.spi.SR.read().EOT == 0) {
-            if (clock.get_tick() - start_ms > timeout_ms) {
+            if (clock.elapsed_ms(start_ms) > timeout_ms) {
                 return error.Timeout;
             }
         }
@@ -349,9 +353,6 @@ pub const SPI_Device = struct {
         // Clean D-cache for DMA
         // cache.clean_dcache_by_addr(@intFromPtr(data.ptr), data.len);
 
-        // Set busy flag and callback
-        self.dma_busy = true;
-        self.transfer_state = .busy_tx;
         self.user_callback = callback;
         self.user_context = context;
 
@@ -374,7 +375,7 @@ pub const SPI_Device = struct {
         handlers.ctx = self;
 
         try self.dma_channel.setup_transfer(
-            self.dma_tx_target(),
+            try self.dma_tx_target(),
             data,
             .{
                 .enable = true,
@@ -384,6 +385,11 @@ pub const SPI_Device = struct {
                 .size = null,
             },
         );
+
+        // Busy only once the DMA is actually set up (a failed setup must not
+        // leave the device stuck busy).
+        self.dma_busy = true;
+        self.transfer_state = .busy_tx;
 
         var dma_regs = self.dma_channel.get_regs();
         dma_regs.CR.modify_one("EN", 0);
@@ -418,14 +424,14 @@ pub const SPI_Device = struct {
         self.spi.IER.modify(.{ .EOTIE = 1 });
     }
 
-    pub fn dma_tx_target(self: *const SPI_Device) dma.DMA_WriteTarget {
+    pub fn dma_tx_target(self: *const SPI_Device) error{Unsupported}!dma.DMA_WriteTarget {
         const dreq = switch (self.peripheral) {
             .SPI1 => dma_utils.DmaRequest.SPI1_TX,
             .SPI2 => dma_utils.DmaRequest.SPI2_TX,
             .SPI3 => dma_utils.DmaRequest.SPI3_TX,
             .SPI4 => dma_utils.DmaRequest.SPI4_TX,
             .SPI5 => dma_utils.DmaRequest.SPI5_TX,
-            .SPI6 => dma_utils.DmaRequest.SPI5_TX,
+            .SPI6 => return error.Unsupported, // SPI6 is served by BDMA only
         };
 
         return .{
@@ -490,31 +496,31 @@ pub const SPI_Device = struct {
 };
 
 fn configure_pins(comptime pin_cfg: PinConfig, comptime config: Config) void {
-    const sclk = comptime gpio.Pin.init(pin_cfg.sclk.port, pin_cfg.sclk.pin, .{
-        .mode = .{ .alternate = @enumFromInt(pin_cfg.sclk.af) },
+    const sclk = comptime gpio.Pin.from(pin_cfg.sclk.pin, .{
+        .mode = .{ .alternate = pin_cfg.sclk.af },
         .speed = .VeryHighSpeed,
     });
     sclk.configure();
 
     if (config.direction != .TxOnly) {
-        const miso = comptime gpio.Pin.init(pin_cfg.miso.port, pin_cfg.miso.pin, .{
-            .mode = .{ .alternate = @enumFromInt(pin_cfg.miso.af) },
+        const miso = comptime gpio.Pin.from(pin_cfg.miso.pin, .{
+            .mode = .{ .alternate = pin_cfg.miso.af },
             .speed = .VeryHighSpeed,
         });
         miso.configure();
     }
 
     if (config.direction != .RxOnly) {
-        const mosi = comptime gpio.Pin.init(pin_cfg.mosi.port, pin_cfg.mosi.pin, .{
-            .mode = .{ .alternate = @enumFromInt(pin_cfg.mosi.af) },
+        const mosi = comptime gpio.Pin.from(pin_cfg.mosi.pin, .{
+            .mode = .{ .alternate = pin_cfg.mosi.af },
             .speed = .VeryHighSpeed,
         });
         mosi.configure();
     }
 
     if (config.chip_select == .HardwareOutput) {
-        const nss = comptime gpio.Pin.init(pin_cfg.nss.port, pin_cfg.nss.pin, .{
-            .mode = .{ .alternate = @enumFromInt(pin_cfg.nss.af) },
+        const nss = comptime gpio.Pin.from(pin_cfg.nss.pin, .{
+            .mode = .{ .alternate = pin_cfg.nss.af },
             .speed = .VeryHighSpeed,
         });
         nss.configure();
@@ -523,44 +529,44 @@ fn configure_pins(comptime pin_cfg: PinConfig, comptime config: Config) void {
 
 pub const daisy_pin_configs = struct {
     pub const SPI1 = PinConfig{
-        .sclk = .{ .port = "G", .pin = "11", .af = 5 },
-        .mosi = .{ .port = "B", .pin = "5", .af = 5 },
-        .miso = .{ .port = "B", .pin = "4", .af = 5 },
-        .nss = .{ .port = "G", .pin = "10", .af = 0 },
+        .sclk = .{ .pin = .{ .port = .G, .num = 11 }, .af = .af5 },
+        .mosi = .{ .pin = .{ .port = .B, .num = 5 }, .af = .af5 },
+        .miso = .{ .pin = .{ .port = .B, .num = 4 }, .af = .af5 },
+        .nss = .{ .pin = .{ .port = .G, .num = 10 }, .af = .af5 }, // SPI1_NSS = AF5
     };
 
     pub const SPI2 = PinConfig{
-        .sclk = .{ .port = "B", .pin = "13", .af = 5 },
-        .miso = .{ .port = "B", .pin = "14", .af = 5 },
-        .mosi = .{ .port = "B", .pin = "15", .af = 5 },
-        .nss = .{ .port = "B", .pin = "12", .af = 5 },
+        .sclk = .{ .pin = .{ .port = .B, .num = 13 }, .af = .af5 },
+        .miso = .{ .pin = .{ .port = .B, .num = 14 }, .af = .af5 },
+        .mosi = .{ .pin = .{ .port = .B, .num = 15 }, .af = .af5 },
+        .nss = .{ .pin = .{ .port = .B, .num = 12 }, .af = .af5 },
     };
 
     pub const SPI3 = PinConfig{
-        .sclk = .{ .port = "C", .pin = "10", .af = 6 },
-        .miso = .{ .port = "C", .pin = "11", .af = 6 },
-        .mosi = .{ .port = "C", .pin = "12", .af = 6 },
-        .nss = .{ .port = "A", .pin = "15", .af = 6 },
+        .sclk = .{ .pin = .{ .port = .C, .num = 10 }, .af = .af6 },
+        .miso = .{ .pin = .{ .port = .C, .num = 11 }, .af = .af6 },
+        .mosi = .{ .pin = .{ .port = .C, .num = 12 }, .af = .af6 },
+        .nss = .{ .pin = .{ .port = .A, .num = 15 }, .af = .af6 },
     };
 
     pub const SPI4 = PinConfig{
-        .sclk = .{ .port = "E", .pin = "12", .af = 5 },
-        .miso = .{ .port = "E", .pin = "13", .af = 5 },
-        .mosi = .{ .port = "E", .pin = "14", .af = 5 },
-        .nss = .{ .port = "E", .pin = "11", .af = 5 },
+        .sclk = .{ .pin = .{ .port = .E, .num = 12 }, .af = .af5 },
+        .miso = .{ .pin = .{ .port = .E, .num = 13 }, .af = .af5 },
+        .mosi = .{ .pin = .{ .port = .E, .num = 14 }, .af = .af5 },
+        .nss = .{ .pin = .{ .port = .E, .num = 11 }, .af = .af5 },
     };
 
     pub const SPI5 = PinConfig{
-        .sclk = .{ .port = "F", .pin = "7", .af = 5 },
-        .miso = .{ .port = "F", .pin = "8", .af = 5 },
-        .mosi = .{ .port = "F", .pin = "9", .af = 5 },
-        .nss = .{ .port = "F", .pin = "6", .af = 5 },
+        .sclk = .{ .pin = .{ .port = .F, .num = 7 }, .af = .af5 },
+        .miso = .{ .pin = .{ .port = .F, .num = 8 }, .af = .af5 },
+        .mosi = .{ .pin = .{ .port = .F, .num = 9 }, .af = .af5 },
+        .nss = .{ .pin = .{ .port = .F, .num = 6 }, .af = .af5 },
     };
 
     pub const SPI6 = PinConfig{
-        .sclk = .{ .port = "G", .pin = "13", .af = 5 },
-        .miso = .{ .port = "G", .pin = "12", .af = 5 },
-        .mosi = .{ .port = "G", .pin = "14", .af = 5 },
-        .nss = .{ .port = "G", .pin = "8", .af = 5 },
+        .sclk = .{ .pin = .{ .port = .G, .num = 13 }, .af = .af5 },
+        .miso = .{ .pin = .{ .port = .G, .num = 12 }, .af = .af5 },
+        .mosi = .{ .pin = .{ .port = .G, .num = 14 }, .af = .af5 },
+        .nss = .{ .pin = .{ .port = .G, .num = 8 }, .af = .af5 },
     };
 };

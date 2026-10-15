@@ -19,6 +19,8 @@
 
 const std = @import("std");
 const microzig = @import("microzig");
+const builtin = @import("builtin");
+const clock = @import("clock.zig");
 
 /// Cortex-M7 System Control Block — CFSR / HFSR / BFAR / MMAR / SHCSR live here.
 const scb = microzig.cpu.peripherals.scb;
@@ -38,7 +40,10 @@ const KIND_USAGE_FAULT: u32 = 3;
 
 /// Safety cap on consecutive async resumes — far above a normal startup burst
 /// (tens). Past it we stop resuming so a genuine fault storm gets captured.
+/// "Consecutive" = no gap longer than RESUME_QUIET_MS between them; a quiet
+/// period resets the count, so rare harmless faults never add up to a halt.
 const MAX_RESUMES: u32 = 4096;
+const RESUME_QUIET_MS: u32 = 1000;
 
 /// Written to `last_fault.magic` once populated, so the debugger can tell a real
 /// snapshot from zeroed .bss.
@@ -73,8 +78,10 @@ pub const FaultInfo = extern struct {
 pub var last_fault: FaultInfo = std.mem.zeroes(FaultInfo);
 /// Nonzero once a fatal (non-resumable) fault has been captured (then we spin).
 pub var fault_count: u32 = 0;
-/// Count of harmless asynchronous BusFaults resumed — mostly the startup burst.
+/// Harmless asynchronous BusFaults resumed in the current burst (reset after
+/// RESUME_QUIET_MS without one).
 pub var imprecise_resumes: u32 = 0;
+var last_resume_ms: u32 = 0;
 
 const StackFrame = extern struct {
     r0: u32,
@@ -154,6 +161,9 @@ export fn fault_report(frame: *const StackFrame, kind: u32) callconv(.c) void {
     const abfsr = abfsr_reg.*;
 
     if (kind == KIND_BUS_FAULT and is_harmless_async_bus_fault(cfsr, abfsr)) {
+        const now = clock.get_tick();
+        if (clock.elapsed_ms(last_resume_ms) > RESUME_QUIET_MS) imprecise_resumes = 0;
+        last_resume_ms = now;
         imprecise_resumes +%= 1;
         if (imprecise_resumes <= MAX_RESUMES) {
             if (imprecise_resumes == 1) capture(frame, kind, cfsr, abfsr);
@@ -225,26 +235,17 @@ pub fn usage_fault() callconv(.naked) void {
 }
 
 pub fn hw_handler() callconv(.c) void {
-    @breakpoint();
+    // BKPT without a debugger escalates to HardFault: only in Debug builds.
+    if (builtin.mode == .debug) @breakpoint();
     @panic("HardFault");
 }
 pub fn nmi_handler() callconv(.c) void {
-    @breakpoint();
+    // BKPT without a debugger escalates to HardFault: only in Debug builds.
+    if (builtin.mode == .debug) @breakpoint();
     @panic("NMI");
 }
-fn mem_manage_fault_handler() callconv(.c) void {
-    @breakpoint();
-    @panic("MemManageFault");
-}
-fn bus_fault_handler() callconv(.c) void {
-    @breakpoint();
-    @panic("BusFault");
-}
-fn usage_fault_handler() callconv(.c) void {
-    @breakpoint();
-    @panic("UsageFault");
-}
 pub fn sv_call_handler() callconv(.c) void {
-    @breakpoint();
+    // BKPT without a debugger escalates to HardFault: only in Debug builds.
+    if (builtin.mode == .debug) @breakpoint();
     @panic("SVCall");
 }

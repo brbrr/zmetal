@@ -31,17 +31,29 @@ pub inline fn get_tick() u32 {
     return cpu.atomic.load(u32, &uwTick, .acquire);
 }
 
+/// SysTick ISR: advances the 1 kHz millisecond tick behind get_tick/delay_ms.
+/// Installed by hal.default_interrupts; apps never wire it themselves.
+pub fn sys_tick_handler() callconv(.c) void {
+    inc_tick();
+}
+
 pub inline fn inc_tick() void {
     _ = cpu.atomic.add(u32, &uwTick, uwTickFreq);
 }
 
-pub inline fn delay_ms(wait: u32) void {
+/// Milliseconds since `start` (a `get_tick()` value); wraps correctly across
+/// the 49.7-day u32 tick rollover.
+pub noinline fn elapsed_ms(start: u32) u32 {
+    return get_tick() -% start;
+}
+
+pub fn delay_ms(wait: u32) void {
     const tickstart = get_tick();
     var _wait = wait;
 
-    _wait += uwTickFreq;
+    _wait +|= uwTickFreq;
     //* Add a freq to guarantee minimum wait */
-    while ((get_tick() - tickstart) < _wait) {
+    while (elapsed_ms(tickstart) < _wait) {
         // cpu.wfi();
         asm volatile ("" ::: .{ .memory = true });
     }
@@ -52,13 +64,30 @@ pub inline fn delay_ms(wait: u32) void {
 /// based and floors at ~1 ms (+1 tick), so it can't express the µs-scale spacing
 /// peripheral init/recovery timing needs. Approximate — good enough for "wait at
 /// least ~X us", not a precise timer.
-pub inline fn delay_us(us: u32) void {
+pub fn delay_us(us: u32) void {
     // The inner loop is ~CYCLES_PER_ITER CPU cycles (empirical: the SDRAM
     // bring-up used 50k iters ~= 1 ms at 480 MHz => ~9.6 cyc/iter).
-    const CYCLES_PER_ITER: u32 = 10;
-    const iters = (SystemCoreClock / 1_000_000) * us / CYCLES_PER_ITER;
+    // iters/us = (clk / 1e6) / 10, computed in 1/100 MHz units so slow clocks
+    // (e.g. 64 MHz HSI) don't lose a whole iteration per us to flooring.
+    // Saturating multiply; at least `us` iterations so it never collapses to 0.
+    const wide: u64 = @as(u64, SystemCoreClock / 100_000) * us / 100;
+    const iters: u32 = @intCast(@min(@max(wide, us), std.math.maxInt(u32)));
     var i: u32 = 0;
     while (i < iters) : (i += 1) asm volatile ("" ::: .{ .memory = true });
+}
+
+pub const Frequencies = struct { sysclk: u32, hclk: u32, pclk1: u32, pclk2: u32 };
+
+/// Core and bus clock frequencies in Hz. `sysclk` is the live CPU clock; the
+/// bus clocks come from the board's (comptime) clock tree.
+pub fn frequencies() Frequencies {
+    const out = hal.daisy.clock_outputs;
+    return .{
+        .sysclk = SystemCoreClock,
+        .hclk = @intFromFloat(out.AHBOutput),
+        .pclk1 = @intFromFloat(out.APB1Output),
+        .pclk2 = @intFromFloat(out.APB2Output),
+    };
 }
 
 /// Get the current system clock frequency
@@ -88,7 +117,9 @@ pub fn get_sys_clock_freq() u32 {
             const pllm = @intFromEnum(rcc.PLLCKSELR.read().@"DIVM[0]");
             const pllfracen = rcc.PLLCFGR.read().@"PLLFRACEN[0]";
             const fracn1: f32 = if (pllfracen != 0)
-                @floatFromInt((rcc.@"PLLFRACR[0]".read().FRACN >> 3))
+                // microzig exposes FRACN as the 13-bit field itself; the CMSIS
+                // `>> 3` would be a second shift.
+                @floatFromInt(rcc.@"PLLFRACR[0]".read().FRACN)
             else
                 0.0;
 
@@ -135,11 +166,10 @@ pub fn update_system_core_clock() void {
 }
 
 pub fn hal_init_tick(priority: cpu.interrupt.Priority) !void {
-    if (uwTickFreq == 0) {
-        @panic("BOOM");
-    }
+    if (uwTickFreq == 0) return error.InvalidTickFrequency;
     const ticks = SystemCoreClock / 1000 / uwTickFreq;
-    if (ticks - 1 > std.math.maxInt(u24)) {
+    // ticks == 0 when SystemCoreClock is not yet known (would underflow below).
+    if (ticks == 0 or ticks - 1 > std.math.maxInt(u24)) {
         // @breakpoint();
         return error.Overflow;
     }
