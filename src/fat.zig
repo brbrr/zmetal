@@ -13,6 +13,9 @@ const sdmmc = @import("microzig").hal.sdmmc;
 pub const Path = fatfs.Path;
 pub const File = fatfs.File;
 pub const Dir = fatfs.Dir;
+pub const FileInfo = fatfs.FileInfo;
+pub const mkdir = fatfs.mkdir;
+pub const stat = fatfs.stat;
 
 // --- Disk adapter (SDMMC block driver -> fatfs.Disk) ------------------------
 
