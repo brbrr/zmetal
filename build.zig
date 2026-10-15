@@ -166,7 +166,9 @@ pub fn addFirmware(b: *std.Build, ctx: Context, opts: FirmwareOptions) Firmware 
 
     const install = ctx.mb.add_install_firmware(fw, .{ .format = .elf });
     const install_bin = ctx.mb.add_install_firmware(fw, .{ .format = .binary });
-    const report = b.addSystemCommand(&.{ "python3", "build_tools/memory_report.py" });
+    // A lazy path, so the step works when another package's build runs it.
+    const report = b.addSystemCommand(&.{"python3"});
+    report.addFileArg(b.path("build_tools/memory_report.py"));
     report.addFileArg(fw.get_emitted_elf());
     report.addArg(opts.name);
     report.addFileArg(b.path(linker_script));
@@ -196,24 +198,32 @@ const examples = [_]Example{
     .{ .name = "i2c", .root = "examples/i2c/main.zig" },
 };
 
-pub fn build(b: *std.Build) void {
+/// What a firmware's inputs are configured with.
+pub const ContextOptions = struct {
+    /// Long file names in FatFs: mixed case, up to 255 bytes, one static
+    /// buffer in BSS. Off keeps 8.3 names and the smallest FatFs.
+    long_file_name: bool = false,
+};
+
+/// The inputs every firmware shares: microzig, the clock helper, FatFs.
+/// Another package calls this with the zmetal dependency's builder, then
+/// `addFirmware` with the same builder. Null when microzig is not ready.
+pub fn context(b: *std.Build, opts: ContextOptions) ?Context {
     const mz_dep = b.dependency("microzig", .{});
-    const mb = MicroBuild.init(b, mz_dep) orelse return;
-    const optimize = b.standardOptimizeOption(.{});
-    const memory = b.option(Memory, "memory", "flash (default) or sram (Daisy bootloader)") orelse .flash;
+    const mb = MicroBuild.init(b, mz_dep) orelse return null;
 
     // FatFs bindings; the module compiles the vendored FatFs C for the firmware
     // target when imported. Config is spelled out rather than left to defaults:
     //   - ReleaseSafe keeps the FatFs C compact.
     //   - static RTC: the board has no wall clock, and it keeps zfat off the
     //     removed std.time.timestamp() path (get_fattime returns a fixed date).
-    //   - long_file_name = false: 8.3 names only.
+    //   - long_file_name: off by default (8.3 only, no Unicode tables).
     //   - no mkfs/exfat/find/chmod: unused APIs, kept out of flash.
     const zfat_mod = b.dependency("zfat", .{
         .optimize = .safe,
         .@"static-rtc" = @as([]const u8, "2026-01-01"),
         .read_only = false, // we create/write files
-        .long_file_name = false, // 8.3 only — no Unicode tables
+        .long_file_name = opts.long_file_name,
         .mkfs = false, // no on-device formatting
         .exfat = false, // FAT/FAT32 only
         .find = false, // no f_findfirst/next
@@ -227,11 +237,17 @@ pub fn build(b: *std.Build) void {
     zfat_mod.addIncludePath(b.path("lib/zfat_shim"));
     zfat_mod.addCSourceFile(.{ .file = b.path("lib/zfat_shim/shim.c"), .flags = &.{"-std=c11"} });
 
-    const ctx: Context = .{
+    return .{
         .mb = mb,
         .clockhelper = b.dependency("ClockHelper", .{}).module("clockhelper"),
         .zfat = zfat_mod,
     };
+}
+
+pub fn build(b: *std.Build) void {
+    const ctx = context(b, .{}) orelse return;
+    const optimize = b.standardOptimizeOption(.{});
+    const memory = b.option(Memory, "memory", "flash (default) or sram (Daisy bootloader)") orelse .flash;
 
     for (examples) |ex| {
         const bc: ?*std.Build.Step.Options = if (ex.usb_audio) |ua| blk: {
