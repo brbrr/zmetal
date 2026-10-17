@@ -5,18 +5,19 @@ const hal = microzig.hal;
 
 pub const font = @import("font.zig");
 pub const Font = font.Font;
+pub const tile_diff = @import("tile_diff.zig");
 
-pub const WIDTH = 320;
-pub const HEIGHT = 240;
-pub const FB_SIZE = WIDTH * HEIGHT * 2; // 153,600 bytes
+pub const WIDTH = tile_diff.WIDTH;
+pub const HEIGHT = tile_diff.HEIGHT;
+pub const FB_SIZE = tile_diff.FB_SIZE; // 153,600 bytes
 pub const Color = u16;
 
 // Tile grid for checksum-diff partial flush. WIDTH/HEIGHT must divide evenly.
-pub const TILE_W = 32;
-pub const TILE_H = 48;
-pub const TILE_COLS = WIDTH / TILE_W; // 10
-pub const TILE_ROWS = HEIGHT / TILE_H; // 5
-pub const TILE_COUNT = TILE_COLS * TILE_ROWS; // 50
+pub const TILE_W = tile_diff.TILE_W;
+pub const TILE_H = tile_diff.TILE_H;
+pub const TILE_COLS = tile_diff.TILE_COLS; // 10
+pub const TILE_ROWS = tile_diff.TILE_ROWS; // 5
+pub const TILE_COUNT = tile_diff.TILE_COUNT; // 50
 pub const TILE_BYTES = TILE_W * TILE_H * 2; // 3072
 
 pub const Colors = struct {
@@ -551,6 +552,9 @@ pub fn ILI9341_DMA(
                 self.chunk_remaining = 0;
                 self.dirty_count = 0;
                 self.needs_pump = false;
+                // The tiles not sent already carry their new hashes: the
+                // next flush must send every tile.
+                self.hashes_valid = false;
                 self.done = true;
                 if (self.user_flush_callback) |cb| {
                     self.user_flush_callback = null;
@@ -562,25 +566,6 @@ pub fn ILI9341_DMA(
         // ============================================================
         // Tile checksum-diff partial flush
         // ============================================================
-
-        /// FNV-1a hash of one tile, read directly from the framebuffer (rows are
-        /// strided by the full screen width).
-        fn hash_tile(self: *Self, tx: u16, ty: u16) u32 {
-            const x0 = @as(usize, tx) * TILE_W;
-            const y0 = @as(usize, ty) * TILE_H;
-            var h: u32 = 2166136261;
-            var r: usize = 0;
-            while (r < TILE_H) : (r += 1) {
-                const off = ((y0 + r) * WIDTH + x0) * 2;
-                const row = self.framebuffer[off..][0 .. TILE_W * 2];
-                var i: usize = 0;
-                while (i < row.len) : (i += 4) {
-                    const w = std.mem.readInt(u32, row[i..][0..4], .little);
-                    h = (h ^ w) *% 16777619;
-                }
-            }
-            return h;
-        }
 
         /// Copy a tile's strided rows into the contiguous scratch buffer, set the
         /// panel window to the tile, and kick the async DMA. Foreground only.
@@ -618,27 +603,21 @@ pub fn ILI9341_DMA(
         }
 
         /// Partial flush: hash every tile, transmit only the ones that changed
-        /// since the last flush. Async — sequenced across tiles by `pump`.
+        /// since the last flush. Async — the completion interrupt chains the tiles.
         pub fn flush_diff(self: *Self, callback: ?*const fn (*Self) void) !void {
+            return self.flush_tiles(tile_diff.all_tiles, callback);
+        }
+
+        /// `flush_diff` over the tiles in `mask` only (bit i is tile i,
+        /// row-major). A caller that knows which part of the frame it drew
+        /// skips the hash of the rest. A tile outside the mask keeps its
+        /// hash, so a change there is sent by a later flush that masks it.
+        pub fn flush_tiles(self: *Self, mask: tile_diff.Mask, callback: ?*const fn (*Self) void) !void {
             if (self.spi.is_dma_busy()) {
                 return error.FlushInProgress;
             }
 
-            self.dirty_count = 0;
-            var idx: u16 = 0;
-            var ty: u16 = 0;
-            while (ty < TILE_ROWS) : (ty += 1) {
-                var tx: u16 = 0;
-                while (tx < TILE_COLS) : (tx += 1) {
-                    const h = self.hash_tile(tx, ty);
-                    if (!self.hashes_valid or h != self.tile_hash[idx]) {
-                        self.tile_hash[idx] = h;
-                        self.dirty_tiles[self.dirty_count] = idx;
-                        self.dirty_count += 1;
-                    }
-                    idx += 1;
-                }
-            }
+            self.dirty_count = tile_diff.collect(self.framebuffer, &self.tile_hash, self.hashes_valid, mask, &self.dirty_tiles);
             self.hashes_valid = true;
             self.user_flush_callback = callback;
             self.needs_pump = false;
@@ -654,7 +633,10 @@ pub fn ILI9341_DMA(
             }
 
             self.done = false;
-            errdefer self.done = true; // a failed start must not look in-flight forever
+            errdefer {
+                self.done = true; // a failed start must not look in-flight forever
+                self.hashes_valid = false; // and the unsent tiles must go next time
+            }
             try self.start_tile(self.dirty_tiles[0]);
         }
 
@@ -670,6 +652,7 @@ pub fn ILI9341_DMA(
                     cs.write(.High);
                 }
                 self.dirty_count = 0;
+                self.hashes_valid = false;
                 self.done = true;
                 if (self.user_flush_callback) |cb| {
                     self.user_flush_callback = null;

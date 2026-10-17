@@ -290,6 +290,7 @@ pub fn build(b: *std.Build) void {
         "src/hal/STM32H750/pin_name.zig",
         "src/hal/STM32H750/usb/descriptors.zig",
         "src/hal/STM32H750/cpu_load.zig",
+        "src/drivers/tile_diff.zig",
     };
     for (test_roots) |path| {
         const t = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(path), .target = host }) });
