@@ -214,6 +214,12 @@ pub fn mounted() bool {
     return tusb.tud_mounted();
 }
 
+/// True while a host program holds the CDC port open (DTR set), so a
+/// device can skip a log nobody reads.
+pub fn cdc_connected() bool {
+    return tusb.tud_cdc_connected();
+}
+
 pub fn otg_fs_irq_handler() callconv(.c) void {
     tusb.tud_int_handler(0); // rhport 0 = OTG_FS
 }
