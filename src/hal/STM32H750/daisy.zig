@@ -265,10 +265,14 @@ fn dma_init() !void {
     cpu.interrupt.enable(.DMA1_Stream0);
     cpu.interrupt.set_priority(.DMA1_Stream1, .highest);
     cpu.interrupt.enable(.DMA1_Stream1);
-    // SPI1 TX (display).
-    cpu.interrupt.set_priority(.DMA2_Stream3, .highest);
+    // SPI1 TX (display). One level below the audio, which may preempt it:
+    // the display's completion interrupt starts the next tile, tens of µs.
+    cpu.interrupt.set_priority(.DMA2_Stream3, display_priority);
     cpu.interrupt.enable(.DMA2_Stream3);
 }
+
+/// The display's SPI and DMA interrupts: one level below the audio's.
+pub const display_priority: cpu.interrupt.Priority = @enumFromInt(1);
 
 fn sai_init() !void {
     // SAI1 global interrupt for error handling (OVRUDR, AFSDET, LFSDET, WCKCFG)
