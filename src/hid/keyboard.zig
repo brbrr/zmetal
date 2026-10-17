@@ -1,6 +1,7 @@
 //! Key matrix on an MCP23017 I2C GPIO expander, with debounced key events.
 //!
-//! Wiring (fixed, so a scan is one write + one read per column):
+//! Wiring (fixed, so a scan is one write + one read per column, and one
+//! read in all while no key is down):
 //! - Port A pins 0..cols-1: column drivers (outputs, driven low one at a time)
 //! - Port B pins 0..rows-1 (expander pins 8..): row sensors (inputs, pull-ups)
 //!
@@ -18,6 +19,7 @@ const std = @import("std");
 const microzig = @import("microzig");
 const mcp23017 = @import("../drivers/mcp23017.zig");
 const debounce = @import("debounce.zig");
+const matrix_scan = @import("matrix_scan.zig");
 
 const drivers = microzig.drivers;
 const Keyboard_Matrix = drivers.input.KeyboardMatrix;
@@ -66,40 +68,41 @@ pub fn McpMatrixKeyboard(comptime cfg: MatrixConfig) type {
 
         const DebouncerType = debounce.Debouncer(PortMatrix, KEY_COUNT, ROWS, COLS);
 
-        /// Port-batched matrix scanner.
-        ///
-        /// microzig's generic `Keyboard_Matrix.scan` drives/reads one pin at a
-        /// time, and every MCP23017 pin op is a full I2C transaction — 72 per
-        /// scan for 8×6 (48 of them redundant full-register row reads), ~7 ms.
-        /// This scanner exploits the fixed layout (columns on Port A, rows on
-        /// Port B): drive each column with a single `OLATA` write and read all 8
-        /// rows in ONE `GPIOB` read → ~14 transactions/scan (~5× fewer, ~1.4 ms).
-        const PortMatrix = struct {
+        /// The expander's ports as the scanner's I/O: columns on Port A,
+        /// rows on Port B.
+        const PortIo = struct {
             mcp: *MCP23017,
 
-            pub fn scan(self: *PortMatrix) !Matrix.Set {
-                var result = Matrix.Set{};
-                for (0..COLS) |col| {
-                    // Drive the active column low, all others high (Port A).
-                    try self.mcp.writeRegister(.OLATA, ~(@as(u8, 1) << @intCast(col)));
-                    settle();
-                    // A single read samples every row; a pressed key pulls its
-                    // (pulled-up) row low.
-                    const rows = try self.mcp.readPort(.B);
-                    for (0..ROWS) |row| {
-                        const bit = @as(u8, 1) << @intCast(row);
-                        if (rows & bit == 0) result.add(Key.new(@intCast(row), @intCast(col)));
-                    }
-                }
-                // Idle: release all columns high.
-                try self.mcp.writeRegister(.OLATA, 0xFF);
-                return result;
+            pub fn drive(self: PortIo, columns: u8) !void {
+                try self.mcp.writeRegister(.OLATA, columns);
             }
 
-            /// Let a driven column settle before sampling rows. The I2C read that
-            /// follows already inserts >100 µs, so this only needs to be nominal.
-            inline fn settle() void {
+            pub fn sense(self: PortIo) !u8 {
+                return self.mcp.readPort(.B);
+            }
+
+            /// Let a driven column settle before sampling rows. The I2C read
+            /// that follows already takes tens of µs, so this is nominal.
+            pub fn settle(_: PortIo) void {
                 for (0..50) |_| asm volatile ("" ::: .{ .memory = true });
+            }
+        };
+
+        /// Port-batched matrix scanner (see `matrix_scan.zig`). microzig's
+        /// generic `Keyboard_Matrix.scan` does one I2C transaction per pin,
+        /// 72 per scan for 8x6. A column-by-column scan takes 13; with no
+        /// key down, one row read is the whole scan.
+        const PortMatrix = struct {
+            scanner: matrix_scan.Scanner(PortIo, ROWS, COLS),
+
+            pub fn scan(self: *PortMatrix) !Matrix.Set {
+                const bits = try self.scanner.scan();
+                var result = Matrix.Set{};
+                if (bits == 0) return result;
+                for (0..ROWS) |row| for (0..COLS) |col| {
+                    if (bits & (@as(u64, 1) << @intCast(row * COLS + col)) != 0) result.add(Key.new(@intCast(row), @intCast(col)));
+                };
+                return result;
             }
         };
 
@@ -129,7 +132,7 @@ pub fn McpMatrixKeyboard(comptime cfg: MatrixConfig) type {
             try self.mcp.setPortMode(.B, 0xFF);
             try self.mcp.setPortPullups(.B, 0xFF);
 
-            self.port_matrix = .{ .mcp = &self.mcp };
+            self.port_matrix = .{ .scanner = .{ .io = .{ .mcp = &self.mcp } } };
             self.debouncer = DebouncerType.init(&self.port_matrix);
         }
 
