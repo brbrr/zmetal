@@ -500,17 +500,22 @@ pub fn ILI9341_DMA(
         }
 
         /// Send next chunk (called from the DMA-completion ISR or foreground start).
-        fn send_next_chunk(self: *Self) !void {
+        fn send_next_chunk(self: *Self) anyerror!void {
             if (self.chunk_remaining == 0) {
                 // Current run (whole framebuffer, or one tile) finished.
                 if (cs_pin) |cs| {
                     cs.write(.High);
                 }
 
-                // More dirty tiles queued? Defer the next one to the foreground
-                // pump — we must not issue SPI commands from this ISR context.
+                // More dirty tiles queued: start the next one here. The SPI is
+                // idle once its end-of-transfer interrupt has run, so the
+                // window commands' polled writes are safe in this context;
+                // they and the 3 KB tile copy take some tens of microseconds.
+                // A foreground pump per tile would tie the frame rate to the
+                // main loop's pass rate.
                 if (self.pump_idx + 1 < self.dirty_count) {
-                    self.needs_pump = true;
+                    self.pump_idx += 1;
+                    try self.start_tile(self.dirty_tiles[self.pump_idx]);
                     return;
                 }
 
@@ -579,7 +584,7 @@ pub fn ILI9341_DMA(
 
         /// Copy a tile's strided rows into the contiguous scratch buffer, set the
         /// panel window to the tile, and kick the async DMA. Foreground only.
-        fn start_tile(self: *Self, tile_idx: u16) !void {
+        fn start_tile(self: *Self, tile_idx: u16) anyerror!void {
             const tx: u16 = tile_idx % TILE_COLS;
             const ty: u16 = tile_idx / TILE_COLS;
             const x0: usize = @as(usize, tx) * TILE_W;
@@ -653,8 +658,9 @@ pub fn ILI9341_DMA(
             try self.start_tile(self.dirty_tiles[0]);
         }
 
-        /// Advance a multi-tile flush to the next dirty tile. Call from the
-        /// foreground loop (never the ISR) whenever a flush is in progress.
+        /// Advance a multi-tile flush to the next dirty tile. The completion
+        /// interrupt now chains the tiles itself, so this does nothing unless
+        /// a caller set `needs_pump`; it stays for callers that pump.
         pub fn pump(self: *Self) void {
             if (!self.needs_pump) return;
             self.needs_pump = false;
