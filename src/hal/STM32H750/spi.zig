@@ -318,6 +318,25 @@ pub const SPI_Device = struct {
         }
     }
 
+    /// Stops a DMA transmit in flight and leaves the device idle, with no
+    /// completion callback. For a halt path with interrupts off; the data
+    /// being sent is cut short.
+    pub fn abort_dma(self: *SPI_Device) void {
+        if (self.dma_channel.is_claimed()) {
+            var regs = self.dma_channel.get_regs();
+            regs.CR.modify_one("EN", 0);
+            var timeout: u32 = 100_000;
+            while (regs.CR.read().EN != 0 and timeout > 0) : (timeout -= 1) {}
+            self.dma_channel.clear_flags();
+        }
+        self.spi.IER.raw = 0;
+        self.spi.CFG1.modify(.{ .TXDMAEN = 0 });
+        self.spi.IFCR.raw = 0x1FF;
+        self.spi.CR1.modify(.{ .SPE = 0 });
+        self.dma_busy = false;
+        self.transfer_state = .idle;
+    }
+
     /// Check if DMA transfer is in progress
     pub fn is_dma_busy(self: *const SPI_Device) bool {
         return self.dma_busy;

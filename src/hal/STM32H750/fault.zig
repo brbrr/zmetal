@@ -82,6 +82,10 @@ pub var fault_count: u32 = 0;
 /// RESUME_QUIET_MS without one).
 pub var imprecise_resumes: u32 = 0;
 var last_resume_ms: u32 = 0;
+/// Called once, after the first fatal fault is captured and before the
+/// spin, with interrupts off. An application can show the snapshot here,
+/// on a screen with polled writes. It must not return to the faulting code.
+pub var on_fatal: ?*const fn (info: *const FaultInfo) void = null;
 
 const StackFrame = extern struct {
     r0: u32,
@@ -181,8 +185,10 @@ export fn fault_report(frame: *const StackFrame, kind: u32) callconv(.c) void {
     // Fatal fault: capture the first, ignore any nested ones, and busy-spin.
     // A tight loop (NOT wfi) keeps the AHB-AP alive so the ST-Link can always
     // halt here and read `last_fault`.
-    if (fault_count == 0) capture(frame, kind, cfsr, abfsr);
+    const first = fault_count == 0;
+    if (first) capture(frame, kind, cfsr, abfsr);
     fault_count +%= 1;
+    if (first) if (on_fatal) |f| f(&last_fault);
     while (true) {
         asm volatile ("nop");
     }

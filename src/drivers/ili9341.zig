@@ -472,6 +472,33 @@ pub fn ILI9341_DMA(
             try self.send_next_chunk();
         }
 
+        /// Sends the whole framebuffer with polled SPI writes, after it stops
+        /// any DMA flush in flight. For a halt path with interrupts off: it
+        /// needs no DMA interrupt to finish. The next `flush_diff` sends
+        /// every tile.
+        pub fn flush_blocking(self: *Self) !void {
+            self.spi.abort_dma();
+            self.chunk_remaining = 0;
+            self.dirty_count = 0;
+            self.needs_pump = false;
+            self.user_flush_callback = null;
+            if (cs_pin) |cs| cs.write(.High);
+            try self.transport.set_address_window(0, 0, WIDTH - 1, HEIGHT - 1);
+            dc_pin.write(.High);
+            if (cs_pin) |cs| cs.write(.Low);
+            defer if (cs_pin) |cs| cs.write(.High);
+            // An even chunk size keeps every pixel's two bytes in one write.
+            const chunk: usize = MAX_CHUNK_SIZE - 1;
+            var off: usize = 0;
+            while (off < self.framebuffer.len) {
+                const n = @min(self.framebuffer.len - off, chunk);
+                try self.spi.write_blocking(self.framebuffer[off..][0..n]);
+                off += n;
+            }
+            self.hashes_valid = false;
+            self.done = true;
+        }
+
         /// Send next chunk (called from the DMA-completion ISR or foreground start).
         fn send_next_chunk(self: *Self) !void {
             if (self.chunk_remaining == 0) {
