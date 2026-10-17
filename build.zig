@@ -203,12 +203,16 @@ pub const ContextOptions = struct {
     /// Long file names in FatFs: mixed case, up to 255 bytes, one static
     /// buffer in BSS. Off keeps 8.3 names and the smallest FatFs.
     long_file_name: bool = false,
+    /// exFAT volumes in FatFs, as cards over 32 GB come formatted. FatFs
+    /// needs long file names for it. File sizes and offsets become 64-bit.
+    exfat: bool = false,
 };
 
 /// The inputs every firmware shares: microzig, the clock helper, FatFs.
 /// Another package calls this with the zmetal dependency's builder, then
 /// `addFirmware` with the same builder. Null when microzig is not ready.
 pub fn context(b: *std.Build, opts: ContextOptions) ?Context {
+    if (opts.exfat and !opts.long_file_name) @panic("zmetal: exFAT needs long_file_name");
     const mz_dep = b.dependency("microzig", .{});
     const mb = MicroBuild.init(b, mz_dep) orelse return null;
 
@@ -218,14 +222,14 @@ pub fn context(b: *std.Build, opts: ContextOptions) ?Context {
     //   - static RTC: the board has no wall clock, and it keeps zfat off the
     //     removed std.time.timestamp() path (get_fattime returns a fixed date).
     //   - long_file_name: off by default (8.3 only, no Unicode tables).
-    //   - no mkfs/exfat/find/chmod: unused APIs, kept out of flash.
+    //   - no mkfs/find/chmod: unused APIs, kept out of flash. exFAT on request.
     const zfat_mod = b.dependency("zfat", .{
         .optimize = .safe,
         .@"static-rtc" = @as([]const u8, "2026-01-01"),
         .read_only = false, // we create/write files
         .long_file_name = opts.long_file_name,
         .mkfs = false, // no on-device formatting
-        .exfat = false, // FAT/FAT32 only
+        .exfat = opts.exfat, // FAT/FAT32, and exFAT when asked
         .find = false, // no f_findfirst/next
     }).module("zfat");
     // Trap on C UB instead of linking the UBSan runtime (see zfat/build.zig):
