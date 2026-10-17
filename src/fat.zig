@@ -31,7 +31,18 @@ fn diskInitialize(self: *fatfs.Disk) fatfs.Disk.Error!fatfs.Disk.Status {
     return diskStatus(self);
 }
 
+/// Multi-block reads that failed and fell back to single blocks. After
+/// `multi_limit` of them the disk reads single blocks only, so a card that
+/// does not take CMD18 still works, at the old speed.
+pub var multi_failures: u32 = 0;
+const multi_limit = 8;
+
 fn diskRead(_: *fatfs.Disk, buff: [*]u8, sector: u32, count: u32) fatfs.Disk.Error!void {
+    if (count > 1 and multi_failures < multi_limit) {
+        if (sdmmc.readBlocks(sector, count, buff[0 .. count * 512])) |_| {
+            return;
+        } else |_| multi_failures += 1;
+    }
     var i: u32 = 0;
     while (i < count) : (i += 1) {
         const dst: *[512]u8 = @ptrCast(buff + i * 512);

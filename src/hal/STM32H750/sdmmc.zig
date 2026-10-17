@@ -84,11 +84,16 @@ fn clearFlags() void {
 
 /// Full CMDR write (all fields; the ones we don't set are 0). `trans` marks a
 /// data-transfer command (CMDTRANS), which triggers the DPSM alongside the CPSM.
+/// `stop` marks CMD12, which ends a multi-block transfer (CMDSTOP).
 fn writeCmd(index: u6, waitresp: u2, trans: bool) void {
+    writeCmdStop(index, waitresp, trans, false);
+}
+
+fn writeCmdStop(index: u6, waitresp: u2, trans: bool, stop: bool) void {
     regs.CMDR.write(.{
         .CMDINDEX = index,
         .CMDTRANS = @intFromBool(trans),
-        .CMDSTOP = 0,
+        .CMDSTOP = @intFromBool(stop),
         .WAITRESP = waitresp,
         .WAITINT = 0,
         .WAITPEND = 0,
@@ -116,6 +121,10 @@ fn writeClkcr(clkdiv: u10, widbus: u2) void {
 
 /// Issue a command via the CPSM and wait for its response.
 fn sendCmd(index: u6, arg: u32, resp: Resp) Error!void {
+    return sendCmdStop(index, arg, resp, false);
+}
+
+fn sendCmdStop(index: u6, arg: u32, resp: Resp, stop: bool) Error!void {
     clearFlags();
     regs.ARGR.write(.{ .CMDARG = arg });
 
@@ -124,7 +133,7 @@ fn sendCmd(index: u6, arg: u32, resp: Resp) Error!void {
         .short, .short_no_crc => 1,
         .long => 3,
     };
-    writeCmd(index, waitresp, false);
+    writeCmdStop(index, waitresp, false, stop);
 
     var spins: u32 = 0;
     if (resp == .none) {
@@ -318,6 +327,76 @@ fn waitCardReady() Error!void {
         if (state == 4) return; // TRAN
         spins += 1;
         if (spins >= POLL_LIMIT) return Error.PollTimeout;
+    }
+}
+
+/// Blocks one multi-block transfer moves at most: its bounce buffer, 8 KB.
+pub const max_blocks = 16;
+var bounce_n: [max_blocks * 512]u8 align(32) linksection(".axi_sram") = undefined;
+
+/// One CMD18 READ_MULTIPLE_BLOCK of `count` blocks into `bounce_n`, ended
+/// by CMD12, after the sequence of ST's driver. Polled, as `transferBlock`.
+fn transferMulti(sector: u32, count: u32) Error!void {
+    clearFlags();
+    regs.DCTRL.write_raw(0);
+    regs.DTIMER.write(.{ .DATATIME = 0xFFFF_FFFF });
+    regs.DLENR.write(.{ .DATALENGTH = @intCast(count * 512) });
+    regs.IDMABASE0R.write(.{ .IDMABASE0 = @intFromPtr(&bounce_n) });
+    regs.IDMACTRLR.modify(.{ .IDMAEN = 1 });
+    writeDctrl(true);
+    regs.ARGR.write(.{ .CMDARG = sector });
+    writeCmd(18, 1, true);
+
+    var spins: u32 = 0;
+    while (true) {
+        const s = regs.STAR.read();
+        if (s.CTIMEOUT == 1 or s.DTIMEOUT == 1 or s.DCRCFAIL == 1 or s.RXOVERR == 1) {
+            const e: Error = if (s.CTIMEOUT == 1)
+                Error.CmdTimeout
+            else if (s.DTIMEOUT == 1)
+                Error.DataTimeout
+            else if (s.DCRCFAIL == 1)
+                Error.DataCrcFail
+            else
+                Error.DataError;
+            dataCleanup();
+            clearFlags();
+            return e;
+        }
+        if (s.DATAEND == 1) break;
+        spins += 1;
+        if (spins >= POLL_LIMIT) {
+            dataCleanup();
+            clearFlags();
+            return Error.PollTimeout;
+        }
+    }
+    dataCleanup();
+    clearFlags();
+    try sendCmdStop(12, 0, .short, true); // STOP_TRANSMISSION
+}
+
+/// Read `count` blocks from `sector` into `dst` (`count * 512` bytes), at
+/// most `max_blocks` per command. A failed command is stopped and the card
+/// waited back to the transfer state before the error returns, so the
+/// caller can fall back to `readBlock`.
+pub fn readBlocks(sector: u32, count: u32, dst: []u8) Error!void {
+    if (count == 0) return;
+    if (sector >= card.block_count or count > card.block_count - sector) return Error.OutOfRange;
+    std.debug.assert(dst.len >= @as(usize, count) * 512);
+    var done: u32 = 0;
+    while (done < count) {
+        const n: u32 = @min(count - done, max_blocks);
+        const bytes: usize = @as(usize, n) * 512;
+        cache.clean_dcache_by_addr(@intFromPtr(&bounce_n), bytes);
+        transferMulti(sector + done, n) catch |e| {
+            sendCmdStop(12, 0, .short, true) catch {};
+            waitCardReady() catch {};
+            return e;
+        };
+        cache.invalidate_dcache_by_addr(@intFromPtr(&bounce_n), bytes);
+        @memcpy(dst[@as(usize, done) * 512 ..][0..bytes], bounce_n[0..bytes]);
+        done += n;
     }
 }
 
