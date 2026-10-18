@@ -85,10 +85,11 @@ pub const Controller = enum { internal_fs, external_hs };
 
 pub const Config = struct {
     controller: Controller = .internal_fs,
-    /// NVIC priority for the OTG IRQ. MUST be numerically greater (lower
-    /// urgency) than the SAI audio-DMA ISR (`.highest`/0 in daisy.zig) so a USB
-    /// ISR can never delay an audio-DMA refill. Default `.lowest` (15).
-    irq_priority: interrupt.Priority = .lowest,
+    /// NVIC priority for the OTG IRQ. Default `.highest` (0), above the audio
+    /// (`daisy.audio_priority`): the isochronous audio packets are armed in
+    /// this ISR once per 1 ms frame, and an audio block can last longer than
+    /// that. The ISR is a few µs, well inside the audio block's slack.
+    irq_priority: interrupt.Priority = .highest,
     /// VID/PID and strings reported to the host (serial defaults to the chip UID).
     identity: Identity = .{},
 };

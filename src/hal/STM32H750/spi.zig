@@ -241,7 +241,7 @@ pub const SPI_Device = struct {
         // Only SPI1 has a handler in hal.default_interrupts.
         if (self.peripheral == .SPI1) {
             // Below the audio, with the display's DMA (`daisy.display_priority`).
-            microzig.cpu.interrupt.set_priority(.SPI1, @enumFromInt(1));
+            microzig.cpu.interrupt.set_priority(.SPI1, @enumFromInt(2));
             microzig.cpu.interrupt.enable(.SPI1);
         }
 

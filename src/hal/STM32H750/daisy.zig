@@ -264,9 +264,9 @@ fn dma_init() !void {
     // may be enabled: a stray IRQ on any other stream would hit microzig's
     // "unhandled interrupt" panic.
     // SAI1 block A/B (audio).
-    cpu.interrupt.set_priority(.DMA1_Stream0, .highest);
+    cpu.interrupt.set_priority(.DMA1_Stream0, audio_priority);
     cpu.interrupt.enable(.DMA1_Stream0);
-    cpu.interrupt.set_priority(.DMA1_Stream1, .highest);
+    cpu.interrupt.set_priority(.DMA1_Stream1, audio_priority);
     cpu.interrupt.enable(.DMA1_Stream1);
     // SPI1 TX (display). One level below the audio, which may preempt it:
     // the display's completion interrupt starts the next tile, tens of µs.
@@ -274,13 +274,18 @@ fn dma_init() !void {
     cpu.interrupt.enable(.DMA2_Stream3);
 }
 
+/// The audio's DMA and SAI interrupts. Level 0 stays free for the short
+/// handlers that must not wait for an audio block (SysTick, USB): a block
+/// can last longer than their 1 ms period.
+pub const audio_priority: cpu.interrupt.Priority = @enumFromInt(1);
+
 /// The display's SPI and DMA interrupts: one level below the audio's.
-pub const display_priority: cpu.interrupt.Priority = @enumFromInt(1);
+pub const display_priority: cpu.interrupt.Priority = @enumFromInt(2);
 
 fn sai_init() !void {
     // SAI1 global interrupt for error handling (OVRUDR, AFSDET, LFSDET, WCKCFG)
     cpu.interrupt.enable(.SAI1);
-    cpu.interrupt.set_priority(.SAI1, .highest);
+    cpu.interrupt.set_priority(.SAI1, audio_priority);
 }
 
 fn uart_init() !void {

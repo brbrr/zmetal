@@ -70,7 +70,11 @@
 #define CFG_TUD_AUDIO_FUNC_1_EP_IN_SZ_MAX \
   TUD_AUDIO_EP_SIZE(false, CFG_TUD_AUDIO_FUNC_1_MAX_SAMPLE_RATE, \
     CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_TX, CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_TX)
-#define CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ           (4 * CFG_TUD_AUDIO_FUNC_1_EP_IN_SZ_MAX)
+// A whole number of frames in every format (6 or 8 bytes a frame): the FIFO
+// overwrites on overflow, and a byte count that is not whole frames shifts
+// every later packet off the frame boundary for good.
+#define ZT_WHOLE_FRAMES(n)                             ((n) / 24 * 24)
+#define CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ           ZT_WHOLE_FRAMES(4 * CFG_TUD_AUDIO_FUNC_1_EP_IN_SZ_MAX)
 
 // --- Playback (spk) OUT endpoint + feedback ---
 #define CFG_TUD_AUDIO_ENABLE_EP_OUT                    1
@@ -82,6 +86,6 @@
   TUD_AUDIO_EP_SIZE(false, CFG_TUD_AUDIO_FUNC_1_MAX_SAMPLE_RATE, \
     CFG_TUD_AUDIO_FUNC_1_FORMAT_1_N_BYTES_PER_SAMPLE_RX, CFG_TUD_AUDIO_FUNC_1_N_CHANNELS_RX)
 // FIFO_COUNT feedback needs the OUT SW FIFO >= 4x EP size.
-#define CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ          (4 * CFG_TUD_AUDIO_FUNC_1_EP_OUT_SZ_MAX)
+#define CFG_TUD_AUDIO_FUNC_1_EP_OUT_SW_BUF_SZ          ZT_WHOLE_FRAMES(4 * CFG_TUD_AUDIO_FUNC_1_EP_OUT_SZ_MAX)
 
 #endif
