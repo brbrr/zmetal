@@ -118,6 +118,25 @@ SECTIONS
 		PROVIDE(__sram1_bss_end__ = _esram1_bss);
 	} > RAM_D2_DMA
 
+	/* The D2 RAM beyond the DMA area (SRAM2's top 64 KB and SRAM3, 96 KB)
+	 * and the D3 SRAM4 (64 KB). Plain data for the CPU: cacheable, and no
+	 * DMA master here may rely on them being coherent. */
+	.d2_bss (NOLOAD) :
+	{
+		. = ALIGN(32);
+		*(.d2_bss)
+		*(.d2_bss*)
+		. = ALIGN(32);
+	} > RAM_D2
+
+	.d3_bss (NOLOAD) :
+	{
+		. = ALIGN(32);
+		*(.d3_bss)
+		*(.d3_bss*)
+		. = ALIGN(32);
+	} > RAM_D3
+
 	/* AXI-SRAM (D1). Reachable by D1-domain DMA masters such as the SDMMC1
 	 * IDMA (which cannot reach the D2 RAM_D2_DMA region). Cacheable via the
 	 * default MPU map, so users must do cache maintenance around DMA. */

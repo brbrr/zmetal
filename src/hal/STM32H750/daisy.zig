@@ -199,8 +199,11 @@ pub fn configure_clocks() !void {
 fn configure_mpu() !void {
     hal.mpu.disable();
 
-    // Configure RAM D2 (SRAM1) as non cacheable
-    // RAM_D2_DMA is 192KB (0x30000000-0x30030000), use 256KB MPU region
+    // Configure RAM D2's DMA area as non cacheable.
+    // RAM_D2_DMA is 192KB (0x30000000-0x30030000). An MPU region is a power
+    // of two, so the region is 256KB with its last two 32KB subregions off
+    // (SRD bits 6 and 7): 0x30030000-0x3003FFFF falls back to the default
+    // map, cacheable, with the rest of RAM_D2 (`.d2_bss`), which no DMA uses.
     try hal.mpu.config_region(.{
         .enable = .Enabled,
         .BaseAddress = 0x30000000,
@@ -211,7 +214,7 @@ fn configure_mpu() !void {
         .Shareable = .Enabled,
         .number = 0,
         .TypeExtField = .Level1,
-        .SubRegionDisable = 0,
+        .SubRegionDisable = 0xC0,
         .DisableExec = .Enable,
     });
 
