@@ -21,9 +21,11 @@ pub const Options = struct {
 /// A Program is any type with `pub fn process(self: *Program, io: AudioIO) void`.
 pub fn AudioInterface(comptime Program: type, comptime opts: Options) type {
     const usb_audio = if (opts.usb) microzig.hal.usb_audio else struct {};
-    // Interleaved samples per block: the USB bridge's envelope, or the SAI
-    // half-buffer (256) when USB is off.
-    const MAX = if (opts.usb) usb_audio.MAX_SAMPLES else 256;
+    // Interleaved samples per block: the SAI half-buffer.
+    const MAX = 256;
+    // The USB bridge moves at most this many samples a call, so a larger
+    // codec block goes to and from USB in chunks of it.
+    const USB_CHUNK = if (opts.usb) usb_audio.MAX_SAMPLES else MAX;
 
     return struct {
         const Self = @This();
@@ -41,7 +43,13 @@ pub fn AudioInterface(comptime Program: type, comptime opts: Options) type {
             std.debug.assert(n <= MAX);
 
             var usb_in: [MAX]f32 = @splat(0);
-            if (opts.usb) _ = usb_audio.readPlayback(usb_in[0..n]); // silence when host idle
+            // Silence when the host is idle. Each chunk is one call of the
+            // playback PLL, which is tuned per 1 ms call, so a 2 ms block
+            // makes two calls and the loop keeps its pace.
+            if (opts.usb) {
+                var at: usize = 0;
+                while (at < n) : (at += USB_CHUNK) _ = usb_audio.readPlayback(usb_in[at..@min(n, at + USB_CHUNK)]);
+            }
 
             var usb_out: [MAX]f32 = @splat(0);
             @memset(line_out[0..n], 0); // Program writes only what it routes
@@ -53,7 +61,11 @@ pub fn AudioInterface(comptime Program: type, comptime opts: Options) type {
                 .usb_out = usb_out[0..n],
             });
 
-            if (opts.usb) usb_audio.writeCapture(usb_out[0..n]); // no-op when host not recording
+            // A no-op when the host is not recording.
+            if (opts.usb) {
+                var at: usize = 0;
+                while (at < n) : (at += USB_CHUNK) usb_audio.writeCapture(usb_out[at..@min(n, at + USB_CHUNK)]);
+            }
         }
     };
 }

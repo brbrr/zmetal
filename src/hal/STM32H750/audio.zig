@@ -32,7 +32,8 @@ pub const AudioConfig = struct {
     sample_rate: SampleRate = .@"48khz",
     bit_depth: BitDepth = .@"24bit",
     channels: u8 = 2, // stereo (asserted == 2 for now)
-    // NOTE: currently capped by usb_audio's MAX_SAMPLES envelope (blocksize <= 48).
+    // Up to 128 (the SAI half-buffer). USB audio moves 48 frames a call; the
+    // audio interface splits a larger block into such calls.
     blocksize: u16 = 48, // SAI frames per DMA half-buffer
 
     /// Sample rate in Hz.

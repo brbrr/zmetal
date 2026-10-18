@@ -12,8 +12,9 @@ const audio = @import("../audio.zig");
 const Resampler = @import("resampler.zig").Resampler;
 
 // Compile-time envelope: buffers are sized for the largest supported format so
-// any runtime AudioConfig fits — stereo, blocksize <= 48, up to 4-byte subslot.
-// (A larger blocksize would need MAX_SAMPLES/CARRY_FRAMES bumped.)
+// any runtime AudioConfig fits — stereo, up to 48 frames a call, up to 4-byte
+// subslot. A larger codec block reaches here in chunks of MAX_SAMPLES
+// (`audio/interface.zig`).
 const MAX_CHANNELS = 2;
 const MAX_SUBSLOT = 4;
 pub const MAX_SAMPLES = 48 * MAX_CHANNELS; // 96 interleaved samples per block
@@ -31,7 +32,6 @@ var fmt_frame_bytes: u16 = 6; // subslot * channels
 pub fn configure(cfg: audio.AudioConfig) void {
     std.debug.assert(cfg.channels == MAX_CHANNELS);
     std.debug.assert(cfg.bit_depth == .@"24bit" or cfg.bit_depth == .@"32bit"); // SAI conversion path
-    std.debug.assert(cfg.samplesPerBlock() <= MAX_SAMPLES);
     std.debug.assert(cfg.epSize() <= 1023); // full-speed iso ceiling + compiled envelope
     fmt_subslot = cfg.subslot();
     fmt_frame_bytes = cfg.frameBytes();
