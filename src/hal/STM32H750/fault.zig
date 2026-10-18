@@ -194,6 +194,45 @@ export fn fault_report(frame: *const StackFrame, kind: u32) callconv(.c) void {
     }
 }
 
+/// The tail of the two trampolines that never resume, with the frame in r0
+/// and the kind in r1. A stack overflow enters here with the SP in or under
+/// the guard, so before anything uses the stack it opens the guard region
+/// and, when the frame lies within 3 KB above the guard, moves the SP to
+/// the top of the stack. The frame stays readable, and the report and the
+/// application's halt screen run on a stack that is not the data's.
+/// Nothing returns from here, so the old stack is not needed. With no
+/// guard set it goes straight to the report.
+const fatal_entry =
+    \\
+    \\ movw r2, #:lower16:zmetal_stack_guard_base
+    \\ movt r2, #:upper16:zmetal_stack_guard_base
+    \\ ldr r2, [r2]
+    \\ cbz r2, 1f
+    \\ movw r3, #0xED98
+    \\ movt r3, #0xE000
+    \\ mov r12, #3
+    \\ str r12, [r3]
+    \\ mov r12, #0
+    \\ str r12, [r3, #8]
+    \\ dsb
+    \\ isb
+    \\ add r2, r2, #4096
+    \\ cmp r0, r2
+    \\ bhs 1f
+    \\ movw r3, #:lower16:_estack
+    \\ movt r3, #:upper16:_estack
+    \\ msr msp, r3
+    \\ isb
+    \\ 1:
+    \\ b fault_report
+;
+
+comptime {
+    // `fatal_entry` opens region 3 and adds 4096 = the guard plus 3 KB.
+    std.debug.assert(@import("mpu.zig").stack_guard_region == 3);
+    std.debug.assert(@import("stack_guard.zig").size == 1024);
+}
+
 // Naked trampolines: pick MSP/PSP via EXC_RETURN bit 2, load the kind index,
 // tail-call fault_report(frame, kind).
 pub fn hard_fault() callconv(.naked) void {
@@ -203,8 +242,7 @@ pub fn hard_fault() callconv(.naked) void {
         \\ mrseq r0, msp
         \\ mrsne r0, psp
         \\ movs r1, #0
-        \\ b fault_report
-    );
+    ++ fatal_entry);
 }
 
 pub fn mem_manage_fault() callconv(.naked) void {
@@ -214,8 +252,7 @@ pub fn mem_manage_fault() callconv(.naked) void {
         \\ mrseq r0, msp
         \\ mrsne r0, psp
         \\ movs r1, #1
-        \\ b fault_report
-    );
+    ++ fatal_entry);
 }
 
 pub fn bus_fault() callconv(.naked) void {

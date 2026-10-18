@@ -46,6 +46,7 @@ pub const dma = @import("dma.zig"); // Has custom audio API
 pub const power = @import("power.zig");
 pub const clock = @import("clock.zig");
 pub const mpu = @import("mpu.zig");
+pub const stack_guard = @import("stack_guard.zig");
 pub const time = @import("time.zig");
 pub const cache = @import("cache.zig");
 pub const fault = @import("fault.zig");

@@ -196,7 +196,7 @@ pub fn configure_clocks() !void {
     try hal.rcc.apply_clock(clocktree_outputs, flash_latency);
 }
 
-fn configure_mpu() !void {
+fn configure_mpu(stack_guard: bool) !void {
     hal.mpu.disable();
 
     // Configure RAM D2's DMA area as non cacheable.
@@ -248,6 +248,8 @@ fn configure_mpu() !void {
         .TypeExtField = .Level1,
         .Size = .Size4KB,
     });
+
+    if (stack_guard) try hal.mpu.configStackGuard();
 
     hal.mpu.enable();
 }
@@ -303,6 +305,10 @@ pub const Daisy = struct {
         sdram: bool = true,
         /// Bring up the 8 MB QSPI NOR flash (indirect mode).
         qspi: bool = true,
+        /// An MPU region with no access under the stack, so an overflow
+        /// faults instead of writing over the DTCM's data. The span the
+        /// stack may use starts at `hal.stack_guard.stackLow`.
+        stack_guard: bool = false,
     };
 
     sai: hal.sai.SaiDriver = undefined,
@@ -334,7 +340,7 @@ pub const Daisy = struct {
         // which re-calls HAL_InitTick after switching the system clock.
         hal.clock.hal_init_tick(hal.clock.uwTickPrio) catch return error.ClockSetupError;
 
-        try configure_mpu();
+        try configure_mpu(config.stack_guard);
 
         try dma_init();
         try sai_init();

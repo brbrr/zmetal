@@ -1,4 +1,5 @@
 const std = @import("std");
+const stack_guard = @import("stack_guard.zig");
 
 const microzig = @import("microzig");
 const peri = microzig.chip.peripherals;
@@ -159,4 +160,42 @@ pub fn config_region(config: MPU_Region_Config) !void {
         mpu.RBAR.raw = 0;
         mpu.RASR.raw = 0;
     }
+}
+
+/// The region the stack guard takes; 0 to 2 are the board's (`daisy.zig`).
+pub const stack_guard_region: u8 = 3;
+
+/// The guard's base, or 0 while no guard is set. The fault trampolines
+/// read it by name before they touch the stack.
+pub export var zmetal_stack_guard_base: u32 = 0;
+
+extern var _edtcmram_bss: u8;
+
+/// The end of the DTCM's placed data, where the stack's span begins.
+pub fn dataEnd() u32 {
+    return @intFromPtr(&_edtcmram_bss);
+}
+
+comptime {
+    std.debug.assert(stack_guard.size == 1024); // `.Size1KB` below
+}
+
+/// A region with no access between the DTCM's data and the stack. Call
+/// it while the MPU is off; `enable` makes it take effect.
+pub fn configStackGuard() !void {
+    const base = stack_guard.base(dataEnd());
+    try config_region(.{
+        .enable = .Enabled,
+        .number = stack_guard_region,
+        .BaseAddress = base,
+        .Size = .Size1KB,
+        .SubRegionDisable = 0,
+        .TypeExtField = .Level0,
+        .AccessPermission = .NoAccess,
+        .DisableExec = .Disable,
+        .Shareable = .Disabled,
+        .cacheable = .Disabled,
+        .bufferable = .Disabled,
+    });
+    zmetal_stack_guard_base = base;
 }
