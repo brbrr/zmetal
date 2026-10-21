@@ -25,6 +25,7 @@ pub const I2C_Device = drivers.base.I2C_Device;
 const MCP23017 = mcp23017.MCP23017;
 
 pub const Update = encoder.Update;
+pub const Check = @import("keyboard.zig").Check;
 
 /// Expander pins (0..15) of one encoder.
 pub const EncPins = struct { a: u4, b: u4, sw: u4 };
@@ -51,11 +52,11 @@ pub fn McpEncoders(comptime cfg: EncodersConfig) type {
         /// Initialize in place (see `keyboard.Keyboard.init` for the same rationale:
         /// the MCP holds a copy of the I2C interface, and callers keep `Encoders` at
         /// a stable address).
+        /// All 16 pins are inputs with pull-ups.
+        pub const setup: mcp23017.Setup = .{};
+
         pub fn init(self: *Self, i2c_dev: I2C_Device) !void {
-            self.mcp = try MCP23017.init(i2c_dev, cfg.address);
-            // All 16 pins are inputs; MCP23017.init already enabled the pull-ups.
-            try self.mcp.setPortMode(.A, 0xFF);
-            try self.mcp.setPortMode(.B, 0xFF);
+            self.mcp = try MCP23017.initWith(i2c_dev, cfg.address, setup);
 
             for (&self.decoders) |*d| d.* = encoder.Encoder.init();
             for (&self.last) |*u| u.* = .{};
@@ -65,11 +66,20 @@ pub fn McpEncoders(comptime cfg: EncodersConfig) type {
         pub fn poll(self: *Self) !void {
             // In the MCP's byte (non-sequential) mode a 2-byte read from GPIOA
             // returns [GPIOA, GPIOB] — the whole 16-bit input port.
-            const ports = self.mcp.readRegisterPair(.GPIOA) catch return error.I2CError;
+            const ports = try self.mcp.readRegisterPair(.GPIOA);
             for (&self.decoders, 0..) |*d, i| {
                 const p = enc_pins[i];
                 self.last[i] = d.step(pinBit(ports, p.a), pinBit(ports, p.b), pinBit(ports, p.sw));
             }
+        }
+
+        /// Reads the expander's configuration back and, if the chip lost
+        /// it, writes it again (see `keyboard.check`).
+        pub fn check(self: *Self) mcp23017.Error!Check {
+            const rb = try self.mcp.readback();
+            if (rb.matches(setup)) return .{ .readback = rb, .repaired = false };
+            try self.mcp.configure(setup);
+            return .{ .readback = rb, .repaired = true };
         }
 
         /// Latest decoded state for encoder `i` (from the most recent `poll`).

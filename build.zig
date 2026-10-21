@@ -292,6 +292,7 @@ pub fn build(b: *std.Build) void {
         "src/hal/STM32H750/cpu_load.zig",
         "src/hal/STM32H750/stack_guard.zig",
         "src/drivers/tile_diff.zig",
+        "src/drivers/mcp23017_setup.zig",
         "src/hid/matrix_scan.zig",
     };
     for (test_roots) |path| {

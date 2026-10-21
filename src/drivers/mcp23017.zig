@@ -24,6 +24,9 @@ const std = @import("std");
 const microzig = @import("microzig");
 const hal = microzig.hal;
 const drivers = microzig.drivers;
+pub const setup = @import("mcp23017_setup.zig");
+pub const Setup = setup.Setup;
+pub const Readback = setup.Readback;
 
 /// I2C Device interface type from microzig
 pub const I2C_Device = drivers.base.I2C_Device;
@@ -71,12 +74,26 @@ pub const PinMode = enum {
     Output,
 };
 
-/// MCP23017 driver errors
+/// MCP23017 driver errors. The bus errors keep their kind, so a caller
+/// can tell a chip that does not answer (`Nack`) from a bus that does
+/// not move (`Timeout`) and a bus fault (`BusError`).
 pub const Error = error{
     I2CError,
+    Nack,
+    Timeout,
+    BusError,
     InvalidPin,
     InvalidPort,
 };
+
+fn busError(e: I2C_Device.InterfaceError) Error {
+    return switch (e) {
+        error.NoAcknowledge, error.DeviceNotPresent => Error.Nack,
+        error.Timeout => Error.Timeout,
+        error.UnknownAbort => Error.BusError,
+        else => Error.I2CError,
+    };
+}
 
 /// MCP23017 driver instance
 pub const MCP23017 = struct {
@@ -84,36 +101,54 @@ pub const MCP23017 = struct {
     address: u8,
     pin_data: [2]u8, // Cached output state for ports A and B
 
-    /// Initialize the MCP23017
+    /// Initialize the MCP23017 with every pin an input with its pull-up.
     /// i2c_dev: I2C_Device interface (microzig fat pointer - safe to copy)
     /// address: 7-bit I2C address (typically 0x20-0x27)
     pub fn init(i2c_dev: I2C_Device, address: u8) Error!MCP23017 {
+        return initWith(i2c_dev, address, .{});
+    }
+
+    /// Initialize the MCP23017 in `s`, from any state the chip is in: a
+    /// reset of the MCU leaves the chip's registers as they were.
+    pub fn initWith(i2c_dev: I2C_Device, address: u8, s: Setup) Error!MCP23017 {
         var self = MCP23017{
             .i2c = i2c_dev,
             .address = address,
             .pin_data = [_]u8{ 0, 0 },
         };
-
-        // IOCON = 0x20: SEQOP=1 -> sequential addressing DISABLED (byte mode;
-        // the register-pair helpers rely on it), BANK=0, open-drain INT off.
-        try self.writeRegister(.IOCON, 0x20);
-
-        // Enable all pull-ups by default (will only affect inputs)
-        try self.writeRegister(.GPPUA, 0xFF);
-        try self.writeRegister(.GPPUB, 0xFF);
-
-        // Read initial GPIO state
-        self.pin_data[0] = try self.readRegister(.GPIOA);
-        self.pin_data[1] = try self.readRegister(.GPIOB);
-
+        try self.configure(s);
         return self;
+    }
+
+    /// Writes every register of `s` (see `mcp23017_setup.zig`): IOCON in
+    /// both register maps, then the pairs, then the output latches. In
+    /// byte mode (IOCON.SEQOP = 1) a two-byte access toggles between the
+    /// A and B registers of a pair; the pair helpers rely on it.
+    pub fn configure(self: *MCP23017, s: Setup) Error!void {
+        const addr: I2C_Device.Address = @enumFromInt(self.address);
+        for (setup.writes(s)) |w| {
+            self.i2c.write(addr, &.{ w.addr, w.value }) catch |e| return busError(e);
+        }
+        try self.writeRegisterPair(.OLATA, s.olat[0], s.olat[1]);
+        self.pin_data = s.olat;
+    }
+
+    /// The registers `configure` sets, read back.
+    pub fn readback(self: *const MCP23017) Error!Readback {
+        return .{
+            .iocon = try self.readRegister(.IOCON),
+            .iodir = try self.readRegisterPair(.IODIRA),
+            .ipol = try self.readRegisterPair(.IPOLA),
+            .gpinten = try self.readRegisterPair(.GPINTENA),
+            .gppu = try self.readRegisterPair(.GPPUA),
+        };
     }
 
     /// Write to a single register
     pub fn writeRegister(self: *const MCP23017, reg: Register, value: u8) Error!void {
         const data = [_]u8{ @intFromEnum(reg), value };
         const addr: I2C_Device.Address = @enumFromInt(self.address);
-        self.i2c.write(addr, &data) catch return Error.I2CError;
+        self.i2c.write(addr, &data) catch |e| return busError(e);
     }
 
     /// Read from a single register
@@ -122,7 +157,7 @@ pub const MCP23017 = struct {
         var value: [1]u8 = undefined;
 
         const addr: I2C_Device.Address = @enumFromInt(self.address);
-        self.i2c.write_then_read(addr, &reg_addr, &value) catch return Error.I2CError;
+        self.i2c.write_then_read(addr, &reg_addr, &value) catch |e| return busError(e);
         return value[0];
     }
 
@@ -130,7 +165,7 @@ pub const MCP23017 = struct {
     pub fn writeRegisterPair(self: *const MCP23017, base_reg: Register, port_a: u8, port_b: u8) Error!void {
         const data = [_]u8{ @intFromEnum(base_reg), port_a, port_b };
         const addr: I2C_Device.Address = @enumFromInt(self.address);
-        self.i2c.write(addr, &data) catch return Error.I2CError;
+        self.i2c.write(addr, &data) catch |e| return busError(e);
     }
 
     /// Read from both registers of a port pair
@@ -139,7 +174,7 @@ pub const MCP23017 = struct {
         var values: [2]u8 = undefined;
 
         const addr: I2C_Device.Address = @enumFromInt(self.address);
-        self.i2c.write_then_read(addr, &reg_addr, &values) catch return Error.I2CError;
+        self.i2c.write_then_read(addr, &reg_addr, &values) catch |e| return busError(e);
         return values;
     }
 

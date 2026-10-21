@@ -40,6 +40,9 @@ pub const MatrixConfig = struct {
     cols: u4,
 };
 
+/// A `check` result: what the chip held, and whether it was set up again.
+pub const Check = struct { readback: mcp23017.Readback, repaired: bool };
+
 pub const KeyEvent = debounce.KeyEvent;
 pub const KeyEventData = debounce.KeyEventData;
 pub const EventQueue = debounce.EventQueue;
@@ -106,6 +109,10 @@ pub fn McpMatrixKeyboard(comptime cfg: MatrixConfig) type {
             }
         };
 
+        /// Port A (columns): outputs, idle high. Port B (rows): inputs
+        /// with pull-ups.
+        pub const setup: mcp23017.Setup = .{ .iodir = .{ 0x00, 0xFF }, .gppu = .{ 0xFF, 0xFF }, .olat = .{ 0xFF, 0x00 } };
+
         mcp: MCP23017,
         port_matrix: PortMatrix,
         debouncer: DebouncerType,
@@ -121,19 +128,23 @@ pub fn McpMatrixKeyboard(comptime cfg: MatrixConfig) type {
         /// leaving those internal pointers dangling at the init frame, faulting on
         /// the first process() call.
         pub fn init(self: *Self, i2c_dev: I2C_Device) !void {
-            // Initialize MCP23017 with the interface
-            self.mcp = try MCP23017.init(i2c_dev, cfg.address);
-
-            // Port A (columns): all outputs, idle HIGH.
-            try self.mcp.setPortMode(.A, 0x00);
-            try self.mcp.writePort(.A, 0xFF);
-
-            // Port B (rows): inputs with pull-ups.
-            try self.mcp.setPortMode(.B, 0xFF);
-            try self.mcp.setPortPullups(.B, 0xFF);
-
+            self.mcp = try MCP23017.initWith(i2c_dev, cfg.address, setup);
             self.port_matrix = .{ .scanner = .{ .io = .{ .mcp = &self.mcp } } };
             self.debouncer = DebouncerType.init(&self.port_matrix);
+        }
+
+        /// Reads the expander's configuration back and, if the chip lost
+        /// it, writes it again. The chip keeps its registers through a
+        /// reset of the MCU, so a bad value stays until a power cycle
+        /// unless something writes it again. Call it every second or so,
+        /// between scans.
+        pub fn check(self: *Self) mcp23017.Error!Check {
+            const rb = try self.mcp.readback();
+            if (rb.matches(setup)) return .{ .readback = rb, .repaired = false };
+            try self.mcp.configure(setup);
+            // The columns are at their set-up level now, not low.
+            self.port_matrix.scanner.idle_low = false;
+            return .{ .readback = rb, .repaired = true };
         }
 
         /// Process keyboard matrix scan and update debounce state
