@@ -7,6 +7,18 @@
 
 const std = @import("std");
 
+/// Expander pins (0..15) of one encoder.
+pub const EncPins = struct { a: u4, b: u4, sw: u4 };
+
+/// Returns the pins that `pins` use as a mask: bit n is expander pin n.
+pub fn usedMask(pins: []const EncPins) u16 {
+    var m: u16 = 0;
+    for (pins) |p| {
+        for ([_]u4{ p.a, p.b, p.sw }) |n| m |= @as(u16, 1) << n;
+    }
+    return m;
+}
+
 /// Result of feeding one sample to an `Encoder`.
 pub const Update = struct {
     /// +1 clockwise, -1 counter-clockwise, 0 if no detent this sample.
@@ -72,6 +84,11 @@ pub const Encoder = struct {
         };
     }
 };
+
+test "the used pins of the encoders make one 16-bit mask" {
+    const pins = [_]EncPins{ .{ .a = 10, .b = 9, .sw = 11 }, .{ .a = 2, .b = 1, .sw = 15 } };
+    try expectEqual(@as(u16, 0x8E06), usedMask(&pins));
+}
 
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;

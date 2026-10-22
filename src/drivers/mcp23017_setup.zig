@@ -39,6 +39,26 @@ pub const Setup = struct {
     olat: [2]u8 = .{ 0x00, 0x00 },
 };
 
+/// What a set-up does with the pins that no user wires.
+pub const Unused = enum {
+    /// An input with its pull-up, as at power-on.
+    input,
+    /// An output driven low. The MCP23017 data sheet says that GPA7 and
+    /// GPB7 as inputs can corrupt SDA during a read; as outputs they
+    /// cannot.
+    output_low,
+};
+
+/// Returns the set-up where the pins in `used` (bit n is pin n, 0-7 port
+/// A, 8-15 port B) are inputs with pull-ups and the other pins are as
+/// `unused` tells. An output has no pull-up, so the check compares
+/// GPPU as 0 for it.
+pub fn inputs(used: u16, unused: Unused) Setup {
+    if (unused == .input) return .{};
+    const ports: [2]u8 = .{ @truncate(used), @truncate(used >> 8) };
+    return .{ .iodir = ports, .gppu = ports, .olat = .{ 0, 0 } };
+}
+
 /// One register write: the address, then the value.
 pub const Write = struct { addr: u8, value: u8 };
 
@@ -188,4 +208,18 @@ test "the first write is IOCON = 0 in the BANK=1 map, a GPINTENB write in the BA
         try testing.expectEqual(@as(u8, 0), x.value);
     };
     try testing.expect(found);
+}
+
+test "with unused pins as inputs, every pin is an input with its pull-up" {
+    try testing.expectEqual(Setup{}, inputs(0x7E7E, .input));
+}
+
+test "with unused pins as outputs, only the used pins are inputs, and the others are driven low" {
+    // Pins 1-6 of each port used: GPA0, GPA7, GPB0 and GPB7 are free.
+    const s = inputs(0x7E7E, .output_low);
+    try testing.expectEqual(Setup{ .iodir = .{ 0x7E, 0x7E }, .gppu = .{ 0x7E, 0x7E }, .olat = .{ 0, 0 } }, s);
+    var c = powerOn();
+    c.apply(s);
+    try testing.expect(c.readback().matches(s));
+    try testing.expect(!c.readback().matches(.{}));
 }

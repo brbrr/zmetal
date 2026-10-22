@@ -28,12 +28,15 @@ pub const Update = encoder.Update;
 pub const Check = @import("keyboard.zig").Check;
 
 /// Expander pins (0..15) of one encoder.
-pub const EncPins = struct { a: u4, b: u4, sw: u4 };
+pub const EncPins = encoder.EncPins;
 
 pub const EncodersConfig = struct {
     /// 7-bit I2C address of the expander.
     address: u7,
     pins: []const EncPins,
+    /// The expander pins that no encoder uses: inputs with pull-ups, or
+    /// outputs driven low (see `mcp23017_setup.Unused`).
+    unused_pins: mcp23017.setup.Unused = .input,
 };
 
 pub fn McpEncoders(comptime cfg: EncodersConfig) type {
@@ -49,11 +52,13 @@ pub fn McpEncoders(comptime cfg: EncodersConfig) type {
         decoders: [NUM_ENCODERS]encoder.Encoder,
         last: [NUM_ENCODERS]Update,
 
+        /// The encoders' pins are inputs with pull-ups; the other pins are
+        /// as `cfg.unused_pins` tells. `init` and `check` use this set-up.
+        pub const setup: mcp23017.Setup = mcp23017.setup.inputs(encoder.usedMask(cfg.pins), cfg.unused_pins);
+
         /// Initialize in place (see `keyboard.Keyboard.init` for the same rationale:
         /// the MCP holds a copy of the I2C interface, and callers keep `Encoders` at
         /// a stable address).
-        /// All 16 pins are inputs with pull-ups.
-        pub const setup: mcp23017.Setup = .{};
 
         pub fn init(self: *Self, i2c_dev: I2C_Device) !void {
             self.mcp = try MCP23017.initWith(i2c_dev, cfg.address, setup);
