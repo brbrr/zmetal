@@ -569,10 +569,8 @@ fn recover_bus(comptime pin_cfg: PinConfig, stop: i2c_recovery.Stop) Recovery {
         }
     };
 
-    // Set the output latches high before the pins become outputs, so the
-    // change of mode does not pull a line low.
-    Lines.scl.write(.High);
-    Lines.sda.write(.High);
+    // The recovery leaves both output latches high, so a later run does
+    // not pull a line low when the pins become outputs.
     Lines.scl.configure();
     Lines.sda.configure();
     return i2c_recovery.run(Lines{}, stop);
