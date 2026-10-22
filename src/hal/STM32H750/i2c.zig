@@ -20,6 +20,7 @@ const rcc = @import("rcc.zig");
 const gpio = @import("gpio.zig");
 const clock = @import("clock.zig");
 const i2c_seg = @import("i2c_seg.zig");
+const i2c_recovery = @import("i2c_recovery.zig");
 const i2c_regs = microzig.chip.types.peripherals.i2c_v2;
 
 fn reloadMode(more: bool) i2c_regs.RELOAD {
@@ -36,6 +37,9 @@ fn endMode(hold: bool) i2c_regs.AUTOEND {
 pub const Address = drivers.base.I2C_Device.Address;
 pub const Error = drivers.base.I2C_Device.Error;
 pub const InterfaceError = drivers.base.I2C_Device.InterfaceError;
+
+/// What one bus recovery found and did (see `i2c_recovery.zig`).
+pub const Recovery = i2c_recovery.Recovery;
 
 /// I2C peripheral selection
 pub const Peripheral = enum {
@@ -154,6 +158,11 @@ fn resetPeripheral(comptime peripheral: Peripheral) void {
 /// I2C Device wrapper that provides zero-cost abstraction over microzig's I2C_Device
 pub const I2C_Device = struct {
     inner: i2c_v2.I2C_Device,
+    /// What the bus recovery in `init` found and did.
+    boot_recovery: Recovery,
+    /// The run-time bus recovery on this device's pins (see `recoverBus`).
+    /// A comptime-made function, because the GPIO pins are comptime.
+    pin_recovery: *const fn () Recovery,
 
     /// Initialize an I2C peripheral with the given configuration
     /// This should be called at comptime or at startup to compute timing parameters
@@ -184,10 +193,33 @@ pub const I2C_Device = struct {
         // reset), recover a bus left stuck mid-transfer, THEN switch the pins to
         // the I2C alternate function.
         resetPeripheral(peripheral);
-        recover_bus(pin_cfg);
+        const boot = recover_bus(pin_cfg, .if_clocked);
         configure_pins(pin_cfg);
 
-        return I2C_Device{ .inner = inner };
+        return I2C_Device{
+            .inner = inner,
+            .boot_recovery = boot,
+            .pin_recovery = &RunTimeRecovery(pin_cfg).run,
+        };
+    }
+
+    /// Frees a bus that a slave holds, at run time. The peripheral goes
+    /// off, which resets its state machine and releases the lines. The
+    /// recovery then runs on the device's own pins, always with a STOP.
+    /// Then the pins go back to the alternate function, and `apply`
+    /// enables the peripheral again with its TIMINGR.
+    ///
+    /// It blocks for about 150 us. Call it between transfers, from the
+    /// context that does the transfers. It writes the GPIO port's mode
+    /// registers, so no other context may configure pins of that port
+    /// at the same time.
+    pub fn recoverBus(self: *I2C_Device) Recovery {
+        const r = self.regs();
+        r.CR1.modify(.{ .PE = 0 });
+        const result = self.pin_recovery();
+        r.ICR.write_raw(ICR_CLEAR_MASK);
+        self.apply();
+        return result;
     }
 
     /// Apply the configuration and enable the I2C peripheral
@@ -475,6 +507,19 @@ pub const I2C_Device = struct {
     }
 };
 
+/// The run-time recovery for one pin pair, as a function a device keeps.
+fn RunTimeRecovery(comptime pin_cfg: PinConfig) type {
+    return struct {
+        /// Runs the recovery with a STOP, then gives the pins back to the
+        /// peripheral.
+        fn run() Recovery {
+            const r = recover_bus(pin_cfg, .always);
+            configure_pins(pin_cfg);
+            return r;
+        }
+    };
+}
+
 /// Recover a stuck I2C bus before the peripheral takes over the pins.
 ///
 /// A CPU reset resets the I2C peripheral but NOT the bus or the slaves. A slave
@@ -483,50 +528,58 @@ pub const I2C_Device = struct {
 /// fix: drive the pins as GPIO and bit-bang up to 9 SCL clocks — one byte + ACK
 /// — until the slave finishes and releases SDA, then issue a STOP. Must run
 /// BEFORE `configure_pins` switches the pins to the I2C alternate function.
-fn recover_bus(comptime pin_cfg: PinConfig) void {
-    const scl = comptime gpio.Pin.from(pin_cfg.scl.pin, .{
-        .mode = .output,
-        .otype = .OpenDrain,
-        .pull = .PullUp,
-        .speed = .VeryHighSpeed,
-    });
-    const sda = comptime gpio.Pin.from(pin_cfg.sda.pin, .{
-        .mode = .output,
-        .otype = .OpenDrain,
-        .pull = .PullUp,
-        .speed = .VeryHighSpeed,
-    });
+/// `stop` tells when it gives the STOP. It returns what it found and did.
+fn recover_bus(comptime pin_cfg: PinConfig, stop: i2c_recovery.Stop) Recovery {
+    const Lines = struct {
+        const scl = gpio.Pin.from(pin_cfg.scl.pin, .{
+            .mode = .output,
+            .otype = .OpenDrain,
+            .pull = .PullUp,
+            .speed = .VeryHighSpeed,
+        });
+        const sda = gpio.Pin.from(pin_cfg.sda.pin, .{
+            .mode = .output,
+            .otype = .OpenDrain,
+            .pull = .PullUp,
+            .speed = .VeryHighSpeed,
+        });
 
-    scl.configure();
-    sda.configure();
-    // Release both lines (open-drain high = let the pull-ups win).
-    scl.write(.High);
-    sda.write(.High);
-    bit_delay();
+        // Open-drain: High releases the line (the pull-ups take it high),
+        // Low drives it low.
+        pub fn sclHigh(_: @This()) void {
+            scl.write(.High);
+        }
+        pub fn sclLow(_: @This()) void {
+            scl.write(.Low);
+        }
+        pub fn sdaHigh(_: @This()) void {
+            sda.write(.High);
+        }
+        pub fn sdaLow(_: @This()) void {
+            sda.write(.Low);
+        }
+        pub fn sclIsLow(_: @This()) bool {
+            return scl.read() == .Low;
+        }
+        pub fn sdaIsLow(_: @This()) bool {
+            return sda.read() == .Low;
+        }
+        pub fn wait(_: @This()) void {
+            bit_delay();
+        }
+    };
 
-    // Clock SCL until the slave releases SDA (bus is idle-high when free).
-    var pulses: u8 = 0;
-    while (pulses < 9 and sda.read() == .Low) : (pulses += 1) {
-        scl.write(.Low);
-        bit_delay();
-        scl.write(.High);
-        bit_delay();
-    }
-
-    // Only if we actually had to clock (bus was stuck), issue a STOP —
-    // SDA low->high while SCL is high — to leave the bus cleanly idle.
-    if (pulses > 0) {
-        sda.write(.Low);
-        bit_delay();
-        scl.write(.High);
-        bit_delay();
-        sda.write(.High);
-        bit_delay();
-    }
+    // Set the output latches high before the pins become outputs, so the
+    // change of mode does not pull a line low.
+    Lines.scl.write(.High);
+    Lines.sda.write(.High);
+    Lines.scl.configure();
+    Lines.sda.configure();
+    return i2c_recovery.run(Lines{}, stop);
 }
 
 /// Half-period for the recovery bit-bang (~100 kHz). Timing isn't critical (it
-/// only has to satisfy a slave's setup/hold and runs once at startup); uses
+/// only has to satisfy a slave's setup/hold); uses
 /// `clock.delay_us` because delay_ms's ~1 ms granularity is far too coarse for a
 /// µs-scale bit-bang.
 inline fn bit_delay() void {

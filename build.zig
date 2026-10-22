@@ -286,6 +286,7 @@ pub fn build(b: *std.Build) void {
         "src/hal/STM32H750/dma_index.zig",
         "src/hal/STM32H750/sai_math.zig",
         "src/hal/STM32H750/i2c_seg.zig",
+        "src/hal/STM32H750/i2c_recovery.zig",
         "src/hal/STM32H750/tick_math.zig",
         "src/hal/STM32H750/pin_name.zig",
         "src/hal/STM32H750/usb/descriptors.zig",
