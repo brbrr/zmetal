@@ -6,6 +6,9 @@
 //! of the frame it drew passes a mask, and only the tiles in the mask are
 //! read: the others keep their hash, so a change there is still found by
 //! a later flush whose mask holds them.
+//!
+//! The changed tiles go in runs: tiles that are side by side are one
+//! transfer (`firstRun`).
 
 const std = @import("std");
 
@@ -65,9 +68,127 @@ pub fn collect(fb: []const u8, hashes: *[TILE_COUNT]u32, valid: bool, mask: Mask
     return n;
 }
 
+/// A group of dirty tiles that one transfer sends: `cols` tiles from tile
+/// column `tx`, in `rows` tile rows from row `ty`.
+pub const Run = struct {
+    tx: u16,
+    ty: u16,
+    cols: u16,
+    rows: u16,
+
+    /// The entries of the dirty list that the run takes.
+    pub fn tiles(r: Run) usize {
+        return @as(usize, r.cols) * r.rows;
+    }
+};
+
+/// Gives the run at the start of `list`, the dirty tiles in tile order.
+/// `list` is not empty.
+///
+/// A transfer has a fixed cost: the window commands, and a wait for the
+/// two interrupts that end it. So tiles that are side by side go as one
+/// transfer. A run of whole tile rows is one part of the frame memory,
+/// and it has no limit: the driver sends it from the frame with no copy.
+/// A shorter run needs a copy, so it is one row high and at most
+/// `max_cols` tiles wide. `max_cols` is 1 or more.
+pub fn firstRun(list: []const u16, max_cols: usize) Run {
+    const first = list[0];
+    const ty = first / TILE_COLS;
+    var cols: u16 = 1;
+    while (cols < list.len and list[cols] == first + cols and (first + cols) / TILE_COLS == ty) cols += 1;
+    if (cols < TILE_COLS) {
+        return .{ .tx = first % TILE_COLS, .ty = ty, .cols = @intCast(@min(cols, max_cols)), .rows = 1 };
+    }
+    // The list has each tile once, in order. So when the last tile of the
+    // next row is at its place, the row is whole.
+    var rows: u16 = 1;
+    while (true) {
+        const last = @as(usize, rows + 1) * TILE_COLS - 1;
+        if (last >= list.len or list[last] != first + last) break;
+        rows += 1;
+    }
+    return .{ .tx = 0, .ty = ty, .cols = TILE_COLS, .rows = rows };
+}
+
 // ============================================================================
 
 const testing = std.testing;
+
+/// Cuts `list` into its runs and gives the count.
+fn runsOf(list: []const u16, max_cols: usize, out: []Run) usize {
+    var at: usize = 0;
+    var n: usize = 0;
+    while (at < list.len) : (n += 1) {
+        out[n] = firstRun(list[at..], max_cols);
+        at += out[n].tiles();
+    }
+    return n;
+}
+
+test "tiles side by side in one row are one run, up to the limit" {
+    var out: [TILE_COUNT]Run = undefined;
+    // Tiles 12, 13, 14 and 16 of row 1.
+    try testing.expectEqual(@as(usize, 2), runsOf(&.{ 12, 13, 14, 16 }, 5, &out));
+    try testing.expectEqual(Run{ .tx = 2, .ty = 1, .cols = 3, .rows = 1 }, out[0]);
+    try testing.expectEqual(Run{ .tx = 6, .ty = 1, .cols = 1, .rows = 1 }, out[1]);
+    // The limit cuts a run of 7 into 5 and 2.
+    try testing.expectEqual(@as(usize, 2), runsOf(&.{ 1, 2, 3, 4, 5, 6, 7 }, 5, &out));
+    try testing.expectEqual(Run{ .tx = 1, .ty = 0, .cols = 5, .rows = 1 }, out[0]);
+    try testing.expectEqual(Run{ .tx = 6, .ty = 0, .cols = 2, .rows = 1 }, out[1]);
+}
+
+test "the last tile of a row and the first of the next are two runs" {
+    var out: [TILE_COUNT]Run = undefined;
+    try testing.expectEqual(@as(usize, 2), runsOf(&.{ 9, 10 }, 5, &out));
+    try testing.expectEqual(Run{ .tx = 9, .ty = 0, .cols = 1, .rows = 1 }, out[0]);
+    try testing.expectEqual(Run{ .tx = 0, .ty = 1, .cols = 1, .rows = 1 }, out[1]);
+}
+
+test "whole rows are one run of any height, and the rest follows" {
+    var out: [TILE_COUNT]Run = undefined;
+    var all: [TILE_COUNT]u16 = undefined;
+    for (&all, 0..) |*t, i| t.* = @intCast(i);
+    // The full frame.
+    try testing.expectEqual(@as(usize, 1), runsOf(&all, 5, &out));
+    try testing.expectEqual(Run{ .tx = 0, .ty = 0, .cols = TILE_COLS, .rows = TILE_ROWS }, out[0]);
+    // Rows 1 and 2 whole, then three tiles of row 3.
+    try testing.expectEqual(@as(usize, 2), runsOf(all[10..33], 5, &out));
+    try testing.expectEqual(Run{ .tx = 0, .ty = 1, .cols = TILE_COLS, .rows = 2 }, out[0]);
+    try testing.expectEqual(Run{ .tx = 0, .ty = 3, .cols = 3, .rows = 1 }, out[1]);
+    // Nine tiles of a row are not a whole row: 5 and 4.
+    try testing.expectEqual(@as(usize, 2), runsOf(all[20..29], 5, &out));
+    try testing.expectEqual(Run{ .tx = 0, .ty = 2, .cols = 5, .rows = 1 }, out[0]);
+    try testing.expectEqual(Run{ .tx = 5, .ty = 2, .cols = 4, .rows = 1 }, out[1]);
+}
+
+test "the runs of a list take each tile once" {
+    var prng = std.Random.DefaultPrng.init(7);
+    const r = prng.random();
+    var out: [TILE_COUNT]Run = undefined;
+    for (0..500) |_| {
+        var list: [TILE_COUNT]u16 = undefined;
+        var n: usize = 0;
+        const density = r.intRangeAtMost(u8, 1, 10);
+        for (0..TILE_COUNT) |t| if (r.intRangeAtMost(u8, 1, 10) <= density) {
+            list[n] = @intCast(t);
+            n += 1;
+        };
+        if (n == 0) continue;
+        const max_cols = r.intRangeAtMost(usize, 1, TILE_COLS - 1);
+        var seen: Mask = 0;
+        for (out[0..runsOf(list[0..n], max_cols, &out)]) |run| {
+            try testing.expect(run.cols == TILE_COLS or (run.rows == 1 and run.cols <= max_cols));
+            for (0..run.rows) |dy| for (0..run.cols) |dx| {
+                const t: u6 = @intCast((run.ty + dy) * TILE_COLS + run.tx + dx);
+                try testing.expect(seen & bit(t) == 0);
+                seen |= bit(t);
+            };
+        }
+        var want: Mask = 0;
+        for (list[0..n]) |t| want |= bit(@intCast(t));
+        try testing.expectEqual(want, seen);
+    }
+}
 
 const Fixture = struct {
     fb: [FB_SIZE]u8 = @splat(0),

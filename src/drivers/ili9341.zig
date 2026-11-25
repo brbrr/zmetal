@@ -245,7 +245,8 @@ pub fn ILI9341_DMA(
         spi: *hal.spi.SPI_Device,
         orientation: Orientation,
         framebuffer: []u8,
-        /// Contiguous staging buffer for one dirty tile (partial flush).
+        /// The buffer that a run of dirty tiles is copied to (partial
+        /// flush). A run is at most as many tiles wide as it holds.
         scratch: []u8,
 
         // Chunking state
@@ -262,12 +263,16 @@ pub fn ILI9341_DMA(
         hashes_valid: bool = false, // first flush_diff paints every tile
         dirty_tiles: [TILE_COUNT]u16 = undefined,
         dirty_count: usize = 0,
+        /// The first dirty tile that no run took yet.
         pump_idx: usize = 0,
         needs_pump: bool = false,
 
         /// `framebuffer` (>= FB_SIZE) and `scratch` (>= TILE_BYTES) are owned by
         /// the caller and read by DMA: place them in `linksection(".sram1_bss")`,
         /// word-aligned. They are not zero-initialized — `@memset` them first.
+        /// A scratch of `n * TILE_BYTES` lets a partial flush send up to `n`
+        /// tiles of one row in one transfer; more than `TILE_COLS - 1` is
+        /// not used.
         pub fn init(spi: *hal.spi.SPI_Device, framebuffer: []u8, scratch: []u8) !Self {
             if (framebuffer.len < FB_SIZE) {
                 return error.FramebufferTooSmall;
@@ -285,7 +290,7 @@ pub fn ILI9341_DMA(
                 // Exact sizes: flush streams framebuffer.len bytes, so a larger
                 // caller buffer would overrun the 320x240 window.
                 .framebuffer = framebuffer[0..FB_SIZE],
-                .scratch = scratch[0..TILE_BYTES],
+                .scratch = scratch[0 .. @as(usize, @min(scratch.len / TILE_BYTES, TILE_COLS - 1)) * TILE_BYTES],
             };
 
             try self.transport.init_display();
@@ -503,20 +508,19 @@ pub fn ILI9341_DMA(
         /// Send next chunk (called from the DMA-completion ISR or foreground start).
         fn send_next_chunk(self: *Self) anyerror!void {
             if (self.chunk_remaining == 0) {
-                // Current run (whole framebuffer, or one tile) finished.
+                // Current run (whole framebuffer, or a run of tiles) finished.
                 if (cs_pin) |cs| {
                     cs.write(.High);
                 }
 
-                // More dirty tiles queued: start the next one here. The SPI is
+                // More dirty tiles queued: start their run here. The SPI is
                 // idle once its end-of-transfer interrupt has run, so the
                 // window commands' polled writes are safe in this context;
-                // they and the 3 KB tile copy take some tens of microseconds.
-                // A foreground pump per tile would tie the frame rate to the
+                // they and the copy of a run take some tens of microseconds.
+                // A foreground pump per run would tie the frame rate to the
                 // main loop's pass rate.
-                if (self.pump_idx + 1 < self.dirty_count) {
-                    self.pump_idx += 1;
-                    try self.start_tile(self.dirty_tiles[self.pump_idx]);
+                if (self.pump_idx < self.dirty_count) {
+                    try self.start_run();
                     return;
                 }
 
@@ -567,43 +571,54 @@ pub fn ILI9341_DMA(
         // Tile checksum-diff partial flush
         // ============================================================
 
-        /// Copy a tile's strided rows into the contiguous scratch buffer, set the
-        /// panel window to the tile, and kick the async DMA. Foreground only.
-        fn start_tile(self: *Self, tile_idx: u16) anyerror!void {
-            const tx: u16 = tile_idx % TILE_COLS;
-            const ty: u16 = tile_idx / TILE_COLS;
-            const x0: usize = @as(usize, tx) * TILE_W;
-            const y0: usize = @as(usize, ty) * TILE_H;
+        /// Takes the next run of dirty tiles (`tile_diff.firstRun`), sets the
+        /// panel window to it, and starts the DMA. The audio interrupt is
+        /// above the two interrupts that end a transfer, so each transfer
+        /// can wait for one audio block: a run makes the transfers few.
+        ///
+        /// A run of whole tile rows is one part of the framebuffer, and the
+        /// DMA reads it there. A shorter run has a gap after each of its
+        /// pixel rows, so its rows are copied into the scratch first.
+        fn start_run(self: *Self) anyerror!void {
+            const run = tile_diff.firstRun(self.dirty_tiles[self.pump_idx..self.dirty_count], self.scratch.len / TILE_BYTES);
+            self.pump_idx += run.tiles();
+            const x0: usize = @as(usize, run.tx) * TILE_W;
+            const y0: usize = @as(usize, run.ty) * TILE_H;
+            const row_bytes: usize = @as(usize, run.cols) * TILE_W * 2;
+            const rows: usize = @as(usize, run.rows) * TILE_H;
 
-            var r: usize = 0;
-            while (r < TILE_H) : (r += 1) {
-                const src_off = ((y0 + r) * WIDTH + x0) * 2;
-                const dst_off = r * TILE_W * 2;
-                @memcpy(
-                    self.scratch[dst_off..][0 .. TILE_W * 2],
-                    self.framebuffer[src_off..][0 .. TILE_W * 2],
-                );
+            if (run.cols == TILE_COLS) {
+                self.dma_src = self.framebuffer[y0 * WIDTH * 2 ..][0 .. rows * row_bytes];
+            } else {
+                var r: usize = 0;
+                while (r < rows) : (r += 1) {
+                    const src_off = ((y0 + r) * WIDTH + x0) * 2;
+                    @memcpy(
+                        self.scratch[r * row_bytes ..][0..row_bytes],
+                        self.framebuffer[src_off..][0..row_bytes],
+                    );
+                }
+                self.dma_src = self.scratch[0 .. rows * row_bytes];
             }
 
             try self.transport.set_address_window(
                 @intCast(x0),
                 @intCast(y0),
-                @intCast(x0 + TILE_W - 1),
-                @intCast(y0 + TILE_H - 1),
+                @intCast(x0 + row_bytes / 2 - 1),
+                @intCast(y0 + rows - 1),
             );
             dc_pin.write(.High);
             if (cs_pin) |cs| {
                 cs.write(.Low);
             }
 
-            self.dma_src = self.scratch[0..TILE_BYTES];
             self.chunk_offset = 0;
-            self.chunk_remaining = TILE_BYTES;
+            self.chunk_remaining = self.dma_src.len;
             try self.send_next_chunk();
         }
 
         /// Partial flush: hash every tile, transmit only the ones that changed
-        /// since the last flush. Async — the completion interrupt chains the tiles.
+        /// since the last flush. Async — the completion interrupt chains the runs.
         pub fn flush_diff(self: *Self, callback: ?*const fn (*Self) void) !void {
             return self.flush_tiles(tile_diff.all_tiles, callback);
         }
@@ -637,17 +652,17 @@ pub fn ILI9341_DMA(
                 self.done = true; // a failed start must not look in-flight forever
                 self.hashes_valid = false; // and the unsent tiles must go next time
             }
-            try self.start_tile(self.dirty_tiles[0]);
+            try self.start_run();
         }
 
-        /// Advance a multi-tile flush to the next dirty tile. The completion
-        /// interrupt now chains the tiles itself, so this does nothing unless
-        /// a caller set `needs_pump`; it stays for callers that pump.
+        /// Advance a multi-tile flush to the next run of dirty tiles. The
+        /// completion interrupt now chains the runs itself, so this does
+        /// nothing unless a caller set `needs_pump`; it stays for callers
+        /// that pump.
         pub fn pump(self: *Self) void {
             if (!self.needs_pump) return;
             self.needs_pump = false;
-            self.pump_idx += 1;
-            self.start_tile(self.dirty_tiles[self.pump_idx]) catch {
+            self.start_run() catch {
                 if (cs_pin) |cs| {
                     cs.write(.High);
                 }
