@@ -67,17 +67,30 @@ pub fn init() void {
     });
 
     // SDTR timings (SDCLK cycles), values are N-1 encoded per the FMC
-    // register semantics (matches libdaisy's SdramTiming verbatim: field
-    // values below are the *delay counts*, transcribed directly into the
-    // like-named register fields).
+    // register semantics. TMRD, TXSR, TRC and TWR are libdaisy's
+    // SdramTiming. The three row timings are from the datasheet of the
+    // AS4C16M32MSA-6 (Rev 1.0, Dec 2017), at one SDCLK cycle of 10 ns:
+    //
+    //   tRP  (precharge)            18 ns -> 2 cycles; 3 here
+    //   tRCD (activate to access)   18 ns -> 2 cycles; 3 here
+    //   tRAS (activate to precharge) 48 ns -> 5 cycles
+    //
+    // libdaisy has 16 and 10 cycles for tRP and tRCD ("started at 2",
+    // with no reason given) and 4 for tRAS. The FMC keeps one row open.
+    // Each access to another row is a precharge and an activate, so with
+    // libdaisy's values it waited 26 cycles before the 3 of the CAS
+    // latency and the data, where 6 are enough. A cache line that comes
+    // from another row took about twice the time. The values keep the
+    // rule of the reference manual: TWR >= TRAS - TRCD and
+    // TWR >= TRC - TRCD - TRP.
     regs.SDTR[0].modify(.{
         .TMRD = 2 - 1, // LoadToActiveDelay
         .TXSR = 7 - 1, // ExitSelfRefreshDelay
-        .TRAS = 4 - 1, // SelfRefreshTime
+        .TRAS = 5 - 1, // SelfRefreshTime
         .TRC = 8 - 1, // RowCycleDelay
         .TWR = 3 - 1, // WriteRecoveryTime
-        .TRP = 16 - 1, // RPDelay
-        .TRCD = 10 - 1, // RCDDelay
+        .TRP = 3 - 1, // RPDelay
+        .TRCD = 3 - 1, // RCDDelay
     });
 
     // Enable the FMC controller. BCR1.FMCEN (bit 31) is the controller-level
