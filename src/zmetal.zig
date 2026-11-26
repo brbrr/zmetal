@@ -24,7 +24,12 @@ pub const time = @import("time.zig");
 
 pub const drivers = struct {
     pub const ili9341 = @import("drivers/ili9341.zig");
+    /// Display controllers for `ili9341.PanelDMA`: `panel_init.ili9341`, `panel_init.st7789`.
+    pub const panel_init = ili9341.panel_init;
+    pub const i2c_bus = @import("drivers/i2c_bus.zig");
     pub const mcp23017 = @import("drivers/mcp23017.zig");
+    pub const bq25628 = @import("drivers/bq25628.zig");
+    pub const max17048 = @import("drivers/max17048.zig");
     pub const font = ili9341.font;
 };
 

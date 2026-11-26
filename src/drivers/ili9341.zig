@@ -6,6 +6,8 @@ const hal = microzig.hal;
 pub const font = @import("font.zig");
 pub const Font = font.Font;
 pub const tile_diff = @import("tile_diff.zig");
+/// The controller-specific part: init sequence, colour order, mirroring.
+pub const panel_init = @import("panel_init.zig");
 
 pub const WIDTH = tile_diff.WIDTH;
 pub const HEIGHT = tile_diff.HEIGHT;
@@ -33,41 +35,28 @@ pub const Colors = struct {
     pub const Gray: Color = 0x8410;
 };
 
-pub const Orientation = enum {
-    Portrait,
-    Landscape,
-    PortraitFlipped,
-    LandscapeFlipped,
-};
+pub const Orientation = panel_init.Orientation;
 
+/// The commands the driver sends itself (the same opcodes on ILI9341 and
+/// ST7789). The panel's init sequence sends its own opcodes by number.
 const Command = enum(u8) {
-    SWRESET = 0x01,
-    SLPOUT = 0x11,
-    DISPON = 0x29,
     CASET = 0x2A,
     RASET = 0x2B,
     RAMWR = 0x2C,
     MADCTL = 0x36,
-    PIXFMT = 0x3A,
-    FRMCTR1 = 0xB1,
-    DFUNCTR = 0xB6,
-    PWCTR1 = 0xC0,
-    PWCTR2 = 0xC1,
-    VMCTR1 = 0xC5,
-    VMCTR2 = 0xC7,
-    PWCTRA = 0xCB,
-    PWCTRB = 0xCF,
-    DTCA = 0xE8,
-    DTCB = 0xEA,
-    POWER_SEQ = 0xED,
-    ENABLE_3G = 0xF2,
-    PUMP_RATIO = 0xF7,
-    GAMMASET = 0x26,
-    GMCTRP1 = 0xE0,
-    GMCTRN1 = 0xE1,
+    _,
 };
 
 pub fn ILI9341_Transport(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gpio.Pin, comptime cs_pin: ?hal.gpio.Pin) type {
+    return PanelTransport(panel_init.ili9341, dc_pin, rst_pin, cs_pin);
+}
+
+/// The SPI transport for the controller `panel` describes: DC, CS and RST,
+/// the commands, the init sequence and MADCTL.
+pub fn PanelTransport(comptime panel: panel_init.Panel, comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gpio.Pin, comptime cs_pin: ?hal.gpio.Pin) type {
+    if (!panel_init.madctlAgrees(panel)) @compileError("the panel's init table must set MADCTL to " ++
+        "panel_init.madctl(panel, .Portrait), the orientation recorded after init: " ++
+        "a table copied with `bgr` or `mirror_x` changed needs its MADCTL step changed too");
     return struct {
         const Self = @This();
 
@@ -85,78 +74,26 @@ pub fn ILI9341_Transport(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gp
             return .{ .spi = spi };
         }
 
+        /// The hardware reset, then the panel's init sequence.
         pub fn init_display(self: *Self) !void {
             self.reset();
-
-            try self.send_command(.SWRESET);
-            hal.clock.delay_ms(100);
-
-            try self.send_command(.PWCTRA);
-            try self.send_data(&[_]u8{ 0x39, 0x2C, 0x00, 0x34, 0x02 });
-
-            try self.send_command(.PWCTRB);
-            try self.send_data(&[_]u8{ 0x00, 0xC1, 0x30 });
-
-            try self.send_command(.DTCA);
-            try self.send_data(&[_]u8{ 0x85, 0x00, 0x78 });
-
-            try self.send_command(.DTCB);
-            try self.send_data(&[_]u8{ 0x00, 0x00 });
-
-            try self.send_command(.POWER_SEQ);
-            try self.send_data(&[_]u8{ 0x64, 0x03, 0x12, 0x81 });
-
-            try self.send_command(.PUMP_RATIO);
-            try self.send_data(&[_]u8{0x20});
-
-            try self.send_command(.PWCTR1);
-            try self.send_data(&[_]u8{0x23});
-
-            try self.send_command(.PWCTR2);
-            try self.send_data(&[_]u8{0x10});
-
-            try self.send_command(.VMCTR1);
-            try self.send_data(&[_]u8{ 0x3E, 0x28 });
-
-            try self.send_command(.VMCTR2);
-            try self.send_data(&[_]u8{0x86});
-
-            try self.send_command(.MADCTL);
-            try self.send_data(&[_]u8{0x48});
-
-            try self.send_command(.PIXFMT);
-            try self.send_data(&[_]u8{0x55});
-
-            try self.send_command(.FRMCTR1);
-            try self.send_data(&[_]u8{ 0x00, 0x18 });
-
-            try self.send_command(.DFUNCTR);
-            try self.send_data(&[_]u8{ 0x08, 0x82, 0x27 });
-
-            try self.send_command(.ENABLE_3G);
-            try self.send_data(&[_]u8{0x00});
-
-            try self.send_command(.GAMMASET);
-            try self.send_data(&[_]u8{0x01});
-
-            try self.send_command(.GMCTRP1);
-            try self.send_data(&[_]u8{
-                0x0F, 0x31, 0x2B, 0x0C, 0x0E, 0x08, 0x4E, 0xF1,
-                0x37, 0x07, 0x10, 0x03, 0x0E, 0x09, 0x00,
-            });
-
-            try self.send_command(.GMCTRN1);
-            try self.send_data(&[_]u8{
-                0x00, 0x0E, 0x14, 0x03, 0x11, 0x07, 0x31, 0xC1,
-                0x48, 0x08, 0x0F, 0x0C, 0x31, 0x36, 0x0F,
-            });
-
-            try self.send_command(.SLPOUT);
-            hal.clock.delay_ms(120);
-
-            try self.send_command(.DISPON);
-            hal.clock.delay_ms(100);
+            try panel_init.run(panel.init, InitSink{ .transport = self });
         }
+
+        /// `panel_init.run`'s sink: the writes and waits of the sequence.
+        const InitSink = struct {
+            transport: *const Self,
+
+            pub fn command(s: InitSink, op: u8) !void {
+                try s.transport.send_command(@enumFromInt(op));
+            }
+            pub fn data(s: InitSink, params: []const u8) !void {
+                try s.transport.send_data(params);
+            }
+            pub fn delayMs(_: InitSink, ms: u16) void {
+                hal.clock.delay_ms(ms);
+            }
+        };
 
         inline fn select(self: *const Self) void {
             _ = self;
@@ -187,20 +124,8 @@ pub fn ILI9341_Transport(comptime dc_pin: hal.gpio.Pin, comptime rst_pin: hal.gp
         }
 
         pub fn set_orientation(self: *Self, orientation: Orientation) !void {
-            const MADCTL_MY: u8 = 0x80;
-            const MADCTL_MX: u8 = 0x40;
-            const MADCTL_MV: u8 = 0x20;
-            const MADCTL_BGR: u8 = 0x08;
-
-            const madctl_value: u8 = switch (orientation) {
-                .Portrait => MADCTL_MX | MADCTL_BGR,
-                .Landscape => MADCTL_MV | MADCTL_BGR,
-                .PortraitFlipped => MADCTL_MY | MADCTL_BGR,
-                .LandscapeFlipped => MADCTL_MX | MADCTL_MY | MADCTL_MV | MADCTL_BGR,
-            };
-
             try self.send_command(.MADCTL);
-            try self.send_data(&[_]u8{madctl_value});
+            try self.send_data(&[_]u8{panel_init.madctl(panel, orientation)});
         }
 
         fn set_address_window(self: *const Self, x0: u16, y0: u16, x1: u16, y1: u16) !void {
@@ -236,9 +161,20 @@ pub fn ILI9341_DMA(
     comptime rst_pin: hal.gpio.Pin,
     comptime cs_pin: ?hal.gpio.Pin,
 ) type {
+    return PanelDMA(panel_init.ili9341, dc_pin, rst_pin, cs_pin);
+}
+
+/// Driver with chunked DMA framebuffer transfers for the 320x240 RGB565
+/// controller `panel` describes (`panel_init.ili9341`, `panel_init.st7789`).
+pub fn PanelDMA(
+    comptime panel: panel_init.Panel,
+    comptime dc_pin: hal.gpio.Pin,
+    comptime rst_pin: hal.gpio.Pin,
+    comptime cs_pin: ?hal.gpio.Pin,
+) type {
     return struct {
         const Self = @This();
-        const Transport = ILI9341_Transport(dc_pin, rst_pin, cs_pin);
+        const Transport = PanelTransport(panel, dc_pin, rst_pin, cs_pin);
         const MAX_CHUNK_SIZE = 65535; // SPI DMA limit
 
         transport: Transport,

@@ -197,6 +197,7 @@ const examples = [_]Example{
     .{ .name = "usb_loopback", .root = "examples/usb_loopback/main.zig", .usb = true },
     .{ .name = "i2c", .root = "examples/i2c/main.zig" },
     .{ .name = "periph_check", .root = "examples/periph_check/main.zig" },
+    .{ .name = "power_check", .root = "examples/power_check/main.zig" },
 };
 
 /// What a firmware's inputs are configured with.
@@ -302,7 +303,10 @@ pub fn build(b: *std.Build) void {
         "src/hal/STM32H750/adc_math.zig",
         "src/hal/STM32H750/delay_math.zig",
         "src/drivers/tile_diff.zig",
+        "src/drivers/panel_init.zig",
         "src/drivers/mcp23017_setup.zig",
+        "src/drivers/bq25628.zig",
+        "src/drivers/max17048.zig",
         "src/hid/matrix_scan.zig",
     };
     for (test_roots) |path| {
