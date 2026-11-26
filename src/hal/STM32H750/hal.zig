@@ -51,13 +51,18 @@ pub const time = @import("time.zig");
 pub const cache = @import("cache.zig");
 pub const fault = @import("fault.zig");
 pub const tick_math = @import("tick_math.zig"); // pure SysTick µs math (zmetal.time)
+pub const iwdg = @import("iwdg.zig"); // IWDG1, the independent watchdog
+pub const reset = @import("reset.zig"); // the cause of the last reset (RCC_RSR)
+pub const backup = @import("backup.zig"); // RTC backup registers: survive a system reset
+pub const pwm = @import("pwm.zig"); // a timer channel as a PWM output
+pub const adc = @import("adc.zig"); // ADC1, single conversions
 
 // Daisy-specific modules
 pub const daisy = @import("daisy.zig");
 pub const sai = @import("sai.zig");
 pub const audio = @import("audio.zig"); // runtime audio format config (SAI + USB)
 pub const cpu_load = @import("cpu_load.zig"); // audio-ISR CPU load meter
-pub const dwt = @import("dwt.zig"); // Cortex-M7 cycle counter (feeds cpu_load)
+pub const dwt = @import("dwt.zig"); // Cortex-M7 cycle counter (feeds cpu_load, backs clock.delay_us)
 pub const usb = @import("usb/usb.zig");
 pub const usb_audio = @import("usb/usb_audio.zig"); // UAC2 <-> SAI bridge callback
 

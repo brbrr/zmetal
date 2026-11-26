@@ -599,121 +599,64 @@ fn config_peripherals(comptime tree_out: ClockTree.Tree_Output) !void {
         }
         rcc.D1CCIPR.modify_one("SDMMCSEL", @enumFromInt(@intFromEnum(clk)));
     }
-
-    //------------------------------ RNG Configuration -------------------------*/
-    // if (config.RNGCLockSelection) |clk| {
-    //     switch (clk) {
-    //         .RCC_RNGCLKSOURCE_PLL => {}, // __HAL_RCC_PLLCLKOUT_ENABLE(RCC_PLL1_DIVQ);
-    //         else => @panic("Not implemented!"),
-    //     }
-    //     rcc.D2CCIP2R.modify_one("RNGSRC", @as(u2, @intCast(@intFromEnum(clk))));
-    // }
-
-    //---------------------------- SPDIFRX configuration -------------------------------
-    // if (config.SPDIFCLockSelection) |val| {
-    //     _ = val;
-    //     @panic("SPDIF not supported");
-    // }
-
-    ////---------------------------- SAI4A configuration -------------------------------*/
-    //if (config.SAI4ACLockSelection) |clk| {
-    //    switch (clk) {
-    //        else => @panic("Not implemented!"),
-    //    }
-    //    rcc.D3CCIPR.modify_one("SAI4ASRC", @as(u3, @intCast(@intFromEnum(clk))));
-    //}
-    //
-    ////---------------------------- SAI4B configuration -------------------------------*/
-    //if (config.SAI4BCLockSelection) |clk| {
-    //    switch (clk) {
-    //        else => @panic("Not implemented!"),
-    //    }
-    //    rcc.D3CCIPR.modify_one("SAI4BSRC", @as(u3, @intCast(@intFromEnum(clk))));
-    //}
-    //
-    ////---------------------------- SPI4/5 configuration -------------------------------*/
-    //if (config.SPI45CLockSelection) |clk| {
-    //    switch (clk) {
-    //        else => @panic("Not implemented!"),
-    //    }
-    //    rcc.D2CCIP1R.modify_one("SPI45SRC", @as(u3, @intCast(@intFromEnum(clk))));
-    //}
-    //
-    ////---------------------------- SPI6 configuration -------------------------------*/
-    //if (config.SPI6CLockSelection) |clk| {
-    //    switch (clk) {
-    //        else => @panic("Not implemented!"),
-    //    }
-    //    rcc.D3CCIPR.modify_one("SPI6SRC", @as(u3, @intCast(@intFromEnum(clk))));
-    //}
-    //
-    ////---------------------------- RTC configuration -------------------------------*/
-    //if (config.RTCClkSource) |clk| {
-    //    switch (clk) {
-    //        else => @panic("Not implemented!"),
-    //    }
-    //}
 }
 
-pub fn set_clock(peri: RccPeriferals, state: u1) void {
-    switch (peri) {
-        .DMA1 => rcc.AHB1ENR.modify(.{ .DMA1EN = state }),
-        .DMA2 => rcc.AHB1ENR.modify(.{ .DMA2EN = state }),
-        .ADC1 => rcc.AHB1ENR.modify(.{ .ADC12EN = state }),
-        .ADC2 => rcc.AHB1ENR.modify(.{ .ADC12EN = state }),
+const ClockEnable = struct { reg: []const u8, field: []const u8 };
 
-        // APB2ENR (APB2 peripherals)
-        .TIM1 => rcc.APB2ENR.modify(.{ .TIM1EN = state }),
-        .SPI1 => rcc.APB2ENR.modify(.{ .SPI1EN = state }),
-        .USART1 => rcc.APB2ENR.modify(.{ .USART1EN = state }),
-        .SAI1 => rcc.APB2ENR.modify(.{ .SAI1EN = state }),
+fn clockEnable(comptime peri: RccPeriferals) ClockEnable {
+    return switch (peri) {
+        .DMA1 => .{ .reg = "AHB1ENR", .field = "DMA1EN" },
+        .DMA2 => .{ .reg = "AHB1ENR", .field = "DMA2EN" },
+        .ADC1 => .{ .reg = "AHB1ENR", .field = "ADC12EN" },
+        .ADC2 => .{ .reg = "AHB1ENR", .field = "ADC12EN" },
+        .TIM1 => .{ .reg = "APB2ENR", .field = "TIM1EN" },
+        .SPI1 => .{ .reg = "APB2ENR", .field = "SPI1EN" },
+        .USART1 => .{ .reg = "APB2ENR", .field = "USART1EN" },
+        .SAI1 => .{ .reg = "APB2ENR", .field = "SAI1EN" },
+        .TIM2 => .{ .reg = "APB1LENR", .field = "TIM2EN" },
+        .TIM3 => .{ .reg = "APB1LENR", .field = "TIM3EN" },
+        .TIM4 => .{ .reg = "APB1LENR", .field = "TIM4EN" },
+        .TIM5 => .{ .reg = "APB1LENR", .field = "TIM5EN" },
+        .TIM6 => .{ .reg = "APB1LENR", .field = "TIM6EN" },
+        .TIM7 => .{ .reg = "APB1LENR", .field = "TIM7EN" },
+        .SPI2 => .{ .reg = "APB1LENR", .field = "SPI2EN" },
+        .SPI3 => .{ .reg = "APB1LENR", .field = "SPI3EN" },
+        .USART2 => .{ .reg = "APB1LENR", .field = "USART2EN" },
+        .USART3 => .{ .reg = "APB1LENR", .field = "USART3EN" },
+        .UART4 => .{ .reg = "APB1LENR", .field = "UART4EN" },
+        .UART5 => .{ .reg = "APB1LENR", .field = "UART5EN" },
+        .I2C1 => .{ .reg = "APB1LENR", .field = "I2C1EN" },
+        .I2C2 => .{ .reg = "APB1LENR", .field = "I2C2EN" },
+        .I2C3 => .{ .reg = "APB1LENR", .field = "I2C3EN" },
+        .WWDG1 => .{ .reg = "APB3ENR", .field = "WWDG1EN" },
+        .I2C4 => .{ .reg = "APB4ENR", .field = "I2C4EN" },
+        .GPIOA => .{ .reg = "AHB4ENR", .field = "GPIOAEN" },
+        .GPIOB => .{ .reg = "AHB4ENR", .field = "GPIOBEN" },
+        .GPIOC => .{ .reg = "AHB4ENR", .field = "GPIOCEN" },
+        .GPIOD => .{ .reg = "AHB4ENR", .field = "GPIODEN" },
+        .GPIOE => .{ .reg = "AHB4ENR", .field = "GPIOEEN" },
+        .GPIOF => .{ .reg = "AHB4ENR", .field = "GPIOFEN" },
+        .GPIOG => .{ .reg = "AHB4ENR", .field = "GPIOGEN" },
+        else => @compileError("rcc: no clock enable for " ++ @tagName(peri)),
+    };
+}
 
-        .TIM2 => rcc.APB1LENR.modify(.{ .TIM2EN = state }),
-        .TIM3 => rcc.APB1LENR.modify(.{ .TIM3EN = state }),
-        .TIM4 => rcc.APB1LENR.modify(.{ .TIM4EN = state }),
-        .TIM5 => rcc.APB1LENR.modify(.{ .TIM5EN = state }), //F103xE
-        .TIM6 => rcc.APB1LENR.modify(.{ .TIM6EN = state }), //F103xE
-        .TIM7 => rcc.APB1LENR.modify(.{ .TIM7EN = state }), //F103xE
-        .SPI2 => rcc.APB1LENR.modify(.{ .SPI2EN = state }),
-        .SPI3 => rcc.APB1LENR.modify(.{ .SPI3EN = state }), //F103xD/E
-        .USART2 => rcc.APB1LENR.modify(.{ .USART2EN = state }),
-        .USART3 => rcc.APB1LENR.modify(.{ .USART3EN = state }),
-        .UART4 => rcc.APB1LENR.modify(.{ .UART4EN = state }), //F103xC/D/E
-        .UART5 => rcc.APB1LENR.modify(.{ .UART5EN = state }), //F103xC/D/E
-        .I2C1 => rcc.APB1LENR.modify(.{ .I2C1EN = state }),
-        .I2C2 => rcc.APB1LENR.modify(.{ .I2C2EN = state }),
-        .I2C3 => rcc.APB1LENR.modify(.{ .I2C3EN = state }),
-
-        .WWDG1 => rcc.APB3ENR.modify(.{ .WWDG1EN = state }),
-
-        .I2C4 => rcc.APB4ENR.modify(.{ .I2C4EN = state }),
-        .GPIOA => rcc.AHB4ENR.modify(.{ .GPIOAEN = state }),
-        .GPIOB => rcc.AHB4ENR.modify(.{ .GPIOBEN = state }),
-        .GPIOC => rcc.AHB4ENR.modify(.{ .GPIOCEN = state }),
-        .GPIOD => rcc.AHB4ENR.modify(.{ .GPIODEN = state }),
-        .GPIOE => rcc.AHB4ENR.modify(.{ .GPIOEEN = state }),
-        .GPIOF => rcc.AHB4ENR.modify(.{ .GPIOFEN = state }), //F103xE
-        .GPIOG => rcc.AHB4ENR.modify(.{ .GPIOGEN = state }), //F103xE
-
-        else => @panic("TEST"),
-    }
+pub fn set_clock(comptime peri: RccPeriferals, state: u1) void {
+    const ce = comptime clockEnable(peri);
+    const reg = &@field(rcc, ce.reg);
+    reg.modify_one(ce.field, state);
 
     // STM32H7: after setting a peripheral's RCC clock-enable bit there is a
     // ~2 clock-cycle delay before its registers are accessible. ST's
     // __HAL_RCC_*_CLK_ENABLE() macros insert a dummy readback of the ENR to
     // cover this. Without it, touching the peripheral too soon raises an AHB
     // bus fault — a timing race that only bites when code runs fast enough
-    // (e.g. with D-cache enabled). Read all the ENRs we write here so the
+    // (e.g. with D-cache enabled). Read back the one ENR we wrote so the
     // just-enabled clock is guaranteed stable before the driver proceeds.
-    _ = rcc.AHB1ENR.read();
-    _ = rcc.AHB4ENR.read();
-    _ = rcc.APB1LENR.read();
-    _ = rcc.APB2ENR.read();
-    _ = rcc.APB3ENR.read();
-    _ = rcc.APB4ENR.read();
+    _ = reg.read();
 }
 
-pub fn enable_clock(peri: RccPeriferals) void {
+pub fn enable_clock(comptime peri: RccPeriferals) void {
     set_clock(peri, 1);
 }
 

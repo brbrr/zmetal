@@ -26,6 +26,7 @@ Debug build does not fit the 128 KB internal flash.
 | `synth_usb_audio` | Same, with USB Audio (UAC2) routed through the codec |
 | `usb_loopback` | USB CDC + MIDI echo device |
 | `i2c` | AHT30 temperature/humidity sensor over I2C1 |
+| `periph_check` | Self-checking image for the HAL peripherals (UART, I2C, PWM, ADC, watchdog, backup registers); verdicts in `report`, LED solid = pass |
 
 ### Flashing
 
@@ -78,7 +79,7 @@ What's in `zmetal`:
 |---|---|
 | `zmetal.Seed` | board: `init(config)`, `startAudio`/`startAudioCtx`, `setLed`/`toggleLed`, `cpuLoad` |
 | `zmetal.pins` | header pin names `D0..D32`, `A0..A13`, `LED` |
-| `zmetal.hal` | drivers: `Gpio`, `pin("PC7")`, `i2c`, `spi`, `usart`, `sdmmc`, `sdram`, `qspi`, `usb` (`init`/`initWithAudio`, identity), `clock.frequencies()` |
+| `zmetal.hal` | drivers: `Gpio`, `pin("PC7")`, `i2c`, `spi`, `usart` (TX, inversion), `adc`, `pwm`, `iwdg`, `reset`, `backup`, `sdmmc`, `sdram`, `qspi`, `usb` (`init`/`initWithAudio`, identity), `clock.frequencies()` |
 | `zmetal.time` | `nowMs`, `nowUs`, `delayMs`, `delayUs` |
 | `zmetal.drivers` | ILI9341 display, MCP23017 I/O expander |
 | `zmetal.hid` | MIDI parser/ports, `McpMatrixKeyboard`, `McpEncoders`, debounce |

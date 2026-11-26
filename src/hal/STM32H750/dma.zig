@@ -686,13 +686,13 @@ pub fn wait_for_finish_blocking(chan: Channel) void {
 
 /// Get interrupt enum for this channel (for enabling NVIC)
 /// NVIC line for a DMA channel (e.g. channel 7 -> DMA1_Stream7, 8 -> DMA2_Stream0).
-pub fn get_interrupt(chan: Channel) microzig.cpu.ExternalInterrupt {
+pub fn get_interrupt(chan: Channel) microzig.cpu.Interrupt {
     const table = comptime blk: {
         @setEvalBranchQuota(100_000);
-        var t: [num_channels]microzig.cpu.ExternalInterrupt = undefined;
+        var t: [num_channels]microzig.cpu.Interrupt = undefined;
         for (0..num_channels) |i| {
             const l = dma_index.locate(i);
-            t[i] = @field(microzig.cpu.ExternalInterrupt, std.fmt.comptimePrint("DMA{d}_Stream{d}", .{ @as(u32, l.controller) + 1, l.stream }));
+            t[i] = @field(microzig.cpu.Interrupt, std.fmt.comptimePrint("DMA{d}_Stream{d}", .{ @as(u32, l.controller) + 1, l.stream }));
         }
         break :blk t;
     };

@@ -1,14 +1,14 @@
 //! Application entry point for the Daisy Seed (STM32H750) audio platform.
 //!
-//! Wires the board bring-up (`hal.daisy`), the audio engine (`synth`), the
-//! display scene (`ui`), and the matrix keyboard (`hid.keyboard`) together, and
-//! owns the microzig root config (panic/std_options/interrupt vector table).
-
-const std = @import("std");
+//! Wires the Seed bring-up (`zmetal.Seed`) to the synth firmware: I2C1 with the
+//! two MCP23017 expanders (keyboard and encoders), the audio path (the DSP
+//! synth, or the USB audio interface with `-Dusb-audio`), the display scene
+//! (`ui`), the SD card (FAT), and MIDI in from the DIN port and from USB. Owns
+//! the microzig root config (panic/std_options) and the main loop that polls
+//! the peripherals.
 
 const microzig = @import("microzig");
 const cpu = microzig.cpu;
-const chip = microzig.chip;
 
 // microzig now requires the root source file to explicitly export the startup logic
 // (defines the `microzig_main` symbol the reset handler jumps to).
@@ -19,15 +19,7 @@ comptime {
 pub const panic = microzig.panic;
 pub const std_options = microzig.std_options(.{});
 
-const chip_peri = chip.peripherals;
-const RCC = chip_peri.RCC;
-const time = microzig.drivers.time;
 const hal = zmetal.hal;
-const usb = hal.usb;
-
-// Daisy board support
-const ssai = hal.sai;
-const SaiDriver = ssai.SaiDriver;
 
 const zmetal = @import("zmetal");
 const layout = @import("layout.zig");
@@ -72,7 +64,6 @@ pub fn main() !void {
     try seed.init(.{});
 
     i2c = try hal.i2c.I2C_Device.init(.I2C1, .{ .speed = .I2C_400KHZ });
-    i2c.apply();
 
     // In USB-audio mode the SAI callback is the audio interface driving the
     // Program (synth + USB in/out routed through the DSP seam); otherwise it is
@@ -97,7 +88,6 @@ pub fn main() !void {
 
     din_midi = DinMidi.init(hal.usart.UartStream(.USART1).init(DIN_UART_CONFIG));
 
-
     // USB device (CDC + MIDI) and DIN MIDI. USB runs at .lowest IRQ priority,
     // strictly below the audio DMA/SAI ISRs, so it never preempts audio.
     // In USB-audio mode the audio format (descriptor, reported clock rate,
@@ -115,9 +105,6 @@ pub fn main() !void {
     while (true) {
         // Service the USB device stack (enumeration, CDC/MIDI transfers).
         hal.usb.task();
-        // if (!hal.usb.mounted()) {
-        //    continue;
-        // }
 
         // Drain received MIDI (DIN + USB) and play it on the synth.
         while (din_midi.poll()) |msg| {

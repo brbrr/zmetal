@@ -320,14 +320,14 @@ fn configurePins() void {
     // IO3 = PF6, IO2 = PF7 (WP#/HOLD#): GPIO output driven HIGH — this
     // single-line driver never uses them as data lines.
     const high = struct {
-        fn f(comptime num: []const u8) void {
-            const p = comptime gpio.Pin.init("F", num, .{ .mode = .output, .speed = .VeryHighSpeed });
+        fn f(comptime num: u4) void {
+            const p = comptime gpio.Pin.from(.{ .port = .F, .num = num }, .{ .mode = .output, .speed = .VeryHighSpeed });
             p.configure();
             p.write(.High);
         }
     }.f;
-    high("6");
-    high("7");
+    high(6);
+    high(7);
 }
 
 // --- Self-test (debug; not run at boot) --------------------------------------

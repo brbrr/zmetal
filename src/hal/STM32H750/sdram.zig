@@ -105,8 +105,7 @@ pub fn init() void {
     // command times are ns-scale; the delays below are microseconds).
     regs.SDCMR.modify(.{ .MODE = .ClockConfigurationEnable, .CTB1 = 1, .CTB2 = 0, .NRFS = 0, .MRD = 0 });
     // JEDEC requires a >=100us pause after the clock-enable command. Use
-    // delay_us for the µs-scale spacing (delay_ms is 1 ms-granular); ~1 ms here
-    // (matches the old 50k-iterations-at-480MHz delay).
+    // delay_us for the µs-scale spacing (delay_ms is 1 ms-granular); 1 ms here.
     clock.delay_us(1000);
 
     regs.SDCMR.modify(.{ .MODE = .PALL, .CTB1 = 1, .CTB2 = 0, .NRFS = 0, .MRD = 0 });

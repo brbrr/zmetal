@@ -2,7 +2,7 @@
 //! pin/timing config and a robust register-level transfer path (see
 //! `i2c_device` for why the built-in blocking loops are bypassed).
 //!
-//! Usage: `var dev = try I2C_Device.init(.I2C1, .{}); dev.apply();` then
+//! Usage: `var dev = try I2C_Device.init(.I2C1, .{});` then
 //! `dev.i2c_device()` for the microzig driver interface.
 
 const std = @import("std");
@@ -19,7 +19,9 @@ const enums = stm32_common.enums;
 const rcc = @import("rcc.zig");
 const gpio = @import("gpio.zig");
 const clock = @import("clock.zig");
+const time = @import("time.zig");
 const i2c_seg = @import("i2c_seg.zig");
+const i2c_gap = @import("i2c_gap.zig");
 const i2c_recovery = @import("i2c_recovery.zig");
 const i2c_regs = microzig.chip.types.peripherals.i2c_v2;
 
@@ -49,21 +51,7 @@ pub const Peripheral = enum {
     I2C4,
 
     fn to_i2c_type(self: Peripheral) enums.I2C_Type {
-        return switch (self) {
-            .I2C1 => .I2C1,
-            .I2C2 => .I2C2,
-            .I2C3 => .I2C3,
-            .I2C4 => .I2C4,
-        };
-    }
-
-    fn to_rcc_peripheral(self: Peripheral) rcc.RccPeriferals {
-        return switch (self) {
-            .I2C1 => .I2C1,
-            .I2C2 => .I2C2,
-            .I2C3 => .I2C3,
-            .I2C4 => .I2C4,
-        };
+        return @field(enums.I2C_Type, @tagName(self));
     }
 };
 
@@ -98,6 +86,18 @@ fn timingrFor(comptime speed: Speed) u32 {
 }
 
 /// I2C configuration structure
+///
+/// `min_start_gap_us` and `min_bus_free_us` exist for the BQ25628 charger
+/// (TI SLUSEG4C §8.5.1): at least 90 us between a START and any later START
+/// on the bus, at any speed, and at 400 kHz also a bus-free time (STOP to
+/// START) of at least 68 us. The same section asks for tSU:STA >= 68 us
+/// before a repeated START at 400 kHz. A master cannot stretch that with
+/// this peripheral: the driver waits for the gaps before the one CR2 write
+/// that sets up the transfer and sets START, so before a repeated START the
+/// peripheral holds the bus in TC with SCL low for the whole wait, and
+/// tSU:STA (SCL high) stays the peripheral's own. On a bus with such a
+/// part, 400 kHz targets should use plain reads and writes (no repeated
+/// START), or run at 100 kHz, where only the 90 us rule applies.
 pub const Config = struct {
     /// Clock speed selection (default: 400 kHz)
     speed: Speed = .I2C_400KHZ,
@@ -109,6 +109,19 @@ pub const Config = struct {
     /// Override TIMINGR register value (optional - uses libdaisy tested values if not specified)
     /// If null, uses hardcoded values from libdaisy that are known to work
     timingr_override: ?u32 = null,
+
+    /// The least time, in microseconds, between two STARTs on this bus,
+    /// through the bus and all its targets: repeated STARTs and the START
+    /// after a NACK included. The driver keeps 2 us more than this
+    /// (`i2c_gap.guard_us`: what its clock cannot see), so 90 waits 92.
+    /// 0 (the default) never waits.
+    min_start_gap_us: u32 = 0,
+
+    /// The least time, in microseconds, between a STOP (or a transfer that
+    /// ended in an error) and the next START that is not a repeated START
+    /// (tBUF). The driver keeps 2 us more, as for `min_start_gap_us`.
+    /// 0 (the default) never waits.
+    min_bus_free_us: u32 = 0,
 };
 
 /// Pin configuration for I2C
@@ -144,6 +157,13 @@ pub const daisy_pin_configs = struct {
     };
 };
 
+/// `time.nowUs`, kept out of line: the driver reads the time in several
+/// places, some inlined into every `wait_flag`, and a copy of `nowUs` at
+/// each made synth about 4 KB larger.
+noinline fn nowUs() u64 {
+    return time.nowUs();
+}
+
 /// Pulse the peripheral's RCC reset line.
 fn resetPeripheral(comptime peripheral: Peripheral) void {
     const RCC = microzig.chip.peripherals.RCC;
@@ -163,11 +183,27 @@ pub const I2C_Device = struct {
     /// The run-time bus recovery on this device's pins (see `recoverBus`).
     /// A comptime-made function, because the GPIO pins are comptime.
     pin_recovery: *const fn () Recovery,
+    /// The TIMINGR of the bus's own speed (`Config.speed`, or
+    /// `Config.timingr_override`): what `i2c_device()` transfers run at.
+    default_timingr: u32,
+    /// The TIMINGR in the peripheral now: a `Target` may have switched it.
+    current_timingr: u32,
+    /// `Config.min_start_gap_us`.
+    min_start_gap_us: u32,
+    /// `Config.min_bus_free_us`.
+    min_bus_free_us: u32,
+    /// `nowUs()` just before the last START (kept while a gap is set; set
+    /// by `init` and `recoverBus` too, for their STOPs).
+    last_start_us: u64 = 0,
+    /// `nowUs()` when the last transfer ended (kept while
+    /// `min_bus_free_us` is set; set by `init` and `recoverBus` too).
+    last_stop_us: u64 = 0,
 
     /// Initialize an I2C peripheral with the given configuration
     /// This should be called at comptime or at startup to compute timing parameters
     ///
-    /// Note: After init(), call apply() to enable the peripheral
+    /// It ends by applying the configuration: the peripheral is enabled
+    /// with its TIMINGR when it returns.
     pub fn init(comptime peripheral: Peripheral, comptime config: Config) !I2C_Device {
         const i2c_type = comptime peripheral.to_i2c_type();
 
@@ -176,10 +212,11 @@ pub const I2C_Device = struct {
         var inner = try i2c_v2.I2C_Device.init(i2c_type);
 
         // Override TIMINGR with libdaisy proven values if requested or use speed-based defaults
-        inner.i2c.timingr = if (config.timingr_override) |timingr_val|
-            @bitCast(timingr_val)
+        const timingr: u32 = if (config.timingr_override) |timingr_val|
+            timingr_val
         else
-            @bitCast(timingrFor(config.speed));
+            timingrFor(config.speed);
+        inner.i2c.timingr = @bitCast(timingr);
 
         // Configure pins if specified, otherwise use defaults
         const pin_cfg = config.pin_config orelse switch (peripheral) {
@@ -196,11 +233,27 @@ pub const I2C_Device = struct {
         const boot = recover_bus(pin_cfg, .if_clocked);
         configure_pins(pin_cfg);
 
-        return I2C_Device{
+        var dev = I2C_Device{
             .inner = inner,
             .boot_recovery = boot,
             .pin_recovery = &RunTimeRecovery(pin_cfg).run,
+            .default_timingr = timingr,
+            .current_timingr = timingr,
+            .min_start_gap_us = config.min_start_gap_us,
+            .min_bus_free_us = config.min_bus_free_us,
         };
+        dev.apply();
+        // The boot recovery may have clocked the bus and sent a STOP (a
+        // START and a STOP on the wire), as `recoverBus` does: the first
+        // transfer waits its gaps from here. Stamped whatever the recovery
+        // found, which costs a first transfer within one gap of `init` the
+        // rest of that gap.
+        if (comptime config.min_start_gap_us != 0 or config.min_bus_free_us != 0) {
+            const now = nowUs();
+            dev.last_start_us = now;
+            dev.last_stop_us = now;
+        }
+        return dev;
     }
 
     /// Frees a bus that a slave holds, at run time. The peripheral goes
@@ -219,13 +272,28 @@ pub const I2C_Device = struct {
         const result = self.pin_recovery();
         r.ICR.write_raw(ICR_CLEAR_MASK);
         self.apply();
+        // The recovery's STOP is a START and then a STOP on the wire (SDA
+        // falls, then rises, with SCL high): both count for the gaps.
+        if (self.min_start_gap_us != 0) self.last_start_us = nowUs();
+        self.noteStop();
         return result;
     }
 
-    /// Apply the configuration and enable the I2C peripheral
-    /// Must be called after init() and before using the device
-    pub fn apply(self: *const I2C_Device) void {
+    /// Apply the configuration and enable the I2C peripheral. `init`
+    /// already does this; calling it again is safe (callers that still
+    /// call it after `init` keep working). It writes the bus's own
+    /// TIMINGR, whatever speed a `Target` left in the peripheral.
+    pub fn apply(self: *I2C_Device) void {
         self.inner.apply();
+        self.current_timingr = self.default_timingr;
+    }
+
+    /// A view of this bus for one slave whose transfers run at `speed`,
+    /// whatever the bus's own speed; the bus's gaps between STARTs apply
+    /// to it too. The target keeps a pointer to the bus: `self` must stay
+    /// at a stable address while the target is used.
+    pub fn target(self: *I2C_Device, comptime speed: Speed) Target {
+        return .{ .bus = self, .timingr = timingrFor(speed) };
     }
 
     /// Get the I2C_Device interface for use with microzig drivers.
@@ -236,6 +304,9 @@ pub const I2C_Device = struct {
     /// STOPF, so a single NACK poisons every later transfer. Our routines add a
     /// per-transfer timeout, clear the status flags, and reset the peripheral on
     /// error — modeled on the libdaisy reference (10 ms timeout, re-init on error).
+    ///
+    /// Transfers through it run at the bus's configured speed (see `target`
+    /// for a slave at another speed).
     ///
     /// `self` must live at a stable address (drivers copy this fat pointer by
     /// value and keep `ptr = self`).
@@ -261,12 +332,78 @@ pub const I2C_Device = struct {
 
     /// Reset the peripheral state machine after an error or timeout. Toggling PE
     /// releases SCL/SDA and clears BUSY and all status flags; TIMINGR is retained.
+    /// The error ends the transfer, so the bus-free time counts from here.
     fn recover(self: *I2C_Device) void {
         const r = self.regs();
         r.CR1.modify(.{ .PE = 0 });
         var i: u32 = 0;
         while (i < 16) : (i += 1) asm volatile ("nop"); // hold PE=0 a few APB cycles
         r.CR1.modify(.{ .PE = 1 });
+        self.noteStop();
+    }
+
+    /// Puts `timingr` in TIMINGR unless it is there already. TIMINGR may
+    /// only change while PE = 0, so the peripheral goes off and on again;
+    /// between transfers the bus is idle, so that drops nothing.
+    fn useTiming(self: *I2C_Device, timingr: u32) void {
+        if (timingr == self.current_timingr) return;
+        const r = self.regs();
+        r.CR1.modify(.{ .PE = 0 });
+        r.TIMINGR.write_raw(timingr);
+        r.CR1.modify(.{ .PE = 1 });
+        self.current_timingr = timingr;
+    }
+
+    /// The most rounds `awaitStartGap` waits: the last-resort bound. A
+    /// running clock ends the wait in a round or two, also after it was
+    /// set back (the stamp is pulled back once, see `i2c_gap.pullBack`).
+    /// Only a clock that stands still (SysTick not started: `nowUs` does
+    /// not move, and every round asks for the whole gap again), or one
+    /// that steps back again in every round, reaches it: about 64 times
+    /// the guarded gap, 5.9 ms for a gap of 90 us.
+    const GAP_ROUNDS_MAX: u32 = 64;
+
+    /// Waits until the next START is `min_start_gap_us` after the last
+    /// START and, unless it is a `repeated` START, `min_bus_free_us` after
+    /// the last STOP, each with the guard `i2c_gap.guard_us`; then notes
+    /// the START. The transfers call it before the one CR2 write that sets
+    /// up the transfer and sets START together, as ST's HAL does
+    /// (`I2C_TransferConfig`): nothing of the next transfer is written
+    /// during the wait. Before a repeated START the peripheral therefore
+    /// stays in TC from the write before, holding the bus with SCL low, so
+    /// waiting there is legal.
+    ///
+    /// Each round's decision is `i2c_gap.startWaitUs` (pure, host-tested):
+    /// a stamp later than now (the clock was set back, as
+    /// `clock.hal_init_tick` does) counts as taken now, so the wait is then
+    /// one whole gap. `clock.delay_us` waits on the cycle counter and does
+    /// not run short, but the gaps are measured on `nowUs` (SysTick), a
+    /// different counter that counts whole microseconds, so each round asks
+    /// `nowUs` again and waits for what is left. A clock that stands still
+    /// (SysTick not running) never brings the wait to 0 and ends it after
+    /// `GAP_ROUNDS_MAX` rounds, so the wait adds no precondition to the
+    /// transfer timeouts' own.
+    fn awaitStartGap(self: *I2C_Device, comptime repeated: bool) void {
+        if (self.min_start_gap_us == 0 and (repeated or self.min_bus_free_us == 0)) return;
+        var rounds: u32 = 0;
+        while (rounds < GAP_ROUNDS_MAX) : (rounds += 1) {
+            const wait = i2c_gap.startWaitUs(
+                nowUs(),
+                &self.last_start_us,
+                &self.last_stop_us,
+                self.min_start_gap_us,
+                self.min_bus_free_us,
+                repeated,
+            );
+            if (wait == 0) break;
+            clock.delay_us(wait);
+        }
+        self.last_start_us = nowUs();
+    }
+
+    /// Notes that the bus went free now, for `min_bus_free_us`.
+    fn noteStop(self: *I2C_Device) void {
+        if (self.min_bus_free_us != 0) self.last_stop_us = nowUs();
     }
 
     /// Wait until the given ISR flag is set, bailing out on NACK/bus-error or a
@@ -321,14 +458,16 @@ pub const I2C_Device = struct {
         // Zero-length write (address probe): NBYTES = 0.
         var seg = segs.next() orelse i2c_seg.Segment{ .nbytes = 0, .reload = false };
 
+        // The set-up and START in one write, after the wait (see `awaitStartGap`).
+        self.awaitStartGap(false);
         r.CR2.modify(.{
             .NBYTES = seg.nbytes,
             .RELOAD = reloadMode(seg.reload),
             .SADD = @as(u10, @intCast(@intFromEnum(address))) << 1,
             .AUTOEND = endMode(seg.reload or restart),
             .DIR = .Write,
+            .START = 1,
         });
-        r.CR2.modify(.{ .START = 1 });
 
         while (true) {
             for (0..seg.nbytes) |_| {
@@ -350,6 +489,7 @@ pub const I2C_Device = struct {
         } else {
             try self.wait_flag("STOPF");
             r.ICR.write_raw(ICR_CLEAR_MASK);
+            self.noteStop();
         }
     }
 
@@ -372,18 +512,24 @@ pub const I2C_Device = struct {
                 r.CR2.modify(.{ .STOP = 1 });
                 try self.wait_flag("STOPF");
                 r.ICR.write_raw(ICR_CLEAR_MASK);
+                self.noteStop();
             }
             return;
         };
 
+        // The set-up and START in one write, after the wait (see
+        // `awaitStartGap`): after a `restart` write the peripheral waits in
+        // TC, and AUTOEND written there on its own, before START, may end
+        // the transfer with a STOP instead of the repeated START.
+        self.awaitStartGap(after_restart);
         r.CR2.modify(.{
             .NBYTES = seg.nbytes,
             .RELOAD = reloadMode(seg.reload),
             .SADD = @as(u10, @intCast(@intFromEnum(address))) << 1,
             .AUTOEND = endMode(seg.reload),
             .DIR = .Read,
+            .START = 1,
         });
-        r.CR2.modify(.{ .START = 1 });
 
         while (true) {
             for (0..seg.nbytes) |_| {
@@ -402,6 +548,7 @@ pub const I2C_Device = struct {
 
         try self.wait_flag("STOPF");
         r.ICR.write_raw(ICR_CLEAR_MASK);
+        self.noteStop();
     }
 
     const robust_vtable = drivers.base.I2C_Device.VTable{
@@ -412,15 +559,12 @@ pub const I2C_Device = struct {
 
     fn robust_writev(ctx: *anyopaque, address: Address, datagrams: []const []const u8) InterfaceError!void {
         const self: *I2C_Device = @ptrCast(@alignCast(ctx));
-        address.check_reserved() catch return InterfaceError.TargetAddressReserved;
-        try self.transfer_write(address, datagrams, false);
+        return self.writevAt(self.default_timingr, address, datagrams);
     }
 
     fn robust_readv(ctx: *anyopaque, address: Address, datagrams: []const []u8) InterfaceError!usize {
         const self: *I2C_Device = @ptrCast(@alignCast(ctx));
-        address.check_reserved() catch return InterfaceError.TargetAddressReserved;
-        try self.transfer_read(address, datagrams, false);
-        return i2c_seg.totalLen([]u8, datagrams);
+        return self.readvAt(self.default_timingr, address, datagrams);
     }
 
     fn robust_writev_then_readv(
@@ -430,7 +574,37 @@ pub const I2C_Device = struct {
         read_chunks: []const []u8,
     ) InterfaceError!void {
         const self: *I2C_Device = @ptrCast(@alignCast(ctx));
+        return self.writevThenReadvAt(self.default_timingr, address, write_chunks, read_chunks);
+    }
+
+    // The transfers behind both vtables, the bus's and a `Target`'s: check
+    // the address, switch to `timingr`, then the register-level transfer.
+
+    fn writevAt(self: *I2C_Device, timingr: u32, address: Address, datagrams: []const []const u8) InterfaceError!void {
         address.check_reserved() catch return InterfaceError.TargetAddressReserved;
+        self.useTiming(timingr);
+        try self.transfer_write(address, datagrams, false);
+    }
+
+    fn readvAt(self: *I2C_Device, timingr: u32, address: Address, datagrams: []const []u8) InterfaceError!usize {
+        address.check_reserved() catch return InterfaceError.TargetAddressReserved;
+        self.useTiming(timingr);
+        try self.transfer_read(address, datagrams, false);
+        return i2c_seg.totalLen([]u8, datagrams);
+    }
+
+    /// Switches speed once, before the write: turning the peripheral off
+    /// between the write and the repeated-START read would drop the bus
+    /// it holds.
+    fn writevThenReadvAt(
+        self: *I2C_Device,
+        timingr: u32,
+        address: Address,
+        write_chunks: []const []const u8,
+        read_chunks: []const []u8,
+    ) InterfaceError!void {
+        address.check_reserved() catch return InterfaceError.TargetAddressReserved;
+        self.useTiming(timingr);
         try self.transfer_write(address, write_chunks, true);
         try self.transfer_read(address, read_chunks, true);
     }
@@ -504,6 +678,51 @@ pub const I2C_Device = struct {
     ) InterfaceError!void {
         const reg_bytes = [_]u8{register_addr};
         return self.writev(device_addr, &.{ &reg_bytes, data });
+    }
+};
+
+/// One slave's view of the bus: transfers through it run at its own speed.
+///
+/// Made by `I2C_Device.target`. A transfer switches the peripheral to the
+/// target's TIMINGR when the bus last ran at another speed, and the bus's
+/// gaps between STARTs apply as to any transfer on the bus. It keeps a
+/// pointer to the bus, so the bus must stay at a stable address while the
+/// target is used.
+pub const Target = struct {
+    bus: *I2C_Device,
+    timingr: u32,
+
+    /// The microzig driver interface for this slave, as
+    /// `I2C_Device.i2c_device` but at the target's speed.
+    /// `self` must stay at a stable address, like the bus.
+    pub fn i2c_device(self: *Target) drivers.base.I2C_Device {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    const vtable = drivers.base.I2C_Device.VTable{
+        .writev_fn = writev,
+        .readv_fn = readv,
+        .writev_then_readv_fn = writevThenReadv,
+    };
+
+    fn writev(ctx: *anyopaque, address: Address, datagrams: []const []const u8) InterfaceError!void {
+        const self: *Target = @ptrCast(@alignCast(ctx));
+        return self.bus.writevAt(self.timingr, address, datagrams);
+    }
+
+    fn readv(ctx: *anyopaque, address: Address, datagrams: []const []u8) InterfaceError!usize {
+        const self: *Target = @ptrCast(@alignCast(ctx));
+        return self.bus.readvAt(self.timingr, address, datagrams);
+    }
+
+    fn writevThenReadv(
+        ctx: *anyopaque,
+        address: Address,
+        write_chunks: []const []const u8,
+        read_chunks: []const []u8,
+    ) InterfaceError!void {
+        const self: *Target = @ptrCast(@alignCast(ctx));
+        return self.bus.writevThenReadvAt(self.timingr, address, write_chunks, read_chunks);
     }
 };
 
@@ -608,10 +827,4 @@ fn configure_pins(comptime pin_cfg: PinConfig) void {
         .pull = .Floating,
     });
     sda_pin.configure();
-}
-
-/// Helper to create an I2C device at comptime with error handling
-/// Usage: `const i2c = try hal.i2c.create(.I2C1, .{});`
-pub fn create(comptime peripheral: Peripheral, comptime config: Config) !I2C_Device {
-    return I2C_Device.init(peripheral, config);
 }

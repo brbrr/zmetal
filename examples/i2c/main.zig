@@ -29,7 +29,6 @@ pub var clocks: zmetal.hal.clock.Frequencies = undefined;
 pub fn main() !void {
     try seed.init(.{ .sdram = false, .qspi = false });
     i2c = try hal.i2c.I2C_Device.init(.I2C1, .{ .speed = .I2C_400KHZ });
-    i2c.apply();
 
     clocks = hal.clock.frequencies();
 

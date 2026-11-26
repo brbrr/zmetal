@@ -424,21 +424,21 @@ pub fn writeBlock(sector: u32, src: *const [512]u8) Error!void {
 fn configurePins() void {
     // SDMMC1: PC8=D0, PC9=D1, PC10=D2, PC11=D3, PC12=CK, PD2=CMD — all AF12.
     // Data/CMD lines carry pull-ups; CK is a push-pull output (no pull).
-    inline for (.{ "8", "9", "10", "11" }) |p| {
-        (comptime gpio.Pin.init("C", p, .{
+    inline for ([_]u4{ 8, 9, 10, 11 }) |n| {
+        (comptime gpio.Pin.from(.{ .port = .C, .num = n }, .{
             .mode = .{ .alternate = .af12 },
             .otype = .PushPull,
             .speed = .VeryHighSpeed,
             .pull = .PullUp,
         })).configure();
     }
-    (comptime gpio.Pin.init("C", "12", .{
+    (comptime gpio.Pin.from(.{ .port = .C, .num = 12 }, .{
         .mode = .{ .alternate = .af12 },
         .otype = .PushPull,
         .speed = .VeryHighSpeed,
         .pull = .Floating,
     })).configure(); // CK
-    (comptime gpio.Pin.init("D", "2", .{
+    (comptime gpio.Pin.from(.{ .port = .D, .num = 2 }, .{
         .mode = .{ .alternate = .af12 },
         .otype = .PushPull,
         .speed = .VeryHighSpeed,

@@ -28,7 +28,6 @@ pub const SystemConfig = struct {
     freq: SysFreq = .default,
 };
 
-// pub const SysConfig = SystemConfig{ .freq = .default };
 pub const SysConfig = SystemConfig{ .freq = .boost };
 
 /// Seed header pin names (D0..D32, A0..A13, LED).
@@ -57,23 +56,12 @@ pub const clk_config = ClockTree.Config{
     .D2PPRE2 = .RCC_APB2_DIV2,
     .D3PPRE = .RCC_APB4_DIV2,
 
-    // PeriphClkInitStruct.PeriphClockSelection
-    //     = RCC_PERIPHCLK_USART1 | RCC_PERIPHCLK_USART6
-    //       | RCC_PERIPHCLK_USART234578 | RCC_PERIPHCLK_LPUART1
-    //       | RCC_PERIPHCLK_RNG | RCC_PERIPHCLK_SPI1 | RCC_PERIPHCLK_SAI2
-    //       | RCC_PERIPHCLK_SAI1 | RCC_PERIPHCLK_SDMMC | RCC_PERIPHCLK_I2C2
-    //       | RCC_PERIPHCLK_ADC | RCC_PERIPHCLK_I2C1 | RCC_PERIPHCLK_USB
-    //       | RCC_PERIPHCLK_QSPI | RCC_PERIPHCLK_FMC;
-
     .DIVN2 = 12, // libdaisy: PLL2N = 12 for FMC @ 100MHz
     .DIVM2 = 1,
     .DIVP2 = 2, // libdaisy 8
     .DIVQ2 = 2,
     .DIVR2 = 1,
     .PLL2FRACN = 4096,
-
-    // PeriphClkInitStruct.PLL2.PLL2RGE    = RCC_PLL2VCIRANGE_2;
-    // PeriphClkInitStruct.PLL2.PLL2VCOSEL = RCC_PLL2VCOWIDE;
 
     // PLL 3
     .DIVM3 = 6,
@@ -82,9 +70,6 @@ pub const clk_config = ClockTree.Config{
     .DIVQ3 = 4,
     .DIVR3 = 32,
     .PLL3FRACN = 0,
-
-    // PeriphClkInitStruct.PLL3.PLL3RGE       = RCC_PLL3VCIRANGE_1;
-    // PeriphClkInitStruct.PLL3.PLL3VCOSEL    = RCC_PLL3VCOWIDE;
 
     .FMCCLockSelection = .RCC_FMCCLKSOURCE_PLL2,
     .QSPICLockSelection = .RCC_QSPICLKSOURCE_D1HCLK,
@@ -180,8 +165,6 @@ pub fn hal_init() !void {
 }
 
 pub fn configure_clocks() !void {
-    // hal.rcc.verify_peripheral_clocks(clk_config, clocktree_outputs.clock);
-
     if (!hal.power.config_ext_power_supply(.LDO)) {
         return error.PowerError;
     }
@@ -276,6 +259,13 @@ fn dma_init() !void {
     cpu.interrupt.enable(.DMA2_Stream3);
 }
 
+// zmetal's interrupt priorities are 16 levels (0..15, `.lowest` = 15): the
+// H750's 4 implemented bits, which microzig takes from the generated chip.
+comptime {
+    if (@bitSizeOf(@typeInfo(cpu.interrupt.Priority).@"enum".tag_type) != 4)
+        @compileError("zmetal needs 4 interrupt priority bits");
+}
+
 /// The audio's DMA and SAI interrupts. Level 0 stays free for the short
 /// handlers that must not wait for an audio block (SysTick, USB): a block
 /// can last longer than their 1 ms period.
@@ -288,10 +278,6 @@ fn sai_init() !void {
     // SAI1 global interrupt for error handling (OVRUDR, AFSDET, LFSDET, WCKCFG)
     cpu.interrupt.enable(.SAI1);
     cpu.interrupt.set_priority(.SAI1, audio_priority);
-}
-
-fn uart_init() !void {
-    //
 }
 
 /// The Daisy Seed board (libdaisy `DaisySeed`). Declare one at module scope

@@ -196,6 +196,7 @@ const examples = [_]Example{
     .{ .name = "synth_usb_audio", .root = "examples/synth/main.zig", .usb = true, .fat = true, .usb_audio = true, .debug_fits_flash = false },
     .{ .name = "usb_loopback", .root = "examples/usb_loopback/main.zig", .usb = true },
     .{ .name = "i2c", .root = "examples/i2c/main.zig" },
+    .{ .name = "periph_check", .root = "examples/periph_check/main.zig" },
 };
 
 /// What a firmware's inputs are configured with.
@@ -286,12 +287,20 @@ pub fn build(b: *std.Build) void {
         "src/hal/STM32H750/dma_index.zig",
         "src/hal/STM32H750/sai_math.zig",
         "src/hal/STM32H750/i2c_seg.zig",
+        "src/hal/STM32H750/i2c_gap.zig",
         "src/hal/STM32H750/i2c_recovery.zig",
         "src/hal/STM32H750/tick_math.zig",
         "src/hal/STM32H750/pin_name.zig",
+        "src/hal/STM32H750/gpio_bits.zig",
+        "src/hal/STM32H750/byte_ring.zig",
         "src/hal/STM32H750/usb/descriptors.zig",
         "src/hal/STM32H750/cpu_load.zig",
         "src/hal/STM32H750/stack_guard.zig",
+        "src/hal/STM32H750/iwdg_math.zig",
+        "src/hal/STM32H750/reset_cause.zig",
+        "src/hal/STM32H750/pwm_math.zig",
+        "src/hal/STM32H750/adc_math.zig",
+        "src/hal/STM32H750/delay_math.zig",
         "src/drivers/tile_diff.zig",
         "src/drivers/mcp23017_setup.zig",
         "src/hid/matrix_scan.zig",

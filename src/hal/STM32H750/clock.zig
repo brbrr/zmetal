@@ -2,6 +2,8 @@ const std = @import("std");
 const microzig = @import("microzig");
 
 const hal = @import("hal.zig");
+const dwt = @import("dwt.zig");
+const delay_math = @import("delay_math.zig");
 const cpu = microzig.cpu;
 const chip = microzig.chip;
 
@@ -9,7 +11,7 @@ const systick = cpu.peripherals.systick;
 const rcc = chip.peripherals.RCC;
 
 var uwTick: u32 = 0;
-var uwTickFreq: u32 = 1; // Default 1 Hz freq
+var uwTickFreq: u32 = 1; // milliseconds added to the tick on each SysTick interrupt (1 = a 1 kHz tick)
 pub var uwTickPrio: cpu.interrupt.Priority = .lowest;
 
 pub const HSI_VALUE: u32 = 64_000_000; // Value of the Internal oscillator in Hz
@@ -54,26 +56,50 @@ pub fn delay_ms(wait: u32) void {
     _wait +|= uwTickFreq;
     //* Add a freq to guarantee minimum wait */
     while (elapsed_ms(tickstart) < _wait) {
-        // cpu.wfi();
         asm volatile ("" ::: .{ .memory = true });
     }
 }
 
-/// Busy-wait of ~`us` microseconds, derived from the actual CPU clock
-/// (`SystemCoreClock`). Use for sub-millisecond delays: `delay_ms` is SysTick-
-/// based and floors at ~1 ms (+1 tick), so it can't express the µs-scale spacing
-/// peripheral init/recovery timing needs. Approximate — good enough for "wait at
-/// least ~X us", not a precise timer.
-pub fn delay_us(us: u32) void {
-    // The inner loop is ~CYCLES_PER_ITER CPU cycles (empirical: the SDRAM
-    // bring-up used 50k iters ~= 1 ms at 480 MHz => ~9.6 cyc/iter).
-    // iters/us = (clk / 1e6) / 10, computed in 1/100 MHz units so slow clocks
-    // (e.g. 64 MHz HSI) don't lose a whole iteration per us to flooring.
-    // Saturating multiply; at least `us` iterations so it never collapses to 0.
-    const wide: u64 = @as(u64, SystemCoreClock / 100_000) * us / 100;
-    const iters: u32 = @intCast(@min(@max(wide, us), std.math.maxInt(u32)));
-    var i: u32 = 0;
-    while (i < iters) : (i += 1) asm volatile ("" ::: .{ .memory = true });
+/// Busy-waits `us` microseconds (at least that, up to the cap below), timed
+/// on the core's cycle counter (DWT CYCCNT, turned on here if it is off) at
+/// `SystemCoreClock`, or at the 64 MHz the chip starts on while that is
+/// still 0. Precondition: `SystemCoreClock` is the true core clock, or the
+/// core runs at 64 MHz or less while it is still 0 (true because
+/// `hal.init` resets the RCC before `main`; an application that replaces
+/// `hal.init` must keep that). No calibrated loop:
+/// the instruction cache and the compiler change only how often the
+/// counter is read, not how long the wait is. Use for sub-millisecond
+/// delays: `delay_ms` is SysTick-based and floors at ~1 ms (+1 tick).
+///
+/// The longest single wait is `maxInt(u32)` cycles, about 8.9 s at
+/// 480 MHz; a longer `us` waits that long. A wait overshoots by its call
+/// and one turn of the loop, and by the rest of any interrupt that is
+/// running when it is over (interrupt time during the wait counts toward
+/// it).
+///
+/// A debugger halting the core suspends the counter too ("Counting is
+/// suspended when the core is halted in Debug state", ARMv7-M ARM,
+/// DWT_CYCCNT): the halt adds its own time and never ends a wait early.
+/// A counter that does not move (CYCCNTENA cleared by a debugger, say;
+/// clearing only that bit is what this covers) still ends the wait: each turn of the loop counts at least one cycle, and
+/// takes more than one.
+///
+/// Safe in an interrupt, also one that lands in another `delay_us`: it
+/// only reads the counter and keeps its state in locals. Kept out of line:
+/// it has some thirty call sites, many in the I2C bus recovery, and inlined
+/// at each it made synth about 2.5 KB larger.
+pub noinline fn delay_us(us: u32) void {
+    dwt.ensureCycleCounter();
+    var last = dwt.cycles();
+    // Counted down by what each turn sees, not compared with
+    // `cycles() -% start`: a wait of nearly 2^32 cycles could step past the
+    // few values that end it, wrap round and start again.
+    var left = delay_math.cyclesFor(us, SystemCoreClock);
+    while (left > 0) {
+        const now = dwt.cycles();
+        left -|= @max(now -% last, 1);
+        last = now;
+    }
 }
 
 pub const Frequencies = struct { sysclk: u32, hclk: u32, pclk1: u32, pclk2: u32 };
@@ -101,14 +127,6 @@ pub fn get_sys_clock_freq() u32 {
 
     return switch (sw) {
         .HSI => HSI_VALUE >> hsi_div,
-        // .HSI => blk: {
-        //     // HSI used as system clock
-        //     if (rcc_hal.get_flag(.HSIDIV) != 0) {
-        //         break :blk HSI_VALUE >> (hsi_div >> 3);
-        //     } else {
-        //         break :blk HSI_VALUE;
-        //     }
-        // },
         .CSI => CSI_VALUE, // CSI used as system clock
         .HSE => HSE_VALUE, // HSE used as system clock
         .PLL1_P => blk: {
@@ -130,12 +148,6 @@ pub fn get_sys_clock_freq() u32 {
 
             const pll_input: f32 = switch (pllsource) {
                 .HSI => @as(f32, @floatFromInt(HSI_VALUE >> hsi_div)),
-                // .HSI => blk2: {
-                //     if (rcc_hal.get_flag(.HSIDIV) != 0) {
-                //         const hsi_val = HSI_VALUE >> (hsi_div >> 3);
-                //         break :blk2 @as(f32, @floatFromInt(hsi_val));
-                //     } else break :blk2 @as(f32, @floatFromInt(HSI_VALUE));
-                // },
                 .CSI => @as(f32, @floatFromInt(CSI_VALUE)),
                 .HSE => @as(f32, @floatFromInt(HSE_VALUE)),
                 else => @as(f32, @floatFromInt(CSI_VALUE)),
@@ -143,7 +155,6 @@ pub fn get_sys_clock_freq() u32 {
 
             const pllvco = (pll_input / @as(f32, @floatFromInt(pllm))) * vco_mul;
             const pllp = @intFromEnum(rcc.@"PLLDIVR[0]".read().PLLP) + 1;
-            // pllp = (((RCC->PLL1DIVR & RCC_PLL1DIVR_P1) >> 9) + 1U) ;
             break :blk @intFromFloat(pllvco / @as(f32, @floatFromInt(pllp)));
         },
         _ => CSI_VALUE, // Default case
@@ -170,14 +181,15 @@ pub fn hal_init_tick(priority: cpu.interrupt.Priority) !void {
     const ticks = SystemCoreClock / 1000 / uwTickFreq;
     // ticks == 0 when SystemCoreClock is not yet known (would underflow below).
     if (ticks == 0 or ticks - 1 > std.math.maxInt(u24)) {
-        // @breakpoint();
         return error.Overflow;
     }
     try init_systick(@intCast(ticks));
 
-    // microzig's exception.set_priority left-aligns the logical 0-15 level into
-    // the implemented priority bits (see cortex_m.zig encode_priority).
-    cpu.interrupt.exception.set_priority(.SysTick, priority);
+    // microzig's `cpu.interrupt.set_priority` takes NVIC interrupts only, so
+    // SysTick's byte of SHPR3 is written here, its level left-aligned into the
+    // implemented priority bits as microzig does for the NVIC.
+    const priority_bits = @bitSizeOf(@typeInfo(cpu.interrupt.Priority).@"enum".tag_type);
+    cpu.peripherals.scb.SHPR3.modify(.{ .PRI_15 = @as(u8, @intFromEnum(priority)) << (8 - priority_bits) });
     uwTickPrio = priority;
 }
 

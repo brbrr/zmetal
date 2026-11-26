@@ -103,8 +103,8 @@ pub fn initWithAudio(comptime cfg: Config, audio: AudioConfig) void {
 
 const Descriptor = struct {
     rhport: u8,
-    dm: gpio.AltPin,
-    dp: gpio.AltPin,
+    dm: gpio.AfPin,
+    dp: gpio.AfPin,
     /// RCC.AHB1ENR field: run-mode peripheral clock enable.
     rcc_field: []const u8,
     /// RCC.AHB1LPENR field: keep the clock during CPU sleep (CSLEEP/`wfi`).

@@ -127,13 +127,13 @@ const sai_p_cfg: hal.gpio.PinConfig = .{
     .speed = .MediumSpeed,
     .pull = .PullUp,
 };
-const mclk = hal.gpio.Pin.init("E", "2", sai_p_cfg);
-const sb = hal.gpio.Pin.init("E", "3", sai_p_cfg);
-const fs = hal.gpio.Pin.init("E", "4", sai_p_cfg);
-const sck = hal.gpio.Pin.init("E", "5", sai_p_cfg);
-const sa = hal.gpio.Pin.init("E", "6", sai_p_cfg);
+const mclk = hal.gpio.Pin.from(.{ .port = .E, .num = 2 }, sai_p_cfg);
+const sb = hal.gpio.Pin.from(.{ .port = .E, .num = 3 }, sai_p_cfg);
+const fs = hal.gpio.Pin.from(.{ .port = .E, .num = 4 }, sai_p_cfg);
+const sck = hal.gpio.Pin.from(.{ .port = .E, .num = 5 }, sai_p_cfg);
+const sa = hal.gpio.Pin.from(.{ .port = .E, .num = 6 }, sai_p_cfg);
 
-const codec_reset = hal.gpio.Pin.init("B", "11", .{
+const codec_reset = hal.gpio.Pin.from(.{ .port = .B, .num = 11 }, .{
     .mode = .output,
     .pull = .Floating,
     .otype = .PushPull,
