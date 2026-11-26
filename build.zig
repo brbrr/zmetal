@@ -11,7 +11,14 @@ const MicroBuild = microzig.MicroBuild(.{
 //   zig build <example>               -> one example, e.g. `zig build synth -Doptimize=safe`
 //   zig build test                    -> host unit tests (std-only modules)
 //   -Dmemory=flash|sram               -> internal flash (default) or SRAM (Daisy bootloader)
-// Artifacts: zig-out/firmware/<example>.{elf,bin}
+//   zig build scanner                 -> the panel scanner's STM32C031 firmware (always
+//                                        ReleaseSmall; -Dscanner-fw=<u8> sets its number, default 1)
+//   -Dpanel-check=probe|update        -> panel_check.{elf,bin} is always the probe image, which
+//                                        sends the scanner only read-only bootloader frames
+//                                        (Get ID, Read Memory); update also builds
+//                                        panel_check_update.{elf,bin}, which embeds scanner.bin
+//                                        and flashes the scanner when it must
+// Artifacts: zig-out/firmware/<example>.{elf,bin}, zig-out/firmware/scanner.{elf,bin}
 // ============================================================================
 
 pub const Memory = enum { flash, sram };
@@ -178,6 +185,97 @@ pub fn addFirmware(b: *std.Build, ctx: Context, opts: FirmwareOptions) Firmware 
     return .{ .fw = fw, .step = &report.step };
 }
 
+/// The panel scanner's flash: the C031K6's 32 KB less its last 8 bytes,
+/// the trial vector the Daisy's updater writes there (a copy of the
+/// image's first 8 bytes, run with the bootloader's Go). The linker then
+/// refuses an image that would reach it. RAM is the whole 12 KB.
+const scanner_memory = [_]microzig.MemoryRegion{
+    .{ .name = "BANK_1", .tag = .flash, .offset = 0x0800_0000, .length = 0x8000 - 8, .access = .rx },
+    .{ .name = "SRAM", .tag = .ram, .offset = 0x2000_0000, .length = 0x3000, .access = .rwx },
+};
+
+pub const ScannerOptions = struct {
+    /// The firmware number every frame reports (`-Dscanner-fw`).
+    fw: u8 = 1,
+};
+
+pub const Scanner = struct {
+    /// Installs scanner.elf + scanner.bin and prints the memory report.
+    step: *std.Build.Step,
+    /// The flat image, for a Daisy firmware that embeds it: the copy that
+    /// passed the S5 tripwire.
+    bin: std.Build.LazyPath,
+};
+
+/// The panel scanner's firmware (`scanner/main.zig`) for the STM32C031K6:
+/// always ReleaseSmall, whatever the Daisy examples are built with. Its own
+/// start-up and vector table (`scanner/hal/start.zig`) and sections
+/// (`scanner/scanner.ld`); microzig's register definitions and MEMORY
+/// block; no HAL. `bin` is the image a Daisy firmware embeds.
+///
+/// The flat image goes through `build_tools/scanner_tripwire.zig` first:
+/// the build fails if it holds the address of the IWDG, FLASH_OPTKEYR,
+/// FLASH_OPTR or GPIOF (rule S5). `scanner.bin` is installed, and `bin`
+/// embedded, only once it has passed.
+pub fn addScanner(b: *std.Build, ctx: Context, opts: ScannerOptions) Scanner {
+    const base = ctx.mb.ports.stm32.chips.STM32C031K6;
+    var chip = base.chip;
+    chip.memory_regions = &scanner_memory;
+    const target = base.derive(.{
+        .chip = chip,
+        // MEMORY generated from `scanner_memory`, the sections our own. The
+        // scanner does not use microzig's start-up, so there is no
+        // microzig_main to assert.
+        .linker_script = .{
+            .generate = .memory_regions,
+            .file = b.path("scanner/scanner.ld"),
+            .assert_microzig_main = false,
+        },
+    });
+
+    const cfg = b.addOptions();
+    cfg.addOption(u8, "fw", opts.fw);
+    const imports = b.allocator.dupe(std.Build.Module.Import, &.{
+        .{ .name = "panel", .module = b.createModule(.{ .root_source_file = b.path("src/hid/panel.zig") }) },
+        .{ .name = "gpio_bits", .module = b.createModule(.{ .root_source_file = b.path("src/hal/STM32H750/gpio_bits.zig") }) },
+        .{ .name = "scanner_config", .module = cfg.createModule() },
+    }) catch @panic("OOM");
+
+    const fw = ctx.mb.add_firmware(.{
+        .name = "scanner",
+        .target = target,
+        .optimize = .small,
+        .root_source_file = b.path("scanner/main.zig"),
+        .imports = imports,
+    });
+
+    // Rule S5's tripwire, a host program: a clean image is copied out as
+    // `checked`; any other fails this step and everything after it.
+    const tripwire = b.addExecutable(.{
+        .name = "scanner_tripwire",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build_tools/scanner_tripwire.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    const check = b.addRunArtifact(tripwire);
+    check.addFileArg(fw.get_emitted_bin(.binary));
+    const checked = check.addOutputFileArg("scanner.bin");
+
+    const install = ctx.mb.add_install_firmware(fw, .{ .format = .elf });
+    const install_bin = ctx.mb.add_install_firmware(fw, .{ .format = .binary });
+    install_bin.step.dependOn(&check.step);
+    const report = b.addSystemCommand(&.{"python3"});
+    report.addFileArg(b.path("build_tools/memory_report.py"));
+    report.addFileArg(fw.get_emitted_elf());
+    report.addArg("scanner");
+    report.addFileArg(fw.exe.linker_script.?);
+    report.step.dependOn(&install.step);
+    report.step.dependOn(&install_bin.step);
+
+    return .{ .step = &report.step, .bin = checked };
+}
+
 const Example = struct {
     name: []const u8,
     root: []const u8,
@@ -189,7 +287,21 @@ const Example = struct {
     /// Debug + -Dmemory=flash build then promotes this example to .safe
     /// (Debug still works with -Dmemory=sram, 480 KB).
     debug_fits_flash: bool = true,
+    /// panel_check only: `scanner.bin` as the anonymous import "scanner.bin"
+    /// (so the scanner is built first), and `build_config.panel_check` (the
+    /// image's mode) and `build_config.scanner_fw` (`-Dscanner-fw`, the
+    /// number the scanner was built with). Built once per mode, see
+    /// `PanelCheckMode`.
+    scanner: bool = false,
 };
+
+/// panel_check's mode. `probe` sends the panel scanner nothing but the
+/// read-only bootloader frames of Get ID and Read Memory (an allow-list in
+/// the example refuses any other write); it is always built, as
+/// `panel_check`. `update` embeds
+/// the scanner image and flashes the scanner when it must; with
+/// `-Dpanel-check=update` it is built as well, as `panel_check_update`.
+const PanelCheckMode = enum { probe, update };
 
 const examples = [_]Example{
     .{ .name = "synth", .root = "examples/synth/main.zig", .usb = true, .fat = true, .usb_audio = false, .debug_fits_flash = false },
@@ -198,6 +310,7 @@ const examples = [_]Example{
     .{ .name = "i2c", .root = "examples/i2c/main.zig" },
     .{ .name = "periph_check", .root = "examples/periph_check/main.zig" },
     .{ .name = "power_check", .root = "examples/power_check/main.zig" },
+    .{ .name = "panel_check", .root = "examples/panel_check/main.zig", .scanner = true },
 };
 
 /// What a firmware's inputs are configured with.
@@ -254,24 +367,52 @@ pub fn build(b: *std.Build) void {
     const ctx = context(b, .{}) orelse return;
     const optimize = b.standardOptimizeOption(.{});
     const memory = b.option(Memory, "memory", "flash (default) or sram (Daisy bootloader)") orelse .flash;
+    // Read once: the scanner is built with it, and panel_check gets the same
+    // number for the image it embeds.
+    const scanner_fw = b.option(u8, "scanner-fw", "The panel scanner's firmware number (default 1)") orelse 1;
+    const panel_check = b.option(PanelCheckMode, "panel-check", "probe (default): only panel_check, which sends the scanner only read-only bootloader frames; update: also panel_check_update, which flashes it when it must") orelse .probe;
+
+    const scanner = addScanner(b, ctx, .{ .fw = scanner_fw });
+    b.step("scanner", "Build the panel scanner's STM32C031 firmware (always ReleaseSmall)").dependOn(scanner.step);
 
     for (examples) |ex| {
-        const bc: ?*std.Build.Step.Options = if (ex.usb_audio) |ua| blk: {
-            const o = b.addOptions();
-            o.addOption(bool, "usb_audio", ua);
-            break :blk o;
-        } else null;
-        const fw = addFirmware(b, ctx, .{
-            .name = ex.name,
-            .root_source_file = b.path(ex.root),
-            .memory = memory,
-            .optimize = if (optimize == .debug and memory == .flash and !ex.debug_fits_flash) .safe else optimize,
-            .usb = ex.usb,
-            .fat = ex.fat,
-            .build_config = bc,
-        });
-        b.step(ex.name, b.fmt("Build the {s} example", .{ex.name})).dependOn(fw.step);
-        b.getInstallStep().dependOn(fw.step);
+        const step = b.step(ex.name, b.fmt("Build the {s} example", .{ex.name}));
+        // panel_check is always built as the probe image under its own name,
+        // so `panel_check.{elf,bin}` is never an update image, not even one
+        // left from an earlier build. `-Dpanel-check=update` adds the update
+        // image as `panel_check_update.{elf,bin}`.
+        const variants: []const ?PanelCheckMode = if (!ex.scanner)
+            &.{null}
+        else if (panel_check == .update)
+            &.{ .probe, .update }
+        else
+            &.{.probe};
+        for (variants) |variant| {
+            const is_update = if (variant) |mode| mode == .update else false;
+            const name = if (is_update) b.fmt("{s}_update", .{ex.name}) else ex.name;
+            const bc: ?*std.Build.Step.Options = if (ex.usb_audio) |ua| blk: {
+                const o = b.addOptions();
+                o.addOption(bool, "usb_audio", ua);
+                break :blk o;
+            } else if (variant) |mode| blk: {
+                const o = b.addOptions();
+                o.addOption(PanelCheckMode, "panel_check", mode);
+                o.addOption(u8, "scanner_fw", scanner_fw);
+                break :blk o;
+            } else null;
+            const fw = addFirmware(b, ctx, .{
+                .name = name,
+                .root_source_file = b.path(ex.root),
+                .memory = memory,
+                .optimize = if (optimize == .debug and memory == .flash and !ex.debug_fits_flash) .safe else optimize,
+                .usb = ex.usb,
+                .fat = ex.fat,
+                .build_config = bc,
+            });
+            if (ex.scanner) fw.fw.exe.root_module.addAnonymousImport("scanner.bin", .{ .root_source_file = scanner.bin });
+            step.dependOn(fw.step);
+            b.getInstallStep().dependOn(fw.step);
+        }
     }
 
     // Host unit tests: std-only library modules (no microzig), plus the synth
@@ -307,7 +448,16 @@ pub fn build(b: *std.Build) void {
         "src/drivers/mcp23017_setup.zig",
         "src/drivers/bq25628.zig",
         "src/drivers/max17048.zig",
+        "src/drivers/stm32_i2c_boot.zig",
         "src/hid/matrix_scan.zig",
+        "src/hid/panel_proto.zig",
+        "src/hid/panel_debounce.zig",
+        "src/hid/panel_scanner.zig",
+        "src/hid/panel_link.zig",
+        "src/hid/panel.zig",
+        "src/hid/panel_client.zig",
+        "src/hid/panel_update.zig",
+        "build_tools/scanner_tripwire.zig",
     };
     for (test_roots) |path| {
         const t = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path(path), .target = host }) });

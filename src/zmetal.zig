@@ -30,6 +30,8 @@ pub const drivers = struct {
     pub const mcp23017 = @import("drivers/mcp23017.zig");
     pub const bq25628 = @import("drivers/bq25628.zig");
     pub const max17048 = @import("drivers/max17048.zig");
+    /// A host for the STM32 ROM bootloader over I2C: programs the panel scanner (STM32C031).
+    pub const stm32_i2c_boot = @import("drivers/stm32_i2c_boot.zig");
     pub const font = ili9341.font;
 };
 
@@ -41,6 +43,11 @@ pub const hid = struct {
     pub const keyboard = @import("hid/keyboard.zig");
     pub const debounce = @import("hid/debounce.zig");
     pub const mcp_digital_io = @import("hid/mcp_digital_io.zig");
+    /// The v3 panel scanner's wire protocol, the Daisy-side client, and the updater
+    /// that decides when a scanner image may be committed.
+    pub const panel_proto = @import("hid/panel_proto.zig");
+    pub const panel_client = @import("hid/panel_client.zig");
+    pub const panel_update = @import("hid/panel_update.zig");
 };
 
 pub const audio = struct {

@@ -5,11 +5,16 @@
 //!
 //! The driver changes control registers by read-modify-write of named
 //! fields and leaves every other bit as found. The two exceptions write a
-//! whole value: the 16-bit limit words, each of which holds one field,
-//! and REG0x27, whose eight bits are all channel disables. A command bit
-//! is never written back as found, so a read that catches one set cannot
-//! repeat its command: `configure` writes REG_RST and FORCE_INDET 0, and
-//! WD_RST is 0 in every write but the one `kickWatchdog` makes.
+//! whole value: the six 16-bit words, each of which holds one field (the
+//! four limit words ICHG, VREG, IINDPM and VINDPM, and IPRECHG and ITERM,
+//! whose reserved bits are written 0, their power-on value), and REG0x27,
+//! whose eight bits are all channel disables. A command bit that `configure`
+//! finds set is not written back, so a read that catches one cannot repeat
+//! its command: `configure` writes REG_RST and FORCE_INDET 0, and its first
+//! write to REG0x16 writes WD_RST 0. The write that turns charging on
+//! (`configure`'s step 4) writes WD_RST back as it reads it, which is 0
+//! after that first write unless the chip has not yet cleared a kick;
+//! `kickWatchdog` writes it 1.
 //!
 //! Every address, field and step is from TI SLUSEG4C (Rev. C), §8.6.2, as
 //! collected in the v3 power research note ([POWER] §1.2-§1.11). A
@@ -1593,6 +1598,117 @@ test "a bus error anywhere in configure never leaves the watchdog running, or ch
         }
     }
 }
+/// A chip left by other firmware as in the failing-bus test above, with
+/// REG0x16 `found`: VREG 4350 mV and ICHG 2000 mA, both above `board`'s,
+/// and every protection off.
+fn leftByOtherFirmware(found: u8) FakeChip {
+    var chip = porChip();
+    chip.r[0x02..0x04].* = .{ 0x40, 0x06 }; // ICHG: 2000 / 40 = 50 = 0x32; 0x32 << 5 = 0x0640
+    chip.r[0x04..0x06].* = .{ 0x98, 0x0D }; // VREG: 4350 / 10 = 435 = 0x1B3; 0x1B3 << 3 = 0x0D98
+    chip.r[0x14] = 0x02; // EN_TERM off
+    chip.r[0x15] = 0x58; // EN_SAFETY_TMRS off
+    chip.r[0x16] = found;
+    chip.r[0x17] = 0x0F; // TREG 60 °C
+    chip.r[0x1A] = 0xBD; // TS_IGNORE on
+    return chip;
+}
+
+/// REG0x16 says the chip charges: EN_CHG (bit 5) = 1 and EN_HIZ (bit 4) =
+/// 0. With EN_HIZ set the input is off, so EN_CHG alone charges nothing.
+fn charges(control_0: u8) bool {
+    return control_0 & 0x30 == 0x20;
+}
+
+/// `board`'s ICHG and VREG words as the chip holds them, low byte first:
+/// 1480 mA / 40 = 37 = 0x25, 0x25 << 5 = 0x04A0; 4200 mV / 10 = 420 =
+/// 0x1A4, 0x1A4 << 3 = 0x0D20.
+const board_ichg = [2]u8{ 0xA0, 0x04 };
+const board_vreg = [2]u8{ 0x20, 0x0D };
+
+test "a bus error anywhere in configure, on a chip found in HIZ, never starts charging before the charge voltage and current are configured" {
+    var with_watchdog = board;
+    with_watchdog.watchdog = .s50;
+    // REG0x16 as found: EN_AUTO_IBATDIS, EN_CHG and EN_HIZ (0x80 | 0x20 |
+    // 0x10): charging enabled but the input off, so not charging; then the
+    // same with the 50 s watchdog (WATCHDOG = 01) running.
+    const found_control_0 = [_]u8{ 0xB0, 0xB1 };
+    for ([_]Config{ board, with_watchdog }) |cfg| {
+        for (found_control_0) |found| {
+            var budget: usize = 0;
+            while (budget < 100) : (budget += 1) {
+                errdefer std.debug.print("found 0x{X:0>2}, budget {d}\n", .{ found, budget });
+                var chip = leftByOtherFirmware(found);
+                var bus: FailingBus = .{ .chip = &chip, .budget = budget };
+                const done = if (Bq25628(*FailingBus).init(&bus, 0x6A)) |dev|
+                    (if (dev.configure(cfg)) true else |_| false)
+                else |_| false;
+                if (chip.writes != 0) {
+                    const charging_started = charges(chip.r[0x16]) and !charges(found);
+                    const watchdog_running = chip.r[0x16] & 0x03 != 0;
+                    if (charging_started or watchdog_running) {
+                        try std.testing.expectEqualSlices(u8, &board_ichg, chip.r[0x02..0x04]);
+                        try std.testing.expectEqualSlices(u8, &board_vreg, chip.r[0x04..0x06]);
+                    }
+                }
+                if (done) {
+                    try std.testing.expect(charges(chip.r[0x16]));
+                    break;
+                }
+            } else return error.TestUnexpectedResult; // `configure` never got through
+        }
+    }
+}
+
+test "on a chip found charging, a bus error anywhere in configure never leaves the configured charge current with another charge voltage" {
+    // REG0x16 as found: charging (0x80 | 0x20), without and with the 200 s
+    // watchdog (WATCHDOG = 11). The chip charges on whatever limits it
+    // holds, so VREG must be the configured one by the time ICHG is.
+    for ([_]u8{ 0xA0, 0xA3 }) |found| {
+        var budget: usize = 0;
+        while (budget < 100) : (budget += 1) {
+            errdefer std.debug.print("found 0x{X:0>2}, budget {d}\n", .{ found, budget });
+            var chip = leftByOtherFirmware(found);
+            var bus: FailingBus = .{ .chip = &chip, .budget = budget };
+            const done = if (Bq25628(*FailingBus).init(&bus, 0x6A)) |dev|
+                (if (dev.configure(board)) true else |_| false)
+            else |_| false;
+            if (std.mem.eql(u8, &board_ichg, chip.r[0x02..0x04])) {
+                try std.testing.expectEqualSlices(u8, &board_vreg, chip.r[0x04..0x06]);
+            }
+            if (done) break;
+        } else return error.TestUnexpectedResult;
+    }
+}
+
+test "a read-back that fails leaves charging as found and the watchdog off" {
+    // Bits that do not take what `configure` writes: a whole limit byte,
+    // one bit of the IPRECHG field and one owned control bit. Each makes
+    // step 3's read-back fail, before step 4 could turn charging on.
+    const stuck = [_]FakeChip.Bits{
+        .{ .register = 0x04, .mask = 0xFF }, // VREG's low byte stays 0x98, `board` writes 0x20
+        .{ .register = 0x02, .mask = 0xFF }, // ICHG's low byte stays 0x40, `board` writes 0xA0
+        .{ .register = 0x10, .mask = 0x08 }, // IPRECHG bit 3 stays 0; 30 mA is 3 << 3 = 0x18
+        .{ .register = 0x1A, .mask = 0x80 }, // TS_IGNORE stays 1; `configure` writes 0
+    };
+    var with_watchdog = board;
+    with_watchdog.watchdog = .s50;
+    for ([_]Config{ board, with_watchdog }) |cfg| {
+        // Not charging, watchdog off; not charging, 50 s watchdog; in HIZ.
+        for ([_]u8{ 0x80, 0x81, 0xB0 }) |found| {
+            for (stuck) |s| {
+                errdefer std.debug.print("found 0x{X:0>2}, stuck 0x{X:0>2}/0x{X:0>2}\n", .{ found, s.register, s.mask });
+                var chip = leftByOtherFirmware(found);
+                chip.r[0x10] = 0x00; // so that the stuck IPRECHG bit differs from 0x18
+                chip.stuck_bits = s;
+                const dev = try Bq25628(*FakeChip).init(&chip, 0x6A);
+                try std.testing.expectError(error.VerifyFailed, dev.configure(cfg));
+                try std.testing.expectEqual(charges(found), charges(chip.r[0x16]));
+                try std.testing.expectEqual(@as(u8, 0), chip.r[0x16] & 0x03); // WATCHDOG = 00
+            }
+        }
+    }
+}
+
 test "the fake refuses a limit word written in halves, from its high byte, or with another" {
     var chip = porChip();
     try std.testing.expectError(error.SplitWord, chip.write(0x6A, &.{ 0x02, 0xA0 }));
